@@ -22,8 +22,19 @@ export function createRepositoryService(database: Database, github: GitHubClient
 
   async function listJobs(ids: number[]) {
     if (!ids.length) return [];
+    // 概览按严重度展示新问题，和之前仍未解决的重复问题分开计数。
     const result = await database.pool.query(
-      "SELECT j.*,(SELECT count(*)::int FROM review_findings f WHERE f.job_id=j.id) finding_count,p.github_review_url,COALESCE((SELECT jsonb_agg(to_jsonb(a) - 'job_id' ORDER BY a.started_at) FROM agent_runs a WHERE a.job_id=j.id),'[]') agent_runs FROM jobs j LEFT JOIN review_publications p ON p.job_id=j.id WHERE j.repository_id=ANY($1::bigint[]) ORDER BY j.created_at DESC LIMIT 200",
+      `SELECT j.*,
+         (SELECT count(*)::int FROM review_findings f WHERE f.job_id=j.id) finding_count,
+         (SELECT COALESCE(jsonb_object_agg(severity, n), '{}') FROM (
+            SELECT severity, count(*)::int n FROM review_findings f
+            WHERE f.job_id=j.id AND NOT (f.presentation ? 'repeatOf') GROUP BY severity
+          ) s) new_severity_counts,
+         (SELECT count(*)::int FROM review_findings f WHERE f.job_id=j.id AND f.presentation ? 'repeatOf') repeat_count,
+         p.github_review_url,
+         COALESCE((SELECT jsonb_agg(to_jsonb(a) - 'job_id' ORDER BY a.started_at) FROM agent_runs a WHERE a.job_id=j.id),'[]') agent_runs
+       FROM jobs j LEFT JOIN review_publications p ON p.job_id=j.id
+       WHERE j.repository_id=ANY($1::bigint[]) ORDER BY j.created_at DESC LIMIT 200`,
       [ids],
     );
     return result.rows.map(({ review_result, ...row }) => ({ ...row, report_available: Boolean(review_result) }));
