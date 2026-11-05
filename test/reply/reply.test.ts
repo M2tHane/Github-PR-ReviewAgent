@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseReplyResult } from "../../src/reply/reply.processor.js";
+import { parseReplyResult, replyBody } from "../../src/reply/reply.processor.js";
 import type { MemoryRecord } from "../../src/memory/types.js";
 import type { ReplyConclusion, ReplyResult } from "../../src/reply/types.js";
 import type { StoredFinding } from "../../src/review/types.js";
@@ -29,4 +29,11 @@ test("ReplyResult 拒绝伪造 finding/head/path/Memory 与缺失 clue", () => {
 test("SUPERSEDED Memory 可作为历史上下文但版本仍须真实", () => {
   const value = result("MISJUDGMENT"); value.memoryReferences = [{ id: memory.id, version: memory.version }];
   assert.deepEqual(parseReplyResult(JSON.stringify(value), binding).memoryReferences, value.memoryReferences);
+});
+
+test("回复是一句结论，超长视为不合格而不是截断", () => {
+  assert.throws(() => parseReplyResult(JSON.stringify({ ...result("FIXED"), summary: "字".repeat(101) }), binding), /超过 100 字/);
+  assert.throws(() => parseReplyResult(JSON.stringify({ ...result("NEEDS_CLARIFICATION"), clarificationQuestion: "问".repeat(101) }), binding), /超过 100 字/);
+  assert.equal(replyBody({ ...result("FIXED"), summary: "新提交已经改成\n可空的 String。" }), "✅ 已修复：新提交已经改成 可空的 String。\n\n<!-- pi-reply-source -->");
+  assert.match(replyBody(result("NEEDS_CLARIFICATION"), "https://admin/#reviews/job"), /^❓ 需要补充说明：Which caller guarantees this\?\n\n\[查看详情\]/);
 });

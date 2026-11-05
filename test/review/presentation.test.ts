@@ -30,11 +30,11 @@ test('分组拒绝未知、重复、遗漏及跨规则合并，短评不能超�
 });
 test('规则来源默认折叠，partial 不宣称完成，零意见不等于测试通过',()=>{
  const body=inlineBody(job,{...exportFinding,display,id:'internal',memory:{id:'uuid-hidden',version:2,title:'订单查询返回时间点快照',source:{pullRequestNumber:8}}});
- assert.match(body,/<summary>查看规则来源<\/summary>/);assert.match(body,/来源：PR #8/);assert(!body.includes('uuid-hidden'));assert(!body.includes('版本'));
+ assert.match(body,/<summary>规则来源<\/summary>/);assert.match(body,/来源：\[PR #8\]/);assert(!body.includes('uuid-hidden'));assert(!body.includes('版本'));
  assert.match(reviewBody(job,{summary:'',findings:[],coverage:[],limitations:[]},true),/未完成/);
  assert.match(reviewBody(job,{summary:'',findings:[],coverage:[],limitations:[]}),/未运行测试/);
  const unmapped=reviewBody(job,{summary:'',findings:[{...exportFinding,line:undefined,side:undefined,display}],coverage:[],limitations:[]});
- assert.match(unmapped,/无法定位到变更行的问题详情/);assert(unmapped.includes(display.fix));
+ assert.match(unmapped,/没法定位到具体行的问题/);assert(unmapped.includes(display.fix));
 });
 
 test('候选不能通过聚合隐藏无效规则引用，服务忽略模型伪造的身份与关联信息',()=>{
@@ -44,4 +44,22 @@ test('候选不能通过聚合隐藏无效规则引用，服务忽略模型伪�
  assert.equal(result.findings[0]!.mergedCount,1);assert.equal((result.findings[0] as any).id,undefined);
  assert.equal(result.findings[0]!.candidates!.length,2);assert(!result.findings[0]!.relatedLocations?.some(location=>location.path==='../secret'));
  const candidates=parseReviewResult(JSON.stringify({...value,findings:[exportFinding,catalog],issueDisplays:[null]}),false);assert.equal(candidates.findings.length,2);assert.equal(candidates.findings[0]!.display,undefined);
+});
+
+test('严重度只展示三档，总评按严重度列成清单，行内评论不重复完整审计文字', () => {
+  const low: Finding = { ...catalog, severity: 'low', display: { title: '命名不统一', reason: '同一概念用了两个名字。', fix: '统一成一个名字。' } };
+  const critical: Finding = { ...exportFinding, severity: 'critical', display };
+  const body = reviewBody(job, { summary: '', findings: [low, critical], coverage: [], limitations: [] }, false, 'https://admin/#reviews/job');
+  const items = body.split('\n').filter(line => line.startsWith('- '));
+  assert.equal(items.length, 2);
+  assert.match(items[0]!, /^- 🔴 必须改 · .*导出会改变订单原始顺序$/);
+  assert.match(items[1]!, /^- 🟡 可以不改 · .*命名不统一$/);
+  assert(!/\|\s*---|Critical|High|Medium|Low/.test(body));
+  assert.match(body, /仅静态审查，未运行测试 · \[查看详情\]/);
+  assert.match(reviewBody(job, { summary: '', findings: [], coverage: [], limitations: [] }), /✅ 没发现需要改的问题/);
+  const grouped = groupFindings([exportFinding, catalog], [[0, 1]], [display])[0]!;
+  const inline = inlineBody(job, { ...grouped, id: 'x' });
+  assert(inline.startsWith('🔴 必须改：导出会改变订单原始顺序\n\n查询返回内部 List，sort 会修改目录。\n查询返回快照'));
+  assert.match(inline, /相关位置（1 处）/);
+  assert(!inline.includes('List.copyOf'), '完整审计建议只留在详情页');
 });

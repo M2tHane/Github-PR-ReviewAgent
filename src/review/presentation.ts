@@ -2,7 +2,8 @@ import type { Finding, ReviewResult } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 
 export interface FindingDisplay { title: string; reason: string; fix: string; code?: string; language?: string }
-export const severityLabel = { critical: '🔴 Critical', high: '🔴 High', medium: '🟠 Medium', low: '🟡 Low' };
+// 内部保留四级严重度，对开发者只展示三档。
+export const severityLabel = { critical: '🔴 必须改', high: '🔴 必须改', medium: '🟠 建议改', low: '🟡 可以不改' };
 const rank = { critical: 4, high: 3, medium: 2, low: 1 };
 export const shortText = (text: string, limit: number) => { const chars = [...text.replace(/\s+/g, ' ').trim()]; return chars.length > limit ? chars.slice(0, limit - 1).join('') + '…' : chars.join(''); };
 const safe = (text: string) => text.replace(/[<>&|\r\n]/g, c => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', '|':'\\|', '\r':' ', '\n':' ' }[c]!));
@@ -49,8 +50,9 @@ export function displayFinding(f: Finding): FindingDisplay {
   return { title:shortText(f.description.split(/[。\n]/)[0]!,32), reason:shortText(f.evidence,38), fix:shortText(f.suggestion ?? '查看详情后调整相关实现。',48) };
 }
 function findingText(finding: Finding) {
-  const d=displayFinding(finding);
-  return `${severityLabel[finding.severity]} · ${safe(d.title)}\n\n${safe(d.reason)}\n\n建议：${safe(d.fix)}${d.code ? '\n\n```'+(d.language??'')+'\n'+d.code+'\n```' : ''}`;
+  const d = displayFinding(finding);
+  const code = d.code ? '\n\n```' + (d.language ?? '') + '\n' + d.code + '\n```' : '';
+  return `${severityLabel[finding.severity]}：${safe(d.title)}\n\n${safe(d.reason)}\n${safe(d.fix)}${code}`;
 }
 export function codeLocation(job: ReviewJob, f: Pick<Finding,'path'|'line'|'side'>) {
   if (!f.path) return '整体变更';
@@ -59,15 +61,30 @@ export function codeLocation(job: ReviewJob, f: Pick<Finding,'path'|'line'|'side
   return `[${name}](https://github.com/${job.repository}/blob/${sha}/${f.path.split('/').map(encodeURIComponent).join('/')}${f.line ? '#L'+f.line : ''})`;
 }
 export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false, detailsUrl?: string) {
-  const count = result.findings.length, merged = result.findings.reduce((n,f)=>n+(f.mergedCount??0),0);
-  const summary = count ? `❌ 发现 ${count} 个需要处理的问题` : partial ? '⚠ 本次审查未完成，已检查范围内未发现问题' : '✅ 已检查范围内未发现需要处理的问题';
-  const table = count ? '\n\n| 严重度 | 位置 | 问题 |\n| --- | --- | --- |\n' + result.findings.map(f=>`| ${severityLabel[f.severity]} | ${codeLocation(job,f)} | ${safe(displayFinding(f).title)} |`).join('\n') : '';
-  const unmapped = result.findings.filter(f => !f.path || !f.line || !f.side);
-  const extra = unmapped.length ? '\n\n<details>\n<summary>无法定位到变更行的问题详情</summary>\n\n' + unmapped.map(findingText).join('\n\n---\n\n') + '\n\n</details>' : '';
-  return `## Pi Review\n\n${summary}${table}${extra}${merged ? '\n\n另有 '+merged+' 条相关意见，已合并到对应问题中。' : ''}${partial && count ? '\n\n⚠ 部分检查未完成。' : ''}\n\n未运行测试，仅完成静态代码审查。${detailsUrl ? '\n\n[查看详情]('+detailsUrl+')' : ''}`;
+  const findings = [...result.findings].sort((a, b) => rank[b.severity] - rank[a.severity]);
+  const lines = ['## Pi Review', ''];
+  if (findings.length) {
+    lines.push(`发现 ${findings.length} 个问题`, '');
+    for (const f of findings) lines.push(`- ${severityLabel[f.severity]} · ${codeLocation(job, f)} · ${safe(displayFinding(f).title)}`);
+  } else lines.push(partial ? '⚠ 部分检查未完成，已检查的部分没发现问题' : '✅ 没发现需要改的问题');
+  const unmapped = findings.filter(f => !f.path || !f.line || !f.side);
+  if (unmapped.length) lines.push('', '<details>', '<summary>没法定位到具体行的问题</summary>', '', unmapped.map(findingText).join('\n\n---\n\n'), '', '</details>');
+  if (partial && findings.length) lines.push('', '⚠ 部分检查未完成，结果可能不全');
+  lines.push('', '仅静态审查，未运行测试' + (detailsUrl ? ` · [查看详情](${detailsUrl})` : ''));
+  return lines.join('\n');
 }
-export function inlineBody(job: ReviewJob, finding: Finding & {id:string}, detailsUrl?: string) {
-  const rule = finding.memory ? `\n\n<details>\n<summary>查看规则来源</summary>\n\n规则：${safe(finding.memory.title ?? '团队已确认的规则')}\n\n${finding.memory.source.pullRequestNumber ? `[来源：PR #${finding.memory.source.pullRequestNumber}](https://github.com/${job.repository}/pull/${finding.memory.source.pullRequestNumber})` : '来源见审查详情。'}\n\n</details>` : '';
-  const related = finding.relatedLocations?.length ? `\n\n<details>\n<summary>相关位置与修改依据</summary>\n\n${finding.relatedLocations.map(l=>'- '+codeLocation(job,l)).join('\n')}\n\n${safe(finding.suggestion??'')}\n\n</details>` : '';
-  return `${findingText(finding)}${rule}${related}${detailsUrl ? '\n\n[查看详情]('+detailsUrl+')' : ''}\n\n<!-- pi-finding:${finding.id} -->`;
+
+export function inlineBody(job: ReviewJob, finding: Finding & { id: string }, detailsUrl?: string) {
+  const parts = [findingText(finding)];
+  if (finding.memory) {
+    const pr = finding.memory.source.pullRequestNumber;
+    const source = pr ? `（来源：[PR #${pr}](https://github.com/${job.repository}/pull/${pr})）` : '';
+    parts.push(`<details>\n<summary>规则来源</summary>\n\n${safe(finding.memory.title ?? '团队已确认的规则')}${source}\n\n</details>`);
+  }
+  // 修改建议已覆盖整组位置，这里只列出位置，不再重复完整审计文字。
+  const related = finding.relatedLocations ?? [];
+  if (related.length) parts.push(`<details>\n<summary>相关位置（${related.length} 处）</summary>\n\n${related.map(l => '- ' + codeLocation(job, l)).join('\n')}\n\n</details>`);
+  if (detailsUrl) parts.push(`[查看详情](${detailsUrl})`);
+  parts.push(`<!-- pi-finding:${finding.id} -->`);
+  return parts.join('\n\n');
 }
