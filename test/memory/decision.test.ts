@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseDecisionProposals, proposalFingerprint } from "../../src/memory/decision.processor.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createDecisionProcessor, parseDecisionProposals, proposalFingerprint } from "../../src/memory/decision.processor.js";
+import { emptyUsage, TimeoutError } from "../../src/review/agent.js";
+import type { GitHubClient } from "../../src/github/client.js";
+import type { Database } from "../../src/persistence/database.js";
+import type { Config } from "../../src/config/config.js";
 import type { DecisionProposal } from "../../src/memory/types.js";
 import type { ReviewJob } from "../../src/jobs/types.js";
+
+const exec = promisify(execFile);
 
 const job = { id: "job", deliveryId: "delivery", jobType: "DECISION_EXTRACT", installationId: 1, repositoryId: 2, repository: "owner/repo", cloneUrl: "url", prNumber: 3, title: "", body: "", baseSha: "base", headSha: "merged", status: "running" } satisfies ReviewJob;
 const proposal: DecisionProposal = {
@@ -30,4 +41,35 @@ test("局部例外与替代关系保留，指纹稳定", () => {
   assert.equal(parseDecisionProposals(JSON.stringify([exception]), job)[0]?.relation?.exceptionTo, exception.relation.exceptionTo);
   assert.equal(parseDecisionProposals(JSON.stringify([superseding]), job)[0]?.relation?.supersedes, superseding.relation.supersedes);
   assert.equal(proposalFingerprint(2, proposal), proposalFingerprint(2, { ...proposal, source: { ...proposal.source, commentIds: [11] } }));
+});
+
+test("Decision Extractor 走统一会话入口：使用仓库预算、只给只读工具，超时记为 timeout", async () => {
+  const source = await mkdtemp(join(tmpdir(), "pi-decision-test-"));
+  const git = async (...args: string[]) => (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
+  try {
+    await git("init", "-q"); await git("config", "user.name", "test"); await git("config", "user.email", "test@example.invalid");
+    await writeFile(join(source, "a.ts"), "export const a = 1;\n"); await git("add", "a.ts"); await git("commit", "-qm", "merge");
+    const headSha = await git("rev-parse", "HEAD");
+    const github = {
+      installationToken: async () => "token",
+      getPullRequest: async () => ({ merged: true, merge_commit_sha: headSha, title: "t", body: "" }),
+      getFiles: async () => [], getConversationComments: async () => [], getReviews: async () => [], getReviewComments: async () => [],
+    } as unknown as GitHubClient;
+    const inserted: unknown[] = [];
+    const database = {
+      getDecisionClues: async () => [], getRepositoryConfig: async () => ({ budgetTokens: 1234 }),
+      insertCandidates: async (_job: unknown, proposals: unknown[]) => { inserted.push(proposals); },
+    } as unknown as Database;
+    const config = { modelProvider: "p", modelName: "m", modelApiKey: "k", agentTimeoutMs: 1000 } as Config;
+    const target = { id: "job", deliveryId: "d", repositoryId: 1, installationId: 1, repository: "o/r", prNumber: 3, cloneUrl: source, baseSha: headSha, headSha, title: "", body: "", status: "running" } as ReviewJob;
+    let received: Record<string, unknown> | undefined;
+    await createDecisionProcessor(config, database, github, async (input) => { received = input; return { text: "[]", durationMs: 1, model: "m", usage: emptyUsage() }; })(target);
+    assert.equal(received?.budgetTokens, 1234);
+    assert.equal(received?.tools, undefined, "默认只有 read_file / search_text");
+    assert.match(String(received?.systemPrompt), /Decision Extractor/);
+    assert.deepEqual(inserted, [[]]);
+    const timedOut = { ...target };
+    await assert.rejects(createDecisionProcessor(config, database, github, async () => { throw new TimeoutError(); })(timedOut));
+    assert.equal(timedOut.status, "timeout");
+  } finally { await rm(source, { recursive: true, force: true }); }
 });

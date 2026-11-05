@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
-import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { GitHubClient } from "../github/client.js";
-import { controlledLoader, TimeoutError, workspaceTools } from "../review/agent.js";
+import { runAgentSession, TimeoutError } from "../review/agent.js";
 import type { DecisionProposal } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 import { withWorkspace } from "../workspace/workspace.js";
@@ -38,7 +37,7 @@ export function proposalFingerprint(repositoryId: number, proposal: DecisionProp
   return createHash("sha256").update(JSON.stringify([repositoryId, proposal.source.pullRequestNumber, proposal.source.commitSha, [...proposal.source.commentIds].sort(), proposal.type, proposal.content.trim().toLowerCase()])).digest("hex");
 }
 
-export function createDecisionProcessor(config: Config, database: Database, github = new GitHubClient(config.appId, config.privateKey)) {
+export function createDecisionProcessor(config: Config, database: Database, github = new GitHubClient(config.appId, config.privateKey), execute = runAgentSession) {
   return async (job: ReviewJob) => {
     const token = await github.installationToken(job.installationId);
     const [pr, files, comments, reviews, reviewComments, decisionClues] = await Promise.all([
@@ -46,25 +45,23 @@ export function createDecisionProcessor(config: Config, database: Database, gith
     ]);
     if (!pr.merged || pr.merge_commit_sha !== job.headSha) throw new Error("merged snapshot 与 Job 不一致");
     const discussions = [...comments, ...reviews, ...reviewComments].map((entry) => ({ id: entry.id, url: entry.html_url, body: entry.body, author: entry.user.login, authorType: entry.user.type, human: entry.user.type === "User" }));
+    const repositoryConfig = await database.getRepositoryConfig(job.repositoryId);
     await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-      const runtime = await ModelRuntime.create({ refreshOnCreate: false });
-      await runtime.setRuntimeApiKey(config.modelProvider, config.modelApiKey);
-      const model = runtime.getModel(config.modelProvider, config.modelName);
-      if (!model) throw new Error(`未知模型 ${config.modelProvider}/${config.modelName}`);
-      const loader = controlledLoader(root, SYSTEM_PROMPT);
-      await loader.reload();
-      const { session } = await createAgentSession({ cwd: root, modelRuntime: runtime, model, noTools: "all", customTools: workspaceTools(root), tools: ["read_file", "search_text"], resourceLoader: loader, sessionManager: SessionManager.inMemory() });
-      const timer = setTimeout(() => void session.abort(), config.agentTimeoutMs);
+      // 走统一会话入口：受 token 预算约束、关闭 SDK 自动重试，不读取待审仓库或宿主机的 Pi 设置。
+      let run: Awaited<ReturnType<typeof runAgentSession>>;
       try {
-        await session.prompt(JSON.stringify({ task: "从已合并 PR 提取可复用工程决定。decisionClues 仅是待核实索引，不能替代人类评论与最终代码双证据", repository: job.repository, pullRequestNumber: job.prNumber, mergedSnapshot: job.headSha, title: pr.title, body: pr.body, changedFiles: files, discussions, decisionClues }));
-        const message = [...session.messages].reverse().find((entry) => entry.role === "assistant");
-        if (!message || message.role !== "assistant") throw new Error("Decision Extractor 没有返回结果");
-        if (message.stopReason === "aborted") { job.status = "timeout"; throw new TimeoutError(); }
-        const text = message.content.filter((entry) => entry.type === "text").map((entry) => entry.text).join("");
-        const proposals = parseDecisionProposals(text, job, new Set(discussions.filter((entry) => entry.human).map((entry) => entry.id)), new Set(files.map((file) => file.filename)));
-        await database.insertCandidates(job, proposals);
-        console.info(JSON.stringify({ event: "decisions_extracted", jobId: job.id, repositoryId: job.repositoryId, prNumber: job.prNumber, candidateCount: proposals.length, model: message.model, usage: message.usage }));
-      } finally { clearTimeout(timer); session.dispose(); }
+        run = await execute({
+          root, provider: config.modelProvider, modelName: config.modelName, apiKey: config.modelApiKey,
+          timeoutMs: config.agentTimeoutMs, budgetTokens: repositoryConfig?.budgetTokens, systemPrompt: SYSTEM_PROMPT,
+          prompt: { task: "从已合并 PR 提取可复用工程决定。decisionClues 仅是待核实索引，不能替代人类评论与最终代码双证据", repository: job.repository, pullRequestNumber: job.prNumber, mergedSnapshot: job.headSha, title: pr.title, body: pr.body, changedFiles: files, discussions, decisionClues },
+        });
+      } catch (error) {
+        if (error instanceof TimeoutError) job.status = "timeout";
+        throw error;
+      }
+      const proposals = parseDecisionProposals(run.text, job, new Set(discussions.filter((entry) => entry.human).map((entry) => entry.id)), new Set(files.map((file) => file.filename)));
+      await database.insertCandidates(job, proposals);
+      console.info(JSON.stringify({ event: "decisions_extracted", jobId: job.id, repositoryId: job.repositoryId, prNumber: job.prNumber, candidateCount: proposals.length, model: run.model, usage: run.usage }));
     });
   };
 }
