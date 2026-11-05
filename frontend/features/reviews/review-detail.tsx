@@ -66,6 +66,23 @@ export function ReviewDetails({ id }: { id: string }) {
           }
         : undefined,
     }));
+  // 之前提过、仍未解决的问题在 GitHub 上不再发行内评论，这里也只列一行并指回原评论。
+  const fresh = findings.filter((finding) => !finding.repeatOf),
+    repeats = findings.filter((finding) => finding.repeatOf);
+  const resolved = report?.resolvedPrevious ?? 0;
+  const lead = [
+    fresh.length
+      ? `${report ? "发现" : "已加载"} ${fresh.length} 个${repeats.length || resolved ? "新" : ""}问题`
+      : repeats.length
+        ? "这次没有新问题"
+        : job.status === "succeeded" && report
+          ? "已检查范围内未发现需要处理的问题"
+          : "当前没有完整的审查结论",
+    repeats.length && `另有 ${repeats.length} 个之前提过、仍未解决`,
+    resolved && `之前的 ${resolved} 个问题这次没有再发现`,
+  ]
+    .filter(Boolean)
+    .join("，");
   return (
     <section className="review-detail">
       <a href="#overview" className="back-link">
@@ -97,18 +114,9 @@ export function ReviewDetails({ id }: { id: string }) {
           {job.last_error}
         </p>
       )}
-      {job.job_type === "PR_REVIEW" && (
-        <p className="review-lead">
-          {findings.length
-            ? `${report ? "发现" : "已加载"} ${findings.length} 个问题`
-            : job.status === "succeeded" && report
-              ? "已检查范围内未发现需要处理的问题"
-              : "当前没有完整的审查结论"}
-          。未运行测试，仅进行静态代码审查。
-        </p>
-      )}
+      {job.job_type === "PR_REVIEW" && <p className="review-lead">{lead}。未运行测试，仅进行静态代码审查。</p>}
       <div className="review-issues">
-        {findings.map((finding, i) => {
+        {fresh.map((finding, i) => {
           const display = displayFinding(finding),
             thread = (job.finding_statuses ?? threads).find(
               (item: { id: string; status: string }) => item.id === finding.id,
@@ -186,6 +194,40 @@ export function ReviewDetails({ id }: { id: string }) {
           );
         })}
       </div>
+      {repeats.length > 0 && (
+        <section className="overview-section">
+          <div className="subhead">
+            <h3>之前提过、仍未解决（{repeats.length}）</h3>
+          </div>
+          <div className="review-list">
+            {repeats.map((finding, i) => {
+              const commentId = finding.repeatOf?.commentId;
+              return (
+                <div className="review-row" key={finding.id ?? i}>
+                  <div className="review-main">
+                    <h4>{finding.repeatOf?.title || displayFinding(finding).title}</h4>
+                    <span className="review-meta">
+                      <SourceLocation job={job} location={finding} />
+                    </span>
+                  </div>
+                  <span className="outcome">
+                    <Status value={finding.severity} />
+                    {commentId && (
+                      <a
+                        href={`https://github.com/${job.repository}/pull/${job.pr_number}#discussion_r${commentId}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        之前的评论 ↗
+                      </a>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <section className="overview-section">
         <h3>后续讨论与复核</h3>
         {threads.some((item) => item.source_comment_id) && (

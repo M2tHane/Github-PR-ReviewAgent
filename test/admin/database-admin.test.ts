@@ -215,6 +215,21 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.deepEqual(await response.json(), { items: [], nextCursor: null });
     response = await fetch(`${origin}/api/findings?jobId=invalid`, { headers: { cookie: sessionCookie } });
     assert.equal(response.status, 422);
+    const [repeat] = await database.saveFindings(
+      review,
+      [{ ...finding, path: "src/repeat.ts", repeatOf: { id: stored[0]!.id, title: "旧问题" } }],
+      new Set(),
+    );
+    response = await fetch(`${origin}/api/findings?repositoryId=${allowedId}`, { headers: { cookie: sessionCookie } });
+    let listed = (await response.json()) as any;
+    assert(!listed.items.some((item: any) => item.id === repeat!.id), "讨论列表不重复列出之前提过的问题");
+    response = await fetch(`${origin}/api/findings?jobId=${review.id}`, { headers: { cookie: sessionCookie } });
+    listed = await response.json();
+    assert(
+      listed.items.some((item: any) => item.id === repeat!.id),
+      "单次审查仍能拿到全部问题",
+    );
+    await database.pool.query("DELETE FROM review_findings WHERE id=$1", [repeat!.id]);
     const extra = Array.from({ length: 53 }, (_, i) => ({ ...finding, path: `src/page-${i}.ts` }));
     await database.saveFindings(review, extra, new Set(extra));
     for (let i = 0; i < 3; i++) {

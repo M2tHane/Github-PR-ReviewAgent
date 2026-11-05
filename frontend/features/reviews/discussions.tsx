@@ -6,25 +6,26 @@ import { shortText } from "../../../src/review/presentation.js";
 import type { Repository as Repo } from "../../types.js";
 
 export function Discussions({ items }: { items: any[] }) {
+  if (!items.length) return <Empty>暂无讨论记录。</Empty>;
   return (
     <div className="discussion-list">
-      {!items.length ? (
-        <Empty>暂无讨论记录。</Empty>
-      ) : (
-        items.map((item) => (
-          <article className="discussion card" key={item.id + "-" + (item.source_comment_id ?? "root")}>
+      {items.map((item) => {
+        const link = item.github_reply_url
+          ? { href: item.github_reply_url, label: "查看回复 ↗" }
+          : item.github_comment_id
+            ? {
+                href: `https://github.com/${item.repository}/pull/${item.pr_number}#discussion_r${item.github_comment_id}`,
+                label: "查看原讨论 ↗",
+              }
+            : null;
+        return (
+          <article className="discussion" key={item.id + "-" + (item.source_comment_id ?? "root")}>
             <div className="card-head">
               <h3>{item.presentation?.display?.title ?? shortText(item.description, 80)}</h3>
               <Status value={item.status} />
             </div>
-            <p className="muted">
-              {[
-                item.repository,
-                `PR #${item.pr_number}`,
-                item.path && `${item.path}${item.line ? ":" + item.line : ""}`,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+            <p className="muted discussion-where">
+              {item.path ? `${item.path}${item.line ? ":" + item.line : ""}` : "整体变更"}
             </p>
             {item.human_reply_body && (
               <blockquote>
@@ -38,23 +39,13 @@ export function Discussions({ items }: { items: any[] }) {
                 {item.reply_result.summary}
               </p>
             )}
-            <div className="actions">
-              {item.github_reply_url ? (
-                <a href={item.github_reply_url} target="_blank" rel="noreferrer">
-                  查看回复 ↗
+            {link && (
+              <p>
+                <a href={link.href} target="_blank" rel="noreferrer">
+                  {link.label}
                 </a>
-              ) : (
-                item.github_comment_id && (
-                  <a
-                    href={`https://github.com/${item.repository}/pull/${item.pr_number}#discussion_r${item.github_comment_id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    查看原讨论 ↗
-                  </a>
-                )
-              )}
-            </div>
+              </p>
+            )}
             <details>
               <summary>复核依据与详情</summary>
               <p>{item.evidence}</p>
@@ -97,9 +88,52 @@ export function Discussions({ items }: { items: any[] }) {
               </small>
             </details>
           </article>
-        ))
-      )}
+        );
+      })}
     </div>
+  );
+}
+
+const GROUP_PREVIEW = 5;
+type DiscussionGroup = { key: string; repository: string; prNumber: number; title?: string; items: any[] };
+// 已加载的讨论按 PR 归组，组的顺序沿用列表顺序（最近有动静的 PR 在前）。
+export function groupByPullRequest(items: any[]): DiscussionGroup[] {
+  const groups = new Map<string, DiscussionGroup>();
+  for (const item of items) {
+    const key = `${item.repository}#${item.pr_number}`;
+    const group: DiscussionGroup = groups.get(key) ?? {
+      key,
+      repository: item.repository,
+      prNumber: item.pr_number,
+      title: item.pr_title || undefined,
+      items: [],
+    };
+    group.items.push(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+function PullRequestDiscussions({ group }: { group: DiscussionGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const hidden = group.items.length - GROUP_PREVIEW;
+  return (
+    <section className="discussion-group">
+      <div className="subhead">
+        <div className="discussion-group-title">
+          <h3>{group.title || `PR #${group.prNumber}`}</h3>
+          <span className="muted">
+            {group.repository} · #{group.prNumber} · {group.items.length} 条
+          </span>
+        </div>
+        <a href={`#reviews/${group.items[0].job_id}`}>查看审查 →</a>
+      </div>
+      <Discussions items={expanded || hidden <= 0 ? group.items : group.items.slice(0, GROUP_PREVIEW)} />
+      {hidden > 0 && (
+        <button className="secondary discussion-more" onClick={() => setExpanded(!expanded)}>
+          {expanded ? "收起" : `显示其余 ${hidden} 条`}
+        </button>
+      )}
+    </section>
   );
 }
 type DiscussionPageResult = { items: any[]; nextCursor: string | null };
@@ -210,7 +244,15 @@ export function DiscussionPage({ repositories }: { repositories: Repo[] }) {
           ))}
         </select>
       </label>
-      {page.items.length > 0 || !page.loading ? <Discussions items={page.items} /> : null}
+      {page.items.length > 0 ? (
+        <div className="discussion-groups">
+          {groupByPullRequest(page.items).map((group) => (
+            <PullRequestDiscussions group={group} key={group.key} />
+          ))}
+        </div>
+      ) : !page.loading ? (
+        <Discussions items={[]} />
+      ) : null}
       <DiscussionPaging page={page} />
     </section>
   );
