@@ -86,11 +86,50 @@ export class MemoryService {
     } finally { client.release(); }
   }
 
-  async retrieve(repositoryId: number, input: { paths: string[]; text: string; conditions?: string[]; limit?: number }) {
-    const memories = (await this.database.pool.query("SELECT DISTINCT ON (id) * FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version DESC", [repositoryId])).rows.map(toMemory).filter((memory) => scopeMatches(memory, input.paths, input.conditions ?? []));
-    const terms = new Set(input.text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2));
-    return memories.map((memory) => ({ memory, score: [...terms].filter((term) => `${memory.title} ${memory.content} ${memory.rationale}`.toLowerCase().includes(term)).length })).sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id)).slice(0, input.limit ?? 10).map(({ memory }) => memory);
+  async retrieve(repositoryId: number, input: RetrieveInput) {
+    const result = await this.database.pool.query("SELECT DISTINCT ON (id) * FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version DESC", [repositoryId]);
+    return rankMemories(result.rows.map(toMemory), input);
   }
+}
+
+export interface RetrieveInput {
+  paths: string[];
+  text: string;
+  conditions?: string[];
+  limit?: number;
+  // 未限定 Scope 的全局规则至少要和变更文本共有几个词才召回；健康检查需要全部候选时传 0。
+  minGlobalScore?: number;
+}
+
+// 拆成整词：标识符按驼峰和下划线拆开并保留原词；中文没有空格，按相邻两字切分。
+export function matchWords(text: string) {
+  const words = new Set<string>();
+  const spaced = text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  for (const word of `${text} ${spaced}`.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (/\p{Script=Han}/u.test(word)) for (let index = 0; index < word.length - 1; index++) words.add(word.slice(index, index + 2));
+    else if (word.length > 2) words.add(word);
+  }
+  return words;
+}
+
+function hasSpecificScope(memory: MemoryRecord) {
+  return Boolean(memory.scope.paths?.length || memory.scope.modules?.length || memory.scope.languages?.length);
+}
+
+export function rankMemories(memories: MemoryRecord[], input: RetrieveInput) {
+  const queryWords = matchWords(input.text);
+  const minGlobalScore = input.minGlobalScore ?? 2;
+  return memories
+    .filter((memory) => scopeMatches(memory, input.paths, input.conditions ?? []))
+    .map((memory) => {
+      const memoryWords = matchWords(`${memory.title} ${memory.content} ${memory.rationale}`);
+      return { memory, score: [...memoryWords].filter((word) => queryWords.has(word)).length };
+    })
+    // 限定了路径/模块/语言的规则命中 Scope 本身就是信号，不受最低分限制。
+    .filter(({ memory, score }) => hasSpecificScope(memory) || score >= minGlobalScore)
+    .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id))
+    .slice(0, input.limit ?? 10)
+    .map(({ memory }) => memory);
 }
 
 export function scopeMatches(memory: MemoryRecord, paths: string[], conditions: string[]) {

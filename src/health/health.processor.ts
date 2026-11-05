@@ -41,7 +41,7 @@ export function createHealthProcessor(config: Config, database: Database, memori
         const [selection, ci] = await Promise.all([collectHealthFiles(root, job.scope, signal), collectHealthCi(github, token, job, signal)]);
         if (!selection.files.size) throw new Error("健康检查范围内没有可读取的文本文件");
         signal.throwIfAborted();
-        const candidates = await memories.retrieve(job.repositoryId, { paths: [...selection.files.keys()], text: job.repository + " architecture health dependencies", limit: 11 });
+        const candidates = await memories.retrieve(job.repositoryId, { paths: [...selection.files.keys()], text: job.repository + " architecture health dependencies", limit: 11, minGlobalScore: 0 });
         const recalled = candidates.slice(0, 10), readLines = new Map<string, Set<number>>();
         const collectedAt = new Date().toISOString();
         const files = [...selection.files].map(([path, content]) => ({ path, lines: content.split(/\r?\n/).length }));

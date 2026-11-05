@@ -28,7 +28,7 @@ export function createReviewProcessor(config: Config, github = new GitHubClient(
     let singleRunId: string | undefined, agentUsage: AgentUsage | undefined;
     try {
       await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-        const recalled = await memories?.retrieve(job.repositoryId, { paths: files.map((file) => file.filename), text: `${job.title} ${job.body} ${files.map((file) => `${file.filename} ${file.patch ?? ""}`).join(" ")}` }) ?? [];
+        const recalled = await memories?.retrieve(job.repositoryId, { paths: files.map((file) => file.filename), text: recallText(job, files) }) ?? [];
         let review;
         const profile = complexityProfile(files, recalled);
         if (shouldOrchestrate(profile, repositoryConfig?.reviewMode ?? "single") && (repositoryConfig?.maxDelegates ?? 2) > 0 && database) {
@@ -63,6 +63,12 @@ export function createReviewProcessor(config: Config, github = new GitHubClient(
       throw error;
     } finally { clearTimeout(timer); database?.unregisterReviewAbort?.(job); }
   };
+}
+
+// 规则召回只看标题、描述、文件名和新增行；上下文行和删除行会带来大量无关词。
+function recallText(job: ReviewJob, files: Array<{ filename: string; patch?: string }>) {
+  const added = files.flatMap((file) => [file.filename, ...(file.patch ?? "").split("\n").filter((line) => /^\+(?!\+\+)/.test(line))]);
+  return [job.title, job.body, ...added].join("\n");
 }
 
 export function validateMemoryReferences(result: ReviewResult, recalled: import("../memory/types.js").MemoryRecord[], repositoryId: number) {
