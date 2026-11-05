@@ -48,7 +48,7 @@ const UNSUPPORTED = new Set([
   "packages.lock.json",
 ]);
 
-function ecosystemOf(path: string): DependencyEcosystem | undefined {
+export function ecosystemOf(path: string): DependencyEcosystem | undefined {
   const name = basename(path);
   if (name === "package-lock.json" || name === "npm-shrinkwrap.json") return "npm";
   if (name === "go.mod") return "Go";

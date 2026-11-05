@@ -505,3 +505,111 @@ test("同一个问题在新提交上不再发行内评论，总评指回原评�
     await rm(source, { recursive: true, force: true });
   }
 });
+
+test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见一起发布", async () => {
+  const source = await mkdtemp(join(tmpdir(), "pi-publication-deps-"));
+  const git = async (...args: string[]) =>
+    (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
+  const lock = (version: string) =>
+    JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/lodash": { version } } }, null, 2) + "\n";
+  try {
+    await git("init", "-q");
+    await git("config", "user.name", "test");
+    await git("config", "user.email", "test@example.invalid");
+    await writeFile(join(source, "package-lock.json"), lock("4.17.21"));
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    const baseSha = await git("rev-parse", "HEAD");
+    await writeFile(join(source, "package-lock.json"), lock("4.17.20"));
+    await git("commit", "-qam", "head");
+    const headSha = await git("rev-parse", "HEAD");
+    const config = {
+      appId: "1",
+      privateKey: "",
+      allowedRepositories: new Set(["owner/test"]),
+      agentTimeoutMs: 10_000,
+      modelName: "test",
+      vulnerabilityScan: true,
+    } as Config;
+    const job = {
+      id: "job3",
+      deliveryId: "d3",
+      repositoryId: 1,
+      installationId: 1,
+      repository: "owner/test",
+      prNumber: 3,
+      cloneUrl: source,
+      baseSha,
+      headSha,
+      title: "",
+      body: "",
+      status: "running",
+    } satisfies ReviewJob;
+    let posted: { body: string; comments: Array<{ path: string; line: number; body: string }> } | undefined;
+    const github = {
+      installationToken: async () => "t",
+      getPullRequest: async () => ({ state: "open", draft: false, base: { sha: baseSha }, head: { sha: headSha } }),
+      getFiles: async () => [
+        {
+          filename: "package-lock.json",
+          status: "modified",
+          patch:
+            '@@ -2,6 +2,6 @@\n   "lockfileVersion": 3,\n   "packages": {\n     "node_modules/lodash": {\n-      "version": "4.17.21"\n+      "version": "4.17.20"\n     }\n   }',
+        },
+      ],
+      createReview: async (_t: string, _j: ReviewJob, body: string, comments: any[]) => {
+        posted = { body, comments };
+        return { id: 6, html_url: "u" };
+      },
+      getReviewCommentsForReview: async () => [],
+    } as unknown as GitHubClient;
+    const osv = {
+      audit: async () => ({
+        queried: 1,
+        missingData: [],
+        vulnerabilities: [
+          {
+            id: "GHSA-35jh-r3h4-6jhm",
+            aliases: ["CVE-2021-23337"],
+            summary: "Command Injection in lodash",
+            severity: "high" as const,
+            ecosystem: "npm" as const,
+            package: "lodash",
+            version: "4.17.20",
+            manifestPath: "package-lock.json",
+            line: 4,
+            dev: false,
+            fixedVersions: ["4.17.21"],
+            url: "https://osv.dev/vulnerability/GHSA-35jh-r3h4-6jhm",
+          },
+        ],
+      }),
+    };
+    let savedResult: any;
+    const store = {
+      saveReviewResult: async (_job: ReviewJob, result: unknown) => {
+        savedResult = result;
+      },
+      beginPublication: async () => ({ status: "pending", inserted: true }),
+      finishPublication: async () => {},
+    };
+    await createReviewProcessor(
+      config,
+      github,
+      store as unknown as PublicationStore,
+      undefined,
+      async () => ({
+        result: { summary: "", findings: [], coverage: [], limitations: [] },
+        model: "test",
+        durationMs: 1,
+        usage: emptyUsage(),
+      }),
+      osv as any,
+    )({ ...job });
+    assert.match(posted!.body, /新引入的 lodash 4\.17\.20 有已知漏洞/);
+    assert.equal(posted!.comments.length, 0, "没有 saveFindings 的存储时不绑定行内评论");
+    assert.equal(savedResult.dependencyAudit.vulnerabilities[0].id, "GHSA-35jh-r3h4-6jhm");
+  } finally {
+    await rm(source, { recursive: true, force: true });
+  }
+});

@@ -7,6 +7,36 @@ import type { Finding, ReviewResult } from "../../../src/review/types.js";
 import { displayFinding } from "../../../src/review/presentation.js";
 import { RunDetails } from "../../components/common/run-details.js";
 import { Discussions, DiscussionPaging, useDiscussions } from "./discussions.js";
+import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
+import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
+
+function DependencyChanges({ job, audit }: { job: Job; audit: NonNullable<ReviewResult["dependencyAudit"]> }) {
+  const groups = groupVulnerabilities(audit.vulnerabilities);
+  const ordered = [...groups.filter(isPriorityDependency), ...groups.filter((group) => !isPriorityDependency(group))];
+  return (
+    <section className="overview-section">
+      <div className="subhead">
+        <h3>新引入依赖的已知漏洞{groups.length ? `（${groups.length} 个依赖）` : ""}</h3>
+      </div>
+      <p className="muted">
+        {audit.manifests.join("、")} 里这次新增或换了版本的 {audit.queried} 个依赖已查询 OSV 漏洞库
+        {groups.length
+          ? "。高危以上且已能修复的会在 GitHub 上提醒，其余只在这里列出。"
+          : audit.queried
+            ? "，没有发现已知漏洞。"
+            : "，但没有查成，原因见下方审查范围与限制。"}
+      </p>
+      {ordered.length > 0 && (
+        <VulnerableDependencies
+          groups={ordered}
+          fileUrl={(path, line) =>
+            `https://github.com/${job.repository}/blob/${job.target_sha}/${path.split("/").map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`
+          }
+        />
+      )}
+    </section>
+  );
+}
 
 function SourceLocation({ job, location }: { job: Job; location: Pick<Finding, "path" | "line" | "side"> }) {
   if (!location.path) return <span>整体变更</span>;
@@ -228,6 +258,7 @@ export function ReviewDetails({ id }: { id: string }) {
           </div>
         </section>
       )}
+      {report?.dependencyAudit && <DependencyChanges job={job} audit={report.dependencyAudit} />}
       <section className="overview-section">
         <h3>后续讨论与复核</h3>
         {threads.some((item) => item.source_comment_id) && (

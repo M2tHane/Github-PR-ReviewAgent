@@ -10,6 +10,8 @@ import { diffLines, linkRepeats, normalizeFindingLocation } from "./finding.js";
 import { displayFinding } from "./presentation.js";
 import { complexityProfile, orchestrateReview, shouldOrchestrate } from "./orchestration.js";
 import { publishReview, type PublicationStore } from "./review.publisher.js";
+import { checkDependencyChanges } from "./dependency-check.js";
+import { OsvClient } from "../health/vulnerabilities.js";
 
 export function createReviewProcessor(
   config: Config,
@@ -17,6 +19,7 @@ export function createReviewProcessor(
   publications?: PublicationStore,
   memories?: MemoryService,
   execute = runAgentReview,
+  osv = new OsvClient(),
 ) {
   return async (job: ReviewJob): Promise<void> => {
     if (!config.allowedRepositories.has(job.repository.toLowerCase())) {
@@ -65,6 +68,11 @@ export function createReviewProcessor(
           const display = displayFinding(finding);
           return { id: finding.id, path: finding.path, title: display.title, reason: display.reason };
         });
+        // 和模型审查并行；锁文件没改动时不发任何请求。
+        const dependencyCheck = config.vulnerabilityScan
+          ? checkDependencyChanges(root, job.baseSha, files, osv, previous, controller.signal)
+          : Promise.resolve({ findings: [], limitations: [], audit: undefined });
+        dependencyCheck.catch(() => undefined);
         let review;
         const profile = complexityProfile(files, recalled);
         if (
@@ -114,6 +122,10 @@ export function createReviewProcessor(
         agentUsage = review.usage;
         controller.signal.throwIfAborted();
         if ((review as any).orchestration?.partial) job.status = "partial";
+        const dependencies = await dependencyCheck;
+        review.result.findings.push(...dependencies.findings);
+        review.result.limitations.push(...dependencies.limitations);
+        if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))
           review.result.limitations.push("GitHub 未提供部分文件的 patch，相关内容只能按 Workspace 源码检查。");
         const changed = new Set(files.map((file) => file.filename));
