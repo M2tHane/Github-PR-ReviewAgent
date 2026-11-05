@@ -25,6 +25,7 @@ import {
 } from "typebox";
 import { scopeMatches } from "../memory/memory.service.js";
 import { languageOf } from "../config/languages.js";
+import { surfaceKinds } from "../health/attack-surface.js";
 import type { AgentRole, ComplexityProfile, OrchestrationSummary, ReviewResult } from "./types.js";
 import type { MemoryRecord } from "../memory/types.js";
 import type { ReviewJob } from "../jobs/types.js";
@@ -71,7 +72,8 @@ function addedLines(patch = "") {
   return patch.split("\n").filter((line) => /^\+(?!\+\+)/.test(line));
 }
 
-// 只看路径和新增行里的整词，避免 maxTokens、budgetTokens 这类普通标识符误触发 Security 专项。
+// 路径、新增行里的敏感整词，或新增行碰到入口 / 危险操作（路由、SQL、命令、文件、对外请求等）时触发 Security 专项。
+// 敏感词只认整词，避免 maxTokens、budgetTokens 这类普通标识符误触发。
 export function touchesSecurity(file: { filename: string; patch?: string }) {
   if (SECURITY_DIRECTORY.test(file.filename)) return true;
   const name = file.filename
@@ -79,7 +81,9 @@ export function touchesSecurity(file: { filename: string; patch?: string }) {
     .at(-1)!
     .replace(/\.[^.]+$/, "");
   if (identifierWords(name).some((word) => SECURITY_FILE_WORDS.has(word))) return true;
-  const words = identifierWords(addedLines(file.patch).join("\n"));
+  const added = addedLines(file.patch);
+  if (added.some((line) => surfaceKinds(line.slice(1)).length)) return true;
+  const words = identifierWords(added.join("\n"));
   return words.some(
     (word, index) =>
       SECRET_WORDS.has(word) ||

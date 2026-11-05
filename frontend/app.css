@@ -1573,6 +1573,37 @@ a.stat:hover {
   color: var(--muted);
   white-space: normal;
 }
+.needs-review {
+  color: var(--should-text, var(--muted));
+  font-weight: 600;
+}
+.security-chain {
+  list-style: none;
+  margin: 0.5rem 0 0.7rem;
+  padding: 0 0 0 0.9rem;
+  border-left: 2px solid var(--line);
+  font-size: 0.85rem;
+}
+.security-chain li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  margin: 0.35rem 0;
+}
+.security-chain a {
+  overflow-wrap: anywhere;
+}
+.chain-role {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 3.5em;
+}
+.chain-sink,
+.chain-missing .chain-role {
+  color: var(--must-text, var(--must));
+}
 .secret-record {
   display: flex;
   align-items: center;

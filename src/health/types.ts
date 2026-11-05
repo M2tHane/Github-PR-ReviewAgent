@@ -91,6 +91,13 @@ export interface HealthFinding {
   impact: string;
   suggestion: string;
   references: HealthReference[];
+  // 安全审查 Agent 给出的数据链路：从入口到危险操作，中间缺了什么防护。没有入口时 evidenceLevel 为 weak，需人工确认。
+  chain?: {
+    source?: { path: string; line: number; detail: string };
+    steps: Array<{ path: string; line: number; detail: string }>;
+    sink: { path: string; line: number; detail: string };
+    missingControl: string;
+  };
 }
 export interface HealthResult {
   summary: string;
@@ -126,5 +133,11 @@ export interface HealthReport {
   dependencyAudit?: DependencyAudit;
   secretScan?: SecretScan;
   sastScan?: SastScan;
+  securityAudit?: {
+    status: "skipped" | "complete" | "failed";
+    sources: import("./attack-surface.js").SurfacePoint[];
+    sinks: import("./attack-surface.js").SurfacePoint[];
+    truncated: boolean;
+  };
   result: HealthResult;
 }

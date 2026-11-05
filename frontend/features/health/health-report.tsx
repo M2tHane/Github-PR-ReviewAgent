@@ -21,6 +21,7 @@ const healthSourceLabels: Record<string, string> = {
   vulnerabilities: "依赖漏洞",
   secrets: "密钥扫描",
   sast: "代码规则扫描",
+  security_audit: "安全链路分析",
   analysis: "分析",
 };
 function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: string, line?: number) => string }) {
@@ -52,6 +53,17 @@ function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: s
 }
 
 const sastSeverity: Record<string, string> = { high: "高", medium: "中", low: "低" };
+const surfaceLabels: Record<string, string> = {
+  http_route: "HTTP 路由",
+  webhook: "Webhook",
+  sql: "SQL",
+  command: "执行命令",
+  file: "读写文件",
+  network: "对外请求",
+  data_access: "按 ID 取数据",
+  deserialize: "反序列化",
+  code_eval: "执行代码",
+};
 function SastList({ records, fileUrl }: { records: SastRecord[]; fileUrl: (path: string, line?: number) => string }) {
   return (
     <ul className="vuln-list">
@@ -268,8 +280,52 @@ export function HealthReportView({
                         <div className="health-finding-labels">
                           <Status value={finding.severity} />
                           <span>{healthLabels[finding.dimension]}</span>
+                          {finding.chain && finding.evidenceLevel === "weak" && (
+                            <span className="needs-review">需人工确认：没追到入口</span>
+                          )}
                         </div>
                         <h5>{finding.description}</h5>
+                        {finding.chain && (
+                          <ol className="security-chain">
+                            {finding.chain.source && (
+                              <li>
+                                <span className="chain-role">入口</span>
+                                <a
+                                  href={sourceUrl(finding.chain.source.path, finding.chain.source.line)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {finding.chain.source.path}:{finding.chain.source.line}
+                                </a>
+                                <span className="muted">{finding.chain.source.detail}</span>
+                              </li>
+                            )}
+                            {finding.chain.steps.map((step, index) => (
+                              <li key={index}>
+                                <span className="chain-role">经过</span>
+                                <a href={sourceUrl(step.path, step.line)} target="_blank" rel="noreferrer">
+                                  {step.path}:{step.line}
+                                </a>
+                                <span className="muted">{step.detail}</span>
+                              </li>
+                            ))}
+                            <li>
+                              <span className="chain-role chain-sink">危险操作</span>
+                              <a
+                                href={sourceUrl(finding.chain.sink.path, finding.chain.sink.line)}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {finding.chain.sink.path}:{finding.chain.sink.line}
+                              </a>
+                              <span className="muted">{finding.chain.sink.detail}</span>
+                            </li>
+                            <li className="chain-missing">
+                              <span className="chain-role">缺少</span>
+                              {finding.chain.missingControl}
+                            </li>
+                          </ol>
+                        )}
                         <p>
                           <strong>建议：</strong>
                           {finding.suggestion}
@@ -474,6 +530,32 @@ export function HealthReportView({
                 </details>
               )}
             </details>
+            {report.securityAudit && (
+              <details className="health-evidence">
+                <summary>
+                  攻击面地图（{report.securityAudit.sources.length} 个入口 · {report.securityAudit.sinks.length}{" "}
+                  处危险操作）
+                </summary>
+                <p>
+                  {report.securityAudit.status === "skipped"
+                    ? "没有找到入口或危险操作，这次没有做安全链路分析。"
+                    : report.securityAudit.status === "failed"
+                      ? "安全链路分析没有完成或没通过校验，原因见上方。"
+                      : "按规则找到的入口和危险操作，交给安全审查 Agent 追链路；只是线索，可能有遗漏。"}
+                  {report.securityAudit.truncated && " 数量超过上限，只列出前一部分。"}
+                </p>
+                <ul>
+                  {[...report.securityAudit.sources, ...report.securityAudit.sinks].map((point) => (
+                    <li key={point.id}>
+                      {point.role === "source" ? "入口" : "危险操作"} · {surfaceLabels[point.kind] ?? point.kind} ·{" "}
+                      <a href={sourceUrl(point.path, point.line)} target="_blank" rel="noreferrer">
+                        {point.path}:{point.line}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
             <details className="health-evidence">
               <summary>CI 来源（{report.sources.length} 项）</summary>
               {!report.sources.length ? (

@@ -112,7 +112,7 @@ export class HealthRepository {
         if (active) return { kind: "duplicate" as const, job: rowToJob(active) as HealthJob };
         const spent = (
           await client.query(
-            "SELECT COALESCE(sum(COALESCE((usage->>'totalTokens')::bigint,0)+COALESCE((usage->>'unreportedTokens')::bigint,0)),0) spent FROM agent_runs WHERE job_id=$1 AND role='health_auditor'",
+            "SELECT COALESCE(sum(COALESCE((usage->>'totalTokens')::bigint,0)+COALESCE((usage->>'unreportedTokens')::bigint,0)),0) spent FROM agent_runs WHERE job_id=$1 AND role IN ('health_auditor','security_auditor')",
             [job.id],
           )
         ).rows[0].spent;
@@ -132,7 +132,10 @@ export class HealthRepository {
 
   async healthUsage(jobId: string): Promise<AgentUsage> {
     const rows = (
-      await this.pool.query("SELECT usage FROM agent_runs WHERE job_id=$1 AND role='health_auditor'", [jobId])
+      await this.pool.query(
+        "SELECT usage FROM agent_runs WHERE job_id=$1 AND role IN ('health_auditor','security_auditor')",
+        [jobId],
+      )
     ).rows;
     const usage = emptyUsage();
     for (const row of rows) addUsage(usage, row.usage);

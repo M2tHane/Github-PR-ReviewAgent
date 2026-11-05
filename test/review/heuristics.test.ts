@@ -35,6 +35,16 @@ test("Security 专项只由路径和新增行里的敏感词触发", () => {
   assert.equal(touchesSecurity({ filename: "backend/auth/Session.java" }), true);
   assert.equal(touchesSecurity({ filename: "backend/api/AuthController.java" }), true);
   assert.equal(touchesSecurity({ filename: "backend/api/AuthorController.java" }), false);
+  for (const line of [
+    'db.query("SELECT * FROM t WHERE id = " + id);',
+    'router.post("/webhook", handle);',
+    "const order = await Order.findById(req.params.id);",
+    "await fs.promises.readFile(path);",
+    "exec(`git log ${ref}`);",
+  ])
+    assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch(line) }), true, `碰到入口或危险操作：${line}`);
+  for (const line of ["const match = /a+/.exec(text);", "// db.query(old)", "const total = items.length;"])
+    assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch(line) }), false, line);
 });
 
 test("语言识别与规则 Scope 共用一份映射，覆盖常见扩展名和写法", () => {
