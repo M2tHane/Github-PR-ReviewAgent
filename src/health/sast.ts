@@ -11,14 +11,18 @@ import type { HealthMissingData, HealthScope, SastRecord, SastScan } from "./typ
 const exec = promisify(execFile);
 export const SAST_LIMITS = { files: 3000, fileBytes: 1_000_000, records: 200, timeoutMs: 90_000 };
 export const SEMGREP_RULES = fileURLToPath(new URL("../../../rules/semgrep/", import.meta.url));
-const TARGETS = /\.(?:[cm]?[jt]sx?|py|java|go)$/;
+export const SAST_TARGETS = /\.(?:[cm]?[jt]sx?|py|java|go)$/;
 const SEVERITY: Record<string, SastRecord["severity"]> = { ERROR: "high", WARNING: "medium", INFO: "low" };
 
-// 只用本服务自带的本地规则；不读仓库里的 Semgrep 配置、不联网、不上报统计。
 export async function runSemgrep(root: string, scope: HealthScope, semgrepPath: string, signal: AbortSignal) {
+  const targets = (await scopedPaths(root, scope, signal)).filter((path) => SAST_TARGETS.test(path));
+  return scanWithSemgrep(root, targets, semgrepPath, signal);
+}
+
+// 只用本服务自带的本地规则；不读仓库里的 Semgrep 配置、不联网、不上报统计。健康检查和 PR 审查共用。
+export async function scanWithSemgrep(root: string, targets: string[], semgrepPath: string, signal: AbortSignal) {
   const missingData: HealthMissingData[] = [];
   const missing = (reason: string, detail: string) => missingData.push({ source: "sast", reason, detail });
-  const targets = (await scopedPaths(root, scope, signal)).filter((path) => TARGETS.test(path));
   if (targets.length > SAST_LIMITS.files)
     missing("file_limit", `共 ${targets.length} 个源码文件，只扫描前 ${SAST_LIMITS.files} 个。`);
   const scan: SastScan = { status: "complete", scannedFiles: 0, records: [] };

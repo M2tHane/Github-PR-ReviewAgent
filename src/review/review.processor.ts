@@ -12,6 +12,7 @@ import { complexityProfile, orchestrateReview, shouldOrchestrate } from "./orche
 import { publishReview, type PublicationStore } from "./review.publisher.js";
 import { checkDependencyChanges } from "./dependency-check.js";
 import { checkAddedSecrets, redactFinding } from "./secret-check.js";
+import { scanChangedFiles, uncoveredRuleFindings } from "./rule-check.js";
 import { redactSecrets } from "../health/secrets.js";
 import { OsvClient } from "../health/vulnerabilities.js";
 
@@ -75,6 +76,10 @@ export function createReviewProcessor(
           ? checkDependencyChanges(root, job.baseSha, files, osv, previous, controller.signal)
           : Promise.resolve({ findings: [], limitations: [], audit: undefined });
         dependencyCheck.catch(() => undefined);
+        // 规则扫描的结果要交给模型确认，所以必须在模型之前跑完。
+        const rules = config.sastScan
+          ? await scanChangedFiles(root, files, config.semgrepPath, controller.signal)
+          : { hits: [], limitations: [] };
         let review;
         const profile = complexityProfile(files, recalled);
         if (
@@ -94,6 +99,7 @@ export function createReviewProcessor(
             signal: controller.signal,
             outputLanguage: repositoryConfig?.outputLanguage,
             previousFindings,
+            ruleHits: rules.hits,
           });
         } else {
           singleRunId = await database?.startAgentRun?.(
@@ -116,6 +122,7 @@ export function createReviewProcessor(
             changedFiles: files,
             memories: recalled,
             previousFindings,
+            ruleHits: rules.hits,
             outputLanguage: repositoryConfig?.outputLanguage,
             budgetTokens: repositoryConfig?.budgetTokens,
             signal: controller.signal,
@@ -128,9 +135,11 @@ export function createReviewProcessor(
         for (const finding of review.result.findings) redactFinding(finding);
         review.result.summary = redactSecrets(review.result.summary);
         review.result.findings.push(
+          ...uncoveredRuleFindings(rules.hits, review.result.findings, previous),
           ...(await checkAddedSecrets(root, files, previous, controller.signal)),
           ...dependencies.findings,
         );
+        review.result.limitations.push(...rules.limitations);
         review.result.limitations.push(...dependencies.limitations);
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))

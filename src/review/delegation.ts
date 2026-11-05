@@ -51,6 +51,7 @@ export interface DelegateContext {
   root: string;
   files: AgentReviewInput["changedFiles"];
   memories: MemoryRecord[];
+  ruleHits?: AgentReviewInput["ruleHits"];
   allowedRoles: AgentRole[];
   ledger: BudgetLedger;
   deadline: number;
@@ -123,6 +124,7 @@ export async function delegateAgent(
       headSha: context.job.headSha,
       changedFiles: selectedFiles,
       memories: selectedMemories,
+      ruleHits: context.ruleHits,
       outputLanguage: context.outputLanguage,
       budgetTokens: input.maxTokens,
       systemPrompt: roleRegistry[input.role],

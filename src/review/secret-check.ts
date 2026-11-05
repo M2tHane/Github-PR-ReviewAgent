@@ -5,7 +5,7 @@ import { SECRET_LIMITS, redactSecrets, scanSecrets } from "../health/secrets.js"
 import { displayFinding } from "./presentation.js";
 import type { Finding, StoredFinding } from "./types.js";
 
-function addedLines(patch: string | undefined) {
+export function addedLines(patch: string | undefined) {
   const lines = new Set<number>();
   let right = 0;
   for (const text of patch?.split("\n") ?? []) {

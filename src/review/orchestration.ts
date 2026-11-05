@@ -231,6 +231,7 @@ export async function orchestrateReview(
     signal: AbortSignal;
     outputLanguage?: string;
     previousFindings?: PreviousFinding[];
+    ruleHits?: AgentReviewInput["ruleHits"];
   },
   execute = delegateAgent,
   runMain = runAgentSession,
@@ -290,6 +291,7 @@ export async function orchestrateReview(
           remainingTimeMs: Math.max(1, deadline - Date.now()),
           outputLanguage: input.outputLanguage ?? "zh-CN",
           previousFindings: input.previousFindings ?? [],
+          ruleHits: input.ruleHits ?? [],
         },
         tools: [
           {
