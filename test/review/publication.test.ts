@@ -506,6 +506,8 @@ test("同一个问题在新提交上不再发行内评论，总评指回原评�
   }
 });
 
+const leakedToken = "ghp_" + "Mm1Nn2Bb3Vv4Cc5Xx6Zz7Ll8Kk9Jj0Hh1Gg2".slice(0, 36);
+
 test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见一起发布", async () => {
   const source = await mkdtemp(join(tmpdir(), "pi-publication-deps-"));
   const git = async (...args: string[]) =>
@@ -599,7 +601,23 @@ test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见�
       store as unknown as PublicationStore,
       undefined,
       async () => ({
-        result: { summary: "", findings: [], coverage: [], limitations: [] },
+        result: {
+          summary: "",
+          findings: [
+            {
+              path: "package-lock.json",
+              category: "security",
+              severity: "high",
+              evidenceLevel: "strong",
+              description: `锁文件里混进了 ${leakedToken}`,
+              evidence: leakedToken,
+              impact: "i",
+              display: { title: "锁文件里有令牌", reason: `原文 ${leakedToken}`, fix: "删掉" },
+            },
+          ],
+          coverage: [],
+          limitations: [],
+        },
         model: "test",
         durationMs: 1,
         usage: emptyUsage(),
@@ -609,6 +627,11 @@ test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见�
     assert.match(posted!.body, /新引入的 lodash 4\.17\.20 有已知漏洞/);
     assert.equal(posted!.comments.length, 0, "没有 saveFindings 的存储时不绑定行内评论");
     assert.equal(savedResult.dependencyAudit.vulnerabilities[0].id, "GHSA-35jh-r3h4-6jhm");
+    assert.ok(
+      !posted!.body.includes(leakedToken) && !JSON.stringify(savedResult).includes(leakedToken),
+      "密钥原文不发布也不保存",
+    );
+    assert.match(posted!.body, /锁文件里有令牌/);
   } finally {
     await rm(source, { recursive: true, force: true });
   }

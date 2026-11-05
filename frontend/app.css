@@ -1573,6 +1573,16 @@ a.stat:hover {
   color: var(--muted);
   white-space: normal;
 }
+.secret-record {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+}
+.secret-record a {
+  overflow-wrap: anywhere;
+}
 .vuln-ids {
   margin-top: 0.4rem;
 }

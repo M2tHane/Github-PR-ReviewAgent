@@ -1,4 +1,4 @@
-import type { DependencyAudit, HealthDimension } from "../../../src/health/types.js";
+import type { DependencyAudit, HealthDimension, SecretScan } from "../../../src/health/types.js";
 import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
 import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
 import { Status } from "../../components/common/status-badge.js";
@@ -19,8 +19,37 @@ const healthSourceLabels: Record<string, string> = {
   memory: "团队规则",
   dependencies: "依赖",
   vulnerabilities: "依赖漏洞",
+  secrets: "密钥扫描",
   analysis: "分析",
 };
+function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: string, line?: number) => string }) {
+  return (
+    <section className="health-dimension" aria-label="密钥泄露">
+      <h4>
+        密钥泄露 <span className="muted">{scan.records.length} 处</span>
+      </h4>
+      <p>
+        {scan.records.length
+          ? `扫描了 ${scan.scannedFiles} 个文件，发现 ${scan.records.length} 处疑似密钥。请先在对应平台作废并更换这些密钥，再从代码里删除；只删除代码撤销不了已经提交到 Git 历史里的内容。`
+          : `扫描了 ${scan.scannedFiles} 个文件，没有发现疑似密钥${scan.status === "incomplete" ? "；部分文件没有扫描，原因见上方" : ""}。`}
+      </p>
+      {scan.records.length > 0 && (
+        <ul className="vuln-list">
+          {scan.records.map((record) => (
+            <li className="health-finding severity-critical secret-record" key={record.id}>
+              <Status value="critical" label={record.label} />
+              <a href={fileUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+                {record.path}:{record.line}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted vuln-manifests">报告只记录位置和类型，不保存密钥原文；只扫描当前快照，不含 Git 历史。</p>
+    </section>
+  );
+}
+
 function DependencyAuditView({
   audit,
   fileUrl,
@@ -164,6 +193,7 @@ export function HealthReportView({
               </ul>
             </section>
           )}
+          {report.secretScan && <SecretScanView scan={report.secretScan} fileUrl={sourceUrl} />}
           {report.dependencyAudit && <DependencyAuditView audit={report.dependencyAudit} fileUrl={sourceUrl} />}
           {(Object.keys(healthLabels) as HealthDimension[])
             .filter((dimension) => report.result.findings.some((finding) => finding.dimension === dimension))
@@ -206,6 +236,17 @@ export function HealthReportView({
                                   <code>
                                     {reference.id} v{reference.version}
                                   </code>
+                                ) : reference.kind === "secret" ? (
+                                  (() => {
+                                    const record = report.secretScan?.records.find((item) => item.id === reference.id);
+                                    return record ? (
+                                      <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+                                        {record.label} · {record.path}:{record.line}
+                                      </a>
+                                    ) : (
+                                      <code>{reference.id}</code>
+                                    );
+                                  })()
                                 ) : reference.kind === "vulnerability" ? (
                                   <a
                                     href={`https://osv.dev/vulnerability/${encodeURIComponent(reference.id)}`}

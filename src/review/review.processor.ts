@@ -11,6 +11,8 @@ import { displayFinding } from "./presentation.js";
 import { complexityProfile, orchestrateReview, shouldOrchestrate } from "./orchestration.js";
 import { publishReview, type PublicationStore } from "./review.publisher.js";
 import { checkDependencyChanges } from "./dependency-check.js";
+import { checkAddedSecrets, redactFinding } from "./secret-check.js";
+import { redactSecrets } from "../health/secrets.js";
 import { OsvClient } from "../health/vulnerabilities.js";
 
 export function createReviewProcessor(
@@ -123,7 +125,12 @@ export function createReviewProcessor(
         controller.signal.throwIfAborted();
         if ((review as any).orchestration?.partial) job.status = "partial";
         const dependencies = await dependencyCheck;
-        review.result.findings.push(...dependencies.findings);
+        for (const finding of review.result.findings) redactFinding(finding);
+        review.result.summary = redactSecrets(review.result.summary);
+        review.result.findings.push(
+          ...(await checkAddedSecrets(root, files, previous, controller.signal)),
+          ...dependencies.findings,
+        );
         review.result.limitations.push(...dependencies.limitations);
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))

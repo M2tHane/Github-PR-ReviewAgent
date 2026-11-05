@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactSecrets } from "../health/secrets.js";
 import type { Config } from "../config/config.js";
 import { GitHubApiError, GitHubClient } from "../github/client.js";
 import type { Finding, ReviewResult, StoredFinding } from "./types.js";
@@ -93,7 +94,7 @@ export async function publishReview(
     path: finding.path!,
     line: finding.line!,
     side: finding.side!,
-    body: inlineBody(job, finding, detailsUrl),
+    body: redactSecrets(inlineBody(job, finding, detailsUrl)),
   }));
 
   // 上次发布中断（进程退出）或结果不明：先查 GitHub 上是否已有这次的 Review，有就直接记为已发布。
@@ -113,7 +114,9 @@ export async function publishReview(
   let published: PublishedReview;
   try {
     const body =
-      reviewBody(job, publishedResult, job.status === "partial", detailsUrl) + "\n\n" + reviewMarker(fingerprint);
+      redactSecrets(reviewBody(job, publishedResult, job.status === "partial", detailsUrl)) +
+      "\n\n" +
+      reviewMarker(fingerprint);
     published = await github.createReview(token, job, body, comments);
   } catch (error) {
     // 4xx：GitHub 明确拒绝，没有创建。

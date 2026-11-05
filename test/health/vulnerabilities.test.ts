@@ -375,7 +375,7 @@ test("模型只能引用服务端提供的漏洞编号，security 意见必须�
   );
   assert.throws(
     () => parseHealthResult(finding([{ kind: "code", path: "src/a.ts", line: 1, detail: "只有代码" }]), binding),
-    /必须引用服务端提供的漏洞记录/,
+    /必须引用服务端提供的漏洞或密钥记录/,
   );
 });
 

@@ -126,6 +126,8 @@ test("Health Job 独立于 PR、活动任务去重、PR 优先且报告与终态
   }
 });
 
+const fakeToken = "ghp_" + "Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp".slice(0, 36).padEnd(36, "k");
+
 test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停时取消", { skip: !fixture.url }, async () => {
   const api: any = {
     ...(await import("../../src/health/health.processor.js")),
@@ -158,6 +160,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     git("init", "--quiet");
     await mkdir(join(root, "src"));
     await writeFile(join(root, "src/a.ts"), "export const timeout = -1;\n");
+    await writeFile(join(root, "src/token.ts"), `export const token = "${fakeToken}";\n`);
     await writeFile(
       join(root, "package-lock.json"),
       JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/lodash": { version: "4.17.20" } } }, null, 2),
@@ -220,7 +223,8 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
       calls = 0,
       workspace = "";
     const budgets: number[] = [],
-      prompts: any[] = [];
+      prompts: any[] = [],
+      secretsSeen: any[] = [];
     const execute = async (input: any) => {
       calls++;
       prompts.push(input.prompt);
@@ -234,8 +238,13 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
         entered.resolve();
         await pending;
       }
-      for (const file of input.prompt.files)
-        await input.tools.find((tool: any) => tool.name === "read_file").execute("read", { path: file.path });
+      for (const file of input.prompt.files) {
+        const read = await input.tools
+          .find((tool: any) => tool.name === "read_file")
+          .execute("read", { path: file.path });
+        assert.ok(!read.content[0].text.includes(fakeToken), "交给模型的文件内容已打码");
+      }
+      secretsSeen.push(input.prompt.secrets);
       const usage = { ...emptyUsage(), input: 100, output: 50, totalTokens: 150 };
       await input.onUsage(usage);
       return {
@@ -243,7 +252,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
           mode === "invalid"
             ? "{}"
             : JSON.stringify({
-                summary: "检查到负数超时",
+                summary: `检查到负数超时，另外 token 是 ${fakeToken}`,
                 findings: [
                   {
                     dimension: "code",
@@ -302,6 +311,12 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
       { path: "package-lock.json", ecosystem: "npm", dependencies: 1 },
     ]);
     assert.equal(report.dependencyAudit?.vulnerabilities[0]?.fixedVersions[0], "4.17.21");
+    assert.deepEqual(
+      report.secretScan?.records.map((record) => `${record.path}:${record.line}:${record.label}`),
+      ["src/token.ts:1:GitHub Token"],
+    );
+    assert.equal(secretsSeen[0].provided[0].path, "src/token.ts");
+    assert.ok(!JSON.stringify(report).includes(fakeToken), "报告全文搜不到 Token 原文");
     assert.equal(report.usage.totalTokens, 150);
     assert.equal(report.usage.unreportedTokens, 4000);
     assert.equal(budgets[0], 6000);

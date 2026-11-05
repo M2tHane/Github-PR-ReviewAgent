@@ -28,7 +28,8 @@ export type HealthReference =
   | { kind: "code"; path: string; line: number; detail: string }
   | { kind: "ci"; sourceId: string; detail: string }
   | { kind: "memory"; id: string; version: number; detail: string }
-  | { kind: "vulnerability"; id: string; detail: string };
+  | { kind: "vulnerability"; id: string; detail: string }
+  | { kind: "secret"; id: string; detail: string };
 export type DependencyEcosystem = "npm" | "Go" | "crates.io" | "PyPI" | "Maven";
 export type VulnerabilitySeverity = "critical" | "high" | "medium" | "low" | "unknown";
 // 一条已知漏洞落在某个锁文件里的某个依赖版本上；全部字段来自锁文件和 OSV，不经过模型。
@@ -51,6 +52,19 @@ export interface DependencyAudit {
   manifests: Array<{ path: string; ecosystem: DependencyEcosystem; dependencies: number }>;
   queried: number;
   vulnerabilities: VulnerabilityRecord[];
+}
+// 疑似密钥只记位置和类型，不保存原文。
+export interface SecretRecord {
+  id: string;
+  rule: string;
+  label: string;
+  path: string;
+  line: number;
+}
+export interface SecretScan {
+  status: "complete" | "incomplete";
+  scannedFiles: number;
+  records: SecretRecord[];
 }
 export interface HealthFinding {
   id: string;
@@ -94,5 +108,6 @@ export interface HealthReport {
   missingData: HealthMissingData[];
   // health-v2 起才有；旧报告没有这一项。
   dependencyAudit?: DependencyAudit;
+  secretScan?: SecretScan;
   result: HealthResult;
 }
