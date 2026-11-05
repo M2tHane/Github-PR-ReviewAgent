@@ -136,21 +136,30 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
   const bySeverity = [...result.findings].sort((a, b) => rank[b.severity] - rank[a.severity]);
   const fresh = bySeverity.filter((f) => !f.repeatOf);
   const repeats = bySeverity.filter((f) => f.repeatOf);
+  const hidden = fresh.filter((f) => f.restricted),
+    shown = fresh.filter((f) => !f.restricted);
+  const adminLink = detailsUrl ? `：[到管理页查看](${detailsUrl})` : "，请到管理页查看";
   const resolved = result.resolvedPrevious ?? 0;
   const lines = ["## Pi Review", ""];
   if (fresh.length) {
     lines.push(`发现 ${fresh.length} 个${repeats.length || resolved ? "新" : ""}问题`, "");
-    for (const f of fresh)
+    for (const f of shown)
       lines.push(`- ${severityLabel[f.severity]} · ${codeLocation(job, f)} · ${safe(displayFinding(f).title)}`);
+    if (hidden.length)
+      lines.push(`- 🔴 必须改 · 发现 ${hidden.length} 个安全问题，为避免修复前公开，细节只在管理页显示${adminLink}`);
   } else if (repeats.length) lines.push("没有发现新问题");
   else lines.push(partial ? "⚠ 部分检查未完成，已检查的部分没发现问题" : "✅ 没发现需要改的问题");
   if (repeats.length) {
     lines.push("", `之前提过、仍未解决的 ${repeats.length} 个：`, "");
     for (const f of repeats)
-      lines.push(`- ${severityLabel[f.severity]} · ${previousCommentLink(job, f)} · ${safe(f.repeatOf!.title)}`);
+      lines.push(
+        f.restricted
+          ? `- ${severityLabel[f.severity]} · 安全问题，细节只在管理页显示`
+          : `- ${severityLabel[f.severity]} · ${previousCommentLink(job, f)} · ${safe(f.repeatOf!.title)}`,
+      );
   }
   if (resolved) lines.push("", `之前的 ${resolved} 个问题这次没有再发现。`);
-  const unmapped = fresh.filter((f) => !f.path || !f.line || !f.side);
+  const unmapped = shown.filter((f) => !f.path || !f.line || !f.side);
   if (unmapped.length)
     lines.push(
       "",
@@ -167,6 +176,8 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
 }
 
 export function inlineBody(job: ReviewJob, finding: Finding & { id: string }, detailsUrl?: string) {
+  if (finding.restricted)
+    return `🔴 必须改：发现安全问题，为避免修复前公开，细节只在管理页显示${detailsUrl ? `：[到管理页查看](${detailsUrl})` : "。"}`;
   const parts = [findingText(finding)];
   if (finding.memory) {
     const pr = finding.memory.source.pullRequestNumber;

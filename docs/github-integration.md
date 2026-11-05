@@ -184,6 +184,12 @@ sequenceDiagram
 
 无法可靠映射到 diff 的 finding 放入 Review summary，不猜测行号。
 
+安全相关的发布规则：
+
+- 公开仓库（或查不到可见性时）里 high / critical 的安全 finding 不发行内评论，总评只写"发现 N 个安全问题"和管理页链接，不写位置、标题和细节；完整内容只在需要 maintain / admin 权限的管理页显示。
+- PR 新引入或换了版本的依赖查到高危以上、已能修复的已知漏洞时，由服务端生成 finding；新增行里的疑似密钥同样由服务端生成，只写类型和位置。
+- 总评、行内评论和保存的结果在发布前按密钥规则打码，模型看到的 patch 和文件内容也已打码。
+
 ## 9. 新提交处理
 
 `pull_request.synchronize` 到来时：

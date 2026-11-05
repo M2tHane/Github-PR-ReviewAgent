@@ -23,6 +23,8 @@ export interface Finding {
   mergedCount?: number;
   // 与本 PR 之前某次 Review 里仍未解决的问题是同一个；不再重复发行内评论。
   repeatOf?: { id: string; commentId?: number; title: string };
+  // 公开仓库里的高危安全问题：GitHub 上只提示"请到管理页查看"，不发行内评论、不写位置和细节。
+  restricted?: boolean;
   path?: string;
   line?: number;
   side?: "LEFT" | "RIGHT";

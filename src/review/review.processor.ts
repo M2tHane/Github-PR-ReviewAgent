@@ -149,10 +149,18 @@ export function createReviewProcessor(
         const validDiffLines = diffLines(files);
         for (const location of locations) normalizeFindingLocation(location, validDiffLines);
         review.result.resolvedPrevious = linkRepeats(review.result.findings, previous);
+        // 公开仓库的 PR 评论所有人可见，修复前不能把高危安全问题的细节写出来；查不到可见性时按公开处理。
+        const privateRepository = await Promise.resolve()
+          .then(() => github.isPrivateRepository(token, job.repository))
+          .catch(() => false);
+        if (!privateRepository)
+          for (const finding of review.result.findings)
+            if (finding.category === "security" && ["high", "critical"].includes(finding.severity))
+              finding.restricted = true;
         // 和之前同一个问题的不再发行内评论，只在总评里指回原评论。
         const inline = new Set(
           review.result.findings.filter(
-            (finding) => !finding.repeatOf && normalizeFindingLocation(finding, validDiffLines),
+            (finding) => !finding.repeatOf && !finding.restricted && normalizeFindingLocation(finding, validDiffLines),
           ),
         );
         if (singleRunId) {

@@ -161,6 +161,9 @@ export function ReviewDetails({ id }: { id: string }) {
                 <SourceLocation job={job} location={finding} />
               </p>
               {thread && thread.status !== "OPEN" && <Status value={thread.status} />}
+              {finding.restricted && (
+                <p className="muted">公开仓库：GitHub 上只提示了"发现安全问题"，细节只在这里显示。</p>
+              )}
               <p>{display.reason}</p>
               <p>
                 <strong>建议：</strong>

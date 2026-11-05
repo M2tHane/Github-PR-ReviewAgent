@@ -106,6 +106,12 @@ export class GitHubClient {
     }>(token, `/repos/${repository}/pulls/${number}`);
   }
 
+  // 公开仓库里的高危安全问题不在 PR 评论里写细节；拿不准时由调用方按公开处理。
+  async isPrivateRepository(token: string, repository: string) {
+    const info = await this.request<{ private?: boolean }>(token, `/repos/${repository}`);
+    return info.private === true;
+  }
+
   async repositorySnapshot(token: string, repository: string, repositoryId: number, signal: AbortSignal) {
     signal.throwIfAborted();
     const info = await this.request<{ id: number; default_branch: string }>(token, `/repos/${repository}`, { signal });

@@ -453,6 +453,7 @@ test("同一个问题在新提交上不再发行内评论，总评指回原评�
         return { id: 5, html_url: "u" };
       },
       getReviewCommentsForReview: async () => [],
+      isPrivateRepository: async () => true,
     } as unknown as GitHubClient;
     const store = {
       getRepositoryConfig: async () => ({
@@ -564,6 +565,7 @@ test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见�
         return { id: 6, html_url: "u" };
       },
       getReviewCommentsForReview: async () => [],
+      isPrivateRepository: async () => true,
     } as unknown as GitHubClient;
     const osv = {
       audit: async () => ({
@@ -632,6 +634,125 @@ test("PR 引入有漏洞的依赖时，服务端生成的告警和模型意见�
       "密钥原文不发布也不保存",
     );
     assert.match(posted!.body, /锁文件里有令牌/);
+  } finally {
+    await rm(source, { recursive: true, force: true });
+  }
+});
+
+test("公开仓库里高危安全问题不写细节、不发行内评论，只提示到管理页查看；查不到可见性按公开处理", async () => {
+  const source = await mkdtemp(join(tmpdir(), "pi-publication-public-"));
+  const git = async (...args: string[]) =>
+    (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
+  try {
+    await git("init", "-q");
+    await git("config", "user.name", "test");
+    await git("config", "user.email", "test@example.invalid");
+    await mkdir(join(source, "src"));
+    await writeFile(join(source, "src/orders.ts"), "a\n");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    const baseSha = await git("rev-parse", "HEAD");
+    await writeFile(join(source, "src/orders.ts"), "a\nconst order = await Order.findById(req.params.id);\nlog(1)\n");
+    await git("commit", "-qam", "head");
+    const headSha = await git("rev-parse", "HEAD");
+    const config = {
+      appId: "1",
+      privateKey: "",
+      allowedRepositories: new Set(["owner/test"]),
+      agentTimeoutMs: 10_000,
+      modelName: "test",
+      githubOAuthCallbackUrl: "https://review.example.com/auth/github/callback",
+    } as Config;
+    const job = {
+      id: "job-public",
+      deliveryId: "d-public",
+      repositoryId: 1,
+      installationId: 1,
+      repository: "owner/test",
+      prNumber: 4,
+      cloneUrl: source,
+      baseSha,
+      headSha,
+      title: "",
+      body: "",
+      status: "running",
+    } satisfies ReviewJob;
+    const finding = (severity: "high" | "low", line: number, title: string): Finding => ({
+      path: "src/orders.ts",
+      line,
+      side: "RIGHT",
+      category: severity === "high" ? "security" : "maintainability",
+      severity,
+      evidenceLevel: "strong",
+      description: `${title} 的完整描述`,
+      evidence: "e",
+      impact: "i",
+      display: { title, reason: "原因细节", fix: "修复细节" },
+    });
+    const publish = async (visibility: () => Promise<boolean>) => {
+      let posted: { body: string; comments: Array<{ body: string }> } | undefined;
+      let inline: Set<Finding> | undefined;
+      const github = {
+        installationToken: async () => "t",
+        getPullRequest: async () => ({ state: "open", draft: false, base: { sha: baseSha }, head: { sha: headSha } }),
+        getFiles: async () => [
+          { filename: "src/orders.ts", status: "modified", patch: "@@ -1 +1,3 @@\n a\n+const order = x;\n+log(1)" },
+        ],
+        isPrivateRepository: visibility,
+        createReview: async (_t: string, _j: ReviewJob, body: string, comments: any[]) => {
+          posted = { body, comments };
+          return { id: 7, html_url: "u" };
+        },
+        getReviewCommentsForReview: async () => [],
+      } as unknown as GitHubClient;
+      const store = {
+        saveFindings: async (_job: ReviewJob, findings: Finding[], selected: Set<Finding>) => {
+          inline = selected;
+          return findings.map((item, index) => ({
+            ...item,
+            id: `f${index}`,
+            jobId: job.id,
+            repositoryId: 1,
+            prNumber: 4,
+            headSha,
+            fingerprint: `f${index}`,
+            status: "OPEN" as const,
+            bindingStatus: selected.has(item) ? ("pending" as const) : ("summary" as const),
+          }));
+        },
+        beginPublication: async () => ({ status: "pending", inserted: true }),
+        finishPublication: async () => {},
+        bindFindings: async () => 1,
+      };
+      await createReviewProcessor(config, github, store as unknown as PublicationStore, undefined, async () => ({
+        result: {
+          summary: "",
+          findings: [finding("high", 2, "订单接口可越权读取"), finding("low", 3, "日志太吵")],
+          coverage: [],
+          limitations: [],
+        },
+        model: "test",
+        durationMs: 1,
+        usage: emptyUsage(),
+      }))({ ...job });
+      return { posted: posted!, inline: inline! };
+    };
+
+    for (const visibility of [async () => false, async () => Promise.reject(new Error("network"))]) {
+      const { posted, inline } = await publish(visibility);
+      assert.doesNotMatch(posted.body, /订单接口可越权读取|越权|orders\.ts:2|原因细节/, "公开仓库不写细节和位置");
+      assert.match(
+        posted.body,
+        /发现 1 个安全问题，为避免修复前公开，细节只在管理页显示：\[到管理页查看\]\(https:\/\/review\.example\.com\/#reviews\/job-public\)/,
+      );
+      assert.match(posted.body, /日志太吵/, "非安全问题照常显示");
+      assert.equal(posted.comments.length, 1, "只有非安全问题发行内评论");
+      assert.doesNotMatch(posted.comments.map((comment) => comment.body).join("\n"), /越权/);
+      assert.equal([...inline].filter((item) => item.restricted).length, 0);
+    }
+    const privateRepo = await publish(async () => true);
+    assert.match(privateRepo.posted.body, /订单接口可越权读取/);
+    assert.equal(privateRepo.posted.comments.length, 2);
   } finally {
     await rm(source, { recursive: true, force: true });
   }
