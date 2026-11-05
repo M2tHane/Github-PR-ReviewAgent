@@ -22,6 +22,11 @@ const config = {
   modelProvider: process.env.MODEL_PROVIDER,
   modelName: process.env.MODEL_NAME,
   modelApiKey: process.env.MODEL_API_KEY,
+  modelEndpoint: {
+    baseUrl: process.env.MODEL_BASE_URL,
+    api: process.env.MODEL_API ?? "openai-completions",
+    thinkingLevel: process.env.MODEL_THINKING,
+  },
   agentTimeoutMs: 300_000,
 };
 const names = (await git("diff", "--name-only", baseSha, headSha)).split("\n");
@@ -165,6 +170,7 @@ for (const sample of cases.filter((sample) => !requested.length || requested.inc
                 provider: config.modelProvider,
                 modelName: config.modelName,
                 apiKey: config.modelApiKey,
+                endpoint: config.modelEndpoint,
                 timeoutMs: config.agentTimeoutMs,
                 budgetTokens: report.budgetTokens,
                 title: job.title,

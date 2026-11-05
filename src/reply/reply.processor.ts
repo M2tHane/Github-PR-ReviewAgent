@@ -114,6 +114,7 @@ async function runReplyAgent(
     provider: config.modelProvider,
     modelName: config.modelName,
     apiKey: config.modelApiKey,
+    endpoint: config.modelEndpoint,
     timeoutMs: config.agentTimeoutMs,
     budgetTokens,
     signal,

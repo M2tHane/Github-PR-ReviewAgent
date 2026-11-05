@@ -259,6 +259,7 @@ export async function orchestrateReview(
         provider: input.config.modelProvider,
         modelName: input.config.modelName,
         apiKey: input.config.modelApiKey,
+        endpoint: input.config.modelEndpoint,
         timeoutMs: Math.max(1, deadline - Date.now()),
         budgetTokens: input.budgetTokens,
         ledger,

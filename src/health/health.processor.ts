@@ -131,6 +131,7 @@ export function createHealthProcessor(
             provider: config.modelProvider,
             modelName: config.modelName,
             apiKey: config.modelApiKey,
+            endpoint: config.modelEndpoint,
             timeoutMs: Math.max(1, timeoutMs - (Date.now() - started)),
             budgetTokens: remaining,
             signal,

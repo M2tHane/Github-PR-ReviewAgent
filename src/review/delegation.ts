@@ -115,6 +115,7 @@ export async function delegateAgent(
       provider: context.config.modelProvider,
       modelName: context.config.modelName,
       apiKey: context.config.modelApiKey,
+      endpoint: context.config.modelEndpoint,
       timeoutMs: input.timeoutMs,
       title: context.job.title,
       body: `${context.job.body}\n\n专项目标：${input.objective}`,

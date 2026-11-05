@@ -10,6 +10,7 @@ import { Object as ObjectSchema, String as StringSchema } from "typebox";
 import { readWorkspaceFileHead, searchWorkspace } from "../workspace/workspace.js";
 import type { Finding, ReviewResult } from "./types.js";
 import type { MemoryRecord } from "../memory/types.js";
+import type { ModelEndpoint } from "../config/config.js";
 import { groupFindings } from "./presentation.js";
 import type { BudgetLedger } from "./delegation.js";
 
@@ -161,6 +162,7 @@ export interface AgentReviewInput {
   provider: string;
   modelName: string;
   apiKey: string;
+  endpoint?: ModelEndpoint;
   timeoutMs: number;
   title: string;
   body: string;
@@ -221,10 +223,36 @@ export function requestTokenBudget(context: unknown, remaining: number) {
   return { maxTokens, reservedTokens: inputUpperBound + maxTokens };
 }
 
+// 把配置里的自定义服务注册成 Pi provider；单次请求的输出上限仍由预算逻辑控制。
+function registerEndpoint(
+  runtime: ModelRuntime,
+  provider: string,
+  modelName: string,
+  apiKey: string,
+  endpoint: ModelEndpoint,
+) {
+  runtime.registerProvider(provider, {
+    baseUrl: endpoint.baseUrl,
+    api: endpoint.api,
+    apiKey,
+    models: [
+      {
+        id: modelName,
+        name: modelName,
+        reasoning: Boolean(endpoint.thinkingLevel && endpoint.thinkingLevel !== "off"),
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 400_000,
+        maxTokens: 128_000,
+      },
+    ],
+  });
+}
+
 export async function runAgentSession(
   input: Pick<
     AgentReviewInput,
-    "root" | "provider" | "modelName" | "apiKey" | "timeoutMs" | "budgetTokens" | "signal" | "ledger"
+    "root" | "provider" | "modelName" | "apiKey" | "endpoint" | "timeoutMs" | "budgetTokens" | "signal" | "ledger"
   > & {
     systemPrompt: string;
     prompt: object;
@@ -238,6 +266,7 @@ export async function runAgentSession(
     usage = emptyUsage(),
     budget = input.budgetTokens ?? 20_000;
   const runtime = await ModelRuntime.create({ refreshOnCreate: false });
+  if (input.endpoint?.baseUrl) registerEndpoint(runtime, input.provider, input.modelName, input.apiKey, input.endpoint);
   await runtime.setRuntimeApiKey(input.provider, input.apiKey);
   const model = runtime.getModel(input.provider, input.modelName);
   if (!model) throw new Error(`未知模型 ${input.provider}/${input.modelName}`);
@@ -247,6 +276,7 @@ export async function runAgentSession(
   const { session } = await createAgentSession({
     cwd: input.root,
     modelRuntime: runtime,
+    thinkingLevel: input.endpoint?.thinkingLevel,
     model,
     noTools: "all",
     customTools,

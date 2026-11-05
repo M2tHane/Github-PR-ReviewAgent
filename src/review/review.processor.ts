@@ -90,6 +90,7 @@ export function createReviewProcessor(
             provider: config.modelProvider,
             modelName: config.modelName,
             apiKey: config.modelApiKey,
+            endpoint: config.modelEndpoint,
             timeoutMs: config.agentTimeoutMs,
             title: job.title,
             body: job.body,

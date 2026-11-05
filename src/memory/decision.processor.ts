@@ -123,6 +123,7 @@ export function createDecisionProcessor(
           provider: config.modelProvider,
           modelName: config.modelName,
           apiKey: config.modelApiKey,
+          endpoint: config.modelEndpoint,
           timeoutMs: config.agentTimeoutMs,
           budgetTokens: repositoryConfig?.budgetTokens,
           systemPrompt: SYSTEM_PROMPT,

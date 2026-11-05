@@ -9,6 +9,7 @@ export interface Config {
   modelProvider: string;
   modelName: string;
   modelApiKey: string;
+  modelEndpoint?: ModelEndpoint;
   port: number;
   webhookMaxBytes: number;
   queueCapacity: number;
@@ -17,6 +18,27 @@ export interface Config {
   githubClientSecret?: string;
   githubOAuthCallbackUrl?: string;
   sessionSecret?: string;
+}
+
+// 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
+export interface ModelEndpoint {
+  baseUrl?: string;
+  api: "openai-completions" | "openai-responses" | "anthropic-messages";
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+}
+
+const modelApis = new Set(["openai-completions", "openai-responses", "anthropic-messages"]);
+const thinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function modelEndpoint(env: NodeJS.ProcessEnv): ModelEndpoint {
+  const baseUrl = env.MODEL_BASE_URL?.trim() || undefined;
+  const api = env.MODEL_API?.trim() || "openai-completions";
+  const thinkingLevel = env.MODEL_THINKING?.trim() || undefined;
+  if (baseUrl && !/^https?:\/\//.test(baseUrl)) throw new Error("配置 MODEL_BASE_URL 必须是 http(s) 地址");
+  if (!modelApis.has(api)) throw new Error(`配置 MODEL_API 只能是 ${[...modelApis].join(" / ")}`);
+  if (thinkingLevel && !thinkingLevels.has(thinkingLevel))
+    throw new Error(`配置 MODEL_THINKING 只能是 ${[...thinkingLevels].join(" / ")}`);
+  return { baseUrl, api: api as ModelEndpoint["api"], thinkingLevel: thinkingLevel as ModelEndpoint["thinkingLevel"] };
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -54,6 +76,7 @@ export function loadConfig(env = process.env): Config {
     modelProvider: required(env, "MODEL_PROVIDER"),
     modelName: required(env, "MODEL_NAME"),
     modelApiKey: required(env, "MODEL_API_KEY"),
+    modelEndpoint: modelEndpoint(env),
     port: positiveInt(env, "PORT", 3000),
     webhookMaxBytes: positiveInt(env, "WEBHOOK_MAX_BYTES", 1_048_576),
     queueCapacity: positiveInt(env, "QUEUE_CAPACITY", 20),

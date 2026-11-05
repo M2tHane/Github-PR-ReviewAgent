@@ -21,6 +21,11 @@ const config = {
   modelProvider: process.env.MODEL_PROVIDER,
   modelName: process.env.MODEL_NAME,
   modelApiKey: process.env.MODEL_API_KEY,
+  modelEndpoint: {
+    baseUrl: process.env.MODEL_BASE_URL,
+    api: process.env.MODEL_API ?? "openai-completions",
+    thinkingLevel: process.env.MODEL_THINKING,
+  },
   agentTimeoutMs: 300_000,
 };
 for (const key of ["MODEL_PROVIDER", "MODEL_NAME", "MODEL_API_KEY", "DATABASE_URL"])
@@ -131,6 +136,7 @@ try {
                 provider: config.modelProvider,
                 modelName: config.modelName,
                 apiKey: config.modelApiKey,
+                endpoint: config.modelEndpoint,
                 timeoutMs: config.agentTimeoutMs,
                 budgetTokens: report.budgetTokens,
                 title: job.title,
