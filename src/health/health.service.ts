@@ -16,6 +16,7 @@ import type {
   HealthResult,
   HealthScope,
   HealthSource,
+  SastRecord,
   SecretRecord,
   VulnerabilityRecord,
 } from "./types.js";
@@ -60,6 +61,7 @@ export function parseHealthResult(
     memories: MemoryRecord[];
     vulnerabilities?: VulnerabilityRecord[];
     secrets?: SecretRecord[];
+    sast?: SastRecord[];
   },
 ): HealthResult {
   if (raw.length > 60_000) throw new Error("Health 结果过长");
@@ -146,15 +148,17 @@ export function parseHealthResult(
         binding.secrets?.some((record) => record.id === ref.id)
       )
         return { kind: "secret", id: ref.id, detail };
+      if (ref.kind === "sast" && typeof ref.id === "string" && binding.sast?.some((record) => record.id === ref.id))
+        return { kind: "sast", id: ref.id, detail };
       throw new Error("Health 引用了未提供的来源或 Memory");
     });
     if (!references.some((reference) => reference.kind !== "memory"))
       throw new Error("Health finding 缺少代码或 CI 证据");
     if (
       item.dimension === "security" &&
-      !references.some((reference) => reference.kind === "vulnerability" || reference.kind === "secret")
+      !references.some((reference) => ["vulnerability", "secret", "sast"].includes(reference.kind))
     )
-      throw new Error("Health security finding 必须引用服务端提供的漏洞或密钥记录");
+      throw new Error("Health security finding 必须引用服务端提供的漏洞、密钥或规则扫描记录");
     const description = text(item.description, "description"),
       impact = text(item.impact, "impact"),
       suggestion = text(item.suggestion, "suggestion");
@@ -427,7 +431,7 @@ export function compareHealthReports(current: HealthReport, previous?: HealthRep
     ci: ["checks", "workflows", "analysis"],
     dependencies: ["files", "dependencies", "analysis"],
     documentation: ["files", "analysis"],
-    security: ["vulnerabilities", "secrets", "analysis"],
+    security: ["vulnerabilities", "secrets", "sast", "analysis"],
   };
   return {
     previousJobId: previous?.jobId,

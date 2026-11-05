@@ -20,6 +20,9 @@ export interface Config {
   sessionSecret?: string;
   // 健康检查时把锁文件里的"包名 + 版本"发给 OSV 查已知漏洞；私有仓库的内部包名也会发出去。
   vulnerabilityScan: boolean;
+  // 健康检查用本地规则跑 Semgrep；只解析代码，不构建、不运行仓库脚本。
+  sastScan: boolean;
+  semgrepPath: string;
 }
 
 // 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
@@ -96,5 +99,7 @@ export function loadConfig(env = process.env): Config {
     githubOAuthCallbackUrl: env.GITHUB_OAUTH_CALLBACK_URL?.trim() || undefined,
     sessionSecret: env.SESSION_SECRET?.trim() || undefined,
     vulnerabilityScan: flag(env, "VULNERABILITY_SCAN_ENABLED", true),
+    sastScan: flag(env, "SAST_SCAN_ENABLED", true),
+    semgrepPath: env.SEMGREP_PATH?.trim() || "semgrep",
   };
 }

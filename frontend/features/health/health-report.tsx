@@ -1,4 +1,4 @@
-import type { DependencyAudit, HealthDimension, SecretScan } from "../../../src/health/types.js";
+import type { DependencyAudit, HealthDimension, SastRecord, SastScan, SecretScan } from "../../../src/health/types.js";
 import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
 import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
 import { Status } from "../../components/common/status-badge.js";
@@ -20,6 +20,7 @@ const healthSourceLabels: Record<string, string> = {
   dependencies: "依赖",
   vulnerabilities: "依赖漏洞",
   secrets: "密钥扫描",
+  sast: "代码规则扫描",
   analysis: "分析",
 };
 function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: string, line?: number) => string }) {
@@ -46,6 +47,56 @@ function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: s
         </ul>
       )}
       <p className="muted vuln-manifests">报告只记录位置和类型，不保存密钥原文；只扫描当前快照，不含 Git 历史。</p>
+    </section>
+  );
+}
+
+const sastSeverity: Record<string, string> = { high: "高", medium: "中", low: "低" };
+function SastList({ records, fileUrl }: { records: SastRecord[]; fileUrl: (path: string, line?: number) => string }) {
+  return (
+    <ul className="vuln-list">
+      {records.map((record) => (
+        <li className={`health-finding severity-${record.severity}`} key={record.id}>
+          <div className="health-finding-labels">
+            <Status value={record.severity} label={sastSeverity[record.severity]} />
+            <span>{record.label}</span>
+          </div>
+          <p className="vuln-meta">
+            <a href={fileUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+              {record.path}:{record.line}
+            </a>
+          </p>
+          <p className="muted">{record.message}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SastScanView({ scan, fileUrl }: { scan: SastScan; fileUrl: (path: string, line?: number) => string }) {
+  const main = scan.records.filter((record) => record.severity !== "low"),
+    low = scan.records.filter((record) => record.severity === "low");
+  return (
+    <section className="health-dimension" aria-label="代码规则扫描">
+      <h4>代码规则扫描 {scan.scannedFiles > 0 && <span className="muted">{scan.records.length} 处</span>}</h4>
+      <p>
+        {scan.status === "disabled"
+          ? "代码规则扫描已关闭（SAST_SCAN_ENABLED=false）。"
+          : !scan.scannedFiles
+            ? scan.status === "incomplete"
+              ? "代码规则扫描没有完成，原因见上方。"
+              : "检查范围内没有支持的源码文件（JS/TS、Python、Java、Go）。"
+            : scan.records.length
+              ? `用 Semgrep 扫描了 ${scan.scannedFiles} 个源码文件，${scan.records.length} 处写法有风险。这些是按固定规则找到的候选，是否真能被利用要看输入来源；模型确认过的会出现在下方"安全"维度。`
+              : `用 Semgrep 扫描了 ${scan.scannedFiles} 个源码文件，没有命中危险写法${scan.status === "incomplete" ? "；部分内容没有扫描，原因见上方" : ""}。`}
+      </p>
+      {main.length > 0 && <SastList records={main} fileUrl={fileUrl} />}
+      {low.length > 0 && (
+        <details className="vuln-others">
+          <summary>其余 {low.length} 处低风险写法（如 MD5 / SHA-1，用于校验和时无需处理）</summary>
+          <SastList records={low} fileUrl={fileUrl} />
+        </details>
+      )}
     </section>
   );
 }
@@ -194,6 +245,7 @@ export function HealthReportView({
             </section>
           )}
           {report.secretScan && <SecretScanView scan={report.secretScan} fileUrl={sourceUrl} />}
+          {report.sastScan && <SastScanView scan={report.sastScan} fileUrl={sourceUrl} />}
           {report.dependencyAudit && <DependencyAuditView audit={report.dependencyAudit} fileUrl={sourceUrl} />}
           {(Object.keys(healthLabels) as HealthDimension[])
             .filter((dimension) => report.result.findings.some((finding) => finding.dimension === dimension))
@@ -236,6 +288,17 @@ export function HealthReportView({
                                   <code>
                                     {reference.id} v{reference.version}
                                   </code>
+                                ) : reference.kind === "sast" ? (
+                                  (() => {
+                                    const record = report.sastScan?.records.find((item) => item.id === reference.id);
+                                    return record ? (
+                                      <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+                                        规则扫描 · {record.label} · {record.path}:{record.line}
+                                      </a>
+                                    ) : (
+                                      <code>{reference.id}</code>
+                                    );
+                                  })()
                                 ) : reference.kind === "secret" ? (
                                   (() => {
                                     const record = report.secretScan?.records.find((item) => item.id === reference.id);

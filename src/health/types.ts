@@ -29,7 +29,8 @@ export type HealthReference =
   | { kind: "ci"; sourceId: string; detail: string }
   | { kind: "memory"; id: string; version: number; detail: string }
   | { kind: "vulnerability"; id: string; detail: string }
-  | { kind: "secret"; id: string; detail: string };
+  | { kind: "secret"; id: string; detail: string }
+  | { kind: "sast"; id: string; detail: string };
 export type DependencyEcosystem = "npm" | "Go" | "crates.io" | "PyPI" | "Maven";
 export type VulnerabilitySeverity = "critical" | "high" | "medium" | "low" | "unknown";
 // 一条已知漏洞落在某个锁文件里的某个依赖版本上；全部字段来自锁文件和 OSV，不经过模型。
@@ -65,6 +66,21 @@ export interface SecretScan {
   status: "complete" | "incomplete";
   scannedFiles: number;
   records: SecretRecord[];
+}
+// Semgrep 规则命中：只是"写法危险"的候选，不代表一定能被利用。不保存代码原文。
+export interface SastRecord {
+  id: string;
+  rule: string;
+  label: string;
+  severity: "high" | "medium" | "low";
+  path: string;
+  line: number;
+  message: string;
+}
+export interface SastScan {
+  status: "disabled" | "complete" | "incomplete";
+  scannedFiles: number;
+  records: SastRecord[];
 }
 export interface HealthFinding {
   id: string;
@@ -109,5 +125,6 @@ export interface HealthReport {
   // health-v2 起才有；旧报告没有这一项。
   dependencyAudit?: DependencyAudit;
   secretScan?: SecretScan;
+  sastScan?: SastScan;
   result: HealthResult;
 }

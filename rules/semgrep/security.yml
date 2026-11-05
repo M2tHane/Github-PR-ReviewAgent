@@ -1,0 +1,220 @@
+# 健康检查用的 Semgrep 规则，只随本服务发布、只从本地读取，不连接 Semgrep 规则市场。
+# 每条规则的 metadata.label 会显示在报告里；severity 映射为 ERROR=高、WARNING=中、INFO=低。
+rules:
+  - id: sql-string-concat
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: SQL 语句由字符串拼接或模板字符串生成，外部输入可能改变查询语义（SQL 注入）。改用参数化查询。
+    metadata: { label: SQL 拼接 }
+    patterns:
+      - pattern-either:
+          - pattern: $DB.query("..." + $X, ...)
+          - pattern: $DB.query(`...${$X}...`, ...)
+          - pattern: $DB.execute("..." + $X, ...)
+          - pattern: $DB.execute(`...${$X}...`, ...)
+          - pattern: $DB.raw("..." + $X, ...)
+          - pattern: $DB.raw(`...${$X}...`, ...)
+          - pattern: $DB.$queryRawUnsafe(...)
+          - pattern: $DB.$executeRawUnsafe(...)
+
+  - id: sql-string-format-python
+    languages: [python]
+    severity: ERROR
+    message: SQL 语句由字符串格式化生成，外部输入可能改变查询语义（SQL 注入）。改用参数化查询。
+    metadata: { label: SQL 拼接 }
+    pattern-either:
+      - pattern: $CUR.execute("..." % $X, ...)
+      - pattern: $CUR.execute("..." + $X, ...)
+      - pattern: $CUR.execute(f"...", ...)
+      - pattern: $CUR.execute("...".format(...), ...)
+      - pattern: $CUR.executemany("..." % $X, ...)
+
+  - id: sql-string-concat-java
+    languages: [java]
+    severity: ERROR
+    message: SQL 语句由字符串拼接生成，外部输入可能改变查询语义（SQL 注入）。改用 PreparedStatement 参数。
+    metadata: { label: SQL 拼接 }
+    pattern-either:
+      - pattern: (java.sql.Statement $S).executeQuery("..." + $X)
+      - pattern: (java.sql.Statement $S).execute("..." + $X)
+      - pattern: (java.sql.Statement $S).executeUpdate("..." + $X)
+      - pattern: $C.prepareStatement("..." + $X, ...)
+      - pattern: $S.createQuery("..." + $X, ...)
+      - pattern: $S.createNativeQuery("..." + $X, ...)
+
+  - id: sql-string-concat-go
+    languages: [go]
+    severity: ERROR
+    message: SQL 语句由字符串拼接或 fmt.Sprintf 生成，外部输入可能改变查询语义（SQL 注入）。改用占位符参数。
+    metadata: { label: SQL 拼接 }
+    patterns:
+      - pattern-either:
+          - pattern: $DB.$M("..." + $X, ...)
+          - pattern: $DB.$M(fmt.Sprintf(...), ...)
+      # 只看数据库查询方法，避免把普通字符串拼接也算进来。
+      - metavariable-regex: { metavariable: $M, regex: ^(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext)$ }
+
+  - id: command-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: 拼接出来的字符串被交给 shell 执行，外部输入可能注入任意命令。改用 execFile/spawn 并传参数数组。
+    metadata: { label: 命令注入 }
+    pattern-either:
+      - pattern: $CP.exec("..." + $X, ...)
+      - pattern: $CP.exec(`...${$X}...`, ...)
+      - pattern: $CP.execSync("..." + $X, ...)
+      - pattern: $CP.execSync(`...${$X}...`, ...)
+      - pattern: exec("..." + $X, ...)
+      - pattern: exec(`...${$X}...`, ...)
+      - pattern: execSync("..." + $X, ...)
+      - pattern: execSync(`...${$X}...`, ...)
+      - pattern: "$CP.spawn($CMD, $ARGS, {..., shell: true, ...})"
+
+  - id: command-injection-python
+    languages: [python]
+    severity: ERROR
+    message: 非固定字符串被交给 shell 执行，外部输入可能注入任意命令。改用参数列表并去掉 shell=True。
+    metadata: { label: 命令注入 }
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+      - pattern-not: subprocess.$F("...", ...)
+      - pattern-not: os.system("...")
+      - pattern-not: os.popen("...", ...)
+
+  - id: command-injection-java-go
+    languages: [java, go]
+    severity: ERROR
+    message: 拼接出来的字符串被当作命令执行，外部输入可能注入任意命令。改用固定命令加参数数组。
+    metadata: { label: 命令注入 }
+    pattern-either:
+      - pattern: Runtime.getRuntime().exec("..." + $X)
+      - pattern: exec.Command("sh", "-c", $X)
+      - pattern: exec.Command("bash", "-c", $X)
+
+  - id: code-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: 非固定内容被当作代码执行（eval / new Function），外部输入可能执行任意代码。
+    metadata: { label: 代码注入 }
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(..., $X)
+      - pattern-not: eval("...")
+      - pattern-not: new Function(..., "...")
+
+  - id: code-injection-python
+    languages: [python]
+    severity: ERROR
+    message: 非固定内容被当作代码执行（eval / exec），外部输入可能执行任意代码。
+    metadata: { label: 代码注入 }
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: exec($X)
+      - pattern-not: eval("...")
+      - pattern-not: exec("...")
+
+  - id: path-traversal
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: 请求参数直接用来拼文件路径，可能被 ../ 读取或写入任意文件（路径穿越）。校验并限制在固定目录内。
+    metadata: { label: 路径穿越 }
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $REQ.query
+          - pattern: $REQ.params
+          - pattern: $REQ.body
+    pattern-sinks:
+      - pattern-either:
+          - pattern: $FS.readFile($P, ...)
+          - pattern: $FS.readFileSync($P, ...)
+          - pattern: $FS.writeFile($P, ...)
+          - pattern: $FS.writeFileSync($P, ...)
+          - pattern: $FS.createReadStream($P, ...)
+          - pattern: $FS.unlink($P, ...)
+          - pattern: $RES.sendFile($P, ...)
+          - pattern: $RES.download($P, ...)
+
+  - id: path-traversal-python
+    languages: [python]
+    severity: ERROR
+    message: 请求参数直接用来拼文件路径，可能被 ../ 读取或写入任意文件（路径穿越）。校验并限制在固定目录内。
+    metadata: { label: 路径穿越 }
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: request.args.get(...)
+          - pattern: request.args[...]
+          - pattern: request.form.get(...)
+          - pattern: request.form[...]
+    pattern-sinks:
+      - pattern-either:
+          - pattern: open($P, ...)
+          - pattern: send_file($P, ...)
+          - pattern: os.remove($P)
+
+  - id: tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: 关闭了 TLS 证书校验，通信可能被中间人截获或篡改。
+    metadata: { label: 关闭 TLS 校验 }
+    pattern-either:
+      - pattern: "{..., rejectUnauthorized: false, ...}"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
+  - id: tls-verification-disabled-python
+    languages: [python]
+    severity: ERROR
+    message: 关闭了 TLS 证书校验，通信可能被中间人截获或篡改。
+    metadata: { label: 关闭 TLS 校验 }
+    pattern-either:
+      - pattern: requests.$M(..., verify=False, ...)
+      - pattern: httpx.$M(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)
+
+  - id: tls-verification-disabled-go
+    languages: [go]
+    severity: ERROR
+    message: 关闭了 TLS 证书校验，通信可能被中间人截获或篡改。
+    metadata: { label: 关闭 TLS 校验 }
+    pattern: "tls.Config{..., InsecureSkipVerify: true, ...}"
+
+  - id: weak-hash
+    languages: [javascript, typescript]
+    severity: INFO
+    message: 使用了 MD5 / SHA-1。用于校验和没问题；如果用于密码、签名或令牌，需换成 SHA-256 以上或专用的密码哈希。
+    metadata: { label: 弱哈希 }
+    pattern-either:
+      - pattern: $C.createHash("md5")
+      - pattern: $C.createHash("sha1")
+
+  - id: weak-hash-python-java-go
+    languages: [python, java, go]
+    severity: INFO
+    message: 使用了 MD5 / SHA-1。用于校验和没问题；如果用于密码、签名或令牌，需换成 SHA-256 以上或专用的密码哈希。
+    metadata: { label: 弱哈希 }
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+      - pattern: MessageDigest.getInstance("MD5")
+      - pattern: MessageDigest.getInstance("SHA-1")
+      - pattern: md5.New()
+      - pattern: sha1.New()
+
+  - id: weak-cipher
+    languages: [javascript, typescript, java]
+    severity: WARNING
+    message: 使用了已不安全的加密方式（无 IV 的 createCipher、DES、ECB 模式），密文可能被破解或推断。
+    metadata: { label: 弱加密 }
+    pattern-either:
+      - pattern: $C.createCipher(...)
+      - pattern: $C.createDecipher(...)
+      - pattern: Cipher.getInstance("DES")
+      - pattern: Cipher.getInstance("DES/...")
+      - pattern: Cipher.getInstance("AES/ECB/...")
+      - pattern: Cipher.getInstance("AES")

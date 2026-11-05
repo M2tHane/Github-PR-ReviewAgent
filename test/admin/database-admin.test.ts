@@ -135,6 +135,8 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     githubOAuthCallbackUrl: "http://127.0.0.1/callback",
     sessionSecret: "a".repeat(32),
     vulnerabilityScan: false,
+    sastScan: false,
+    semgrepPath: "semgrep",
   } satisfies Config;
   let hasAccess = true;
   const github = {

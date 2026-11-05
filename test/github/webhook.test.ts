@@ -32,6 +32,8 @@ const config: Config = {
   queueCapacity: 2,
   agentTimeoutMs: 100,
   vulnerabilityScan: false,
+  sastScan: false,
+  semgrepPath: "semgrep",
 };
 
 const payload = {
