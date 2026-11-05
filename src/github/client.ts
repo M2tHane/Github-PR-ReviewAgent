@@ -12,7 +12,21 @@ function base64url(value: string | Buffer): string {
 }
 
 export class GitHubClient {
-  constructor(private appId: string, private privateKey: string) {}
+  // 单 Worker 串行执行，一个挂住的请求会挡住后面所有任务，所以每个请求都有上限。
+  constructor(private appId: string, private privateKey: string, private requestTimeoutMs = 30_000) {}
+
+  private async fetchJson<T>(url: string, init: RequestInit, label: string, check: (response: Response) => void): Promise<T> {
+    const timeout = AbortSignal.timeout(this.requestTimeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    try {
+      const response = await fetch(url, { ...init, signal });
+      check(response);
+      return await response.json() as T;
+    } catch (error) {
+      if (timeout.aborted && !init.signal?.aborted) throw new Error(`GitHub 请求超时：${label}`, { cause: error });
+      throw error;
+    }
+  }
 
   private jwt(): string {
     const now = Math.floor(Date.now() / 1000);
@@ -23,24 +37,24 @@ export class GitHubClient {
 
   async installationToken(installationId: number, signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
-    const response = await fetch(`${api}/app/installations/${installationId}/access_tokens`, {
+    const body = await this.fetchJson<{ token?: string }>(`${api}/app/installations/${installationId}/access_tokens`, {
       method: "POST",
       signal,
       headers: { authorization: `Bearer ${this.jwt()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" },
+    }, "installation token", (response) => {
+      if (!response.ok) throw new Error(`GitHub installation 认证失败 (${response.status})`);
     });
-    if (!response.ok) throw new Error(`GitHub installation 认证失败 (${response.status})`);
-    const body = await response.json() as { token?: string };
     if (!body.token) throw new Error("GitHub installation 响应缺少 token");
     return body.token;
   }
 
   private async request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${api}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2022-11-28", ...init.headers } });
-    if (!response.ok) {
+    const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/json", "x-github-api-version": "2022-11-28", ...init.headers };
+    return this.fetchJson<T>(`${api}${path}`, { ...init, headers }, path, (response) => {
+      if (response.ok) return;
       const retryAfter = Number(response.headers.get("retry-after"));
       throw new GitHubApiError(path, response.status, Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined);
-    }
-    return await response.json() as T;
+    });
   }
 
   getPullRequest(token: string, repository: string, number: number) {
@@ -101,9 +115,13 @@ export class GitHubClient {
   }
 
   async exchangeOAuthCode(clientId: string, clientSecret: string, code: string) {
-    const response = await fetch("https://github.com/login/oauth/access_token", { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }) });
-    const body = await response.json() as { access_token?: string; error_description?: string };
-    if (!response.ok || !body.access_token) throw new Error(body.error_description ?? `GitHub OAuth 失败 (${response.status})`);
+    let status = 0;
+    const body = await this.fetchJson<{ access_token?: string; error_description?: string }>("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
+    }, "oauth", (response) => { status = response.ok ? 0 : response.status; });
+    if (status || !body.access_token) throw new Error(body.error_description ?? `GitHub OAuth 失败 (${status})`);
     return body.access_token;
   }
 
