@@ -1,6 +1,6 @@
 import type { HealthDimension } from "../../../src/health/types.js";
 import { Status } from "../../components/common/status-badge.js";
-import { dateText } from "../../format.js";
+import { dateText, numberText } from "../../format.js";
 import type { HealthDetail } from "./types.js";
 
 const healthLabels: Record<HealthDimension, string> = {
@@ -50,7 +50,7 @@ export function HealthReportView({
     <article className="health-report" id="health-detail">
       <header className="health-report-head">
         <div>
-          <p className="eyebrow">FIXED SNAPSHOT</p>
+          <p className="eyebrow">固定快照</p>
           <h3>{job.repository}</h3>
           <p>
             默认分支 {job.payload?.defaultBranch} · {dateText(report?.completedAt ?? job.created_at)}
@@ -75,7 +75,7 @@ export function HealthReportView({
               </button>
               <small>
                 {remaining > 0
-                  ? `重试沿用剩余 ${remaining.toLocaleString()} tokens。`
+                  ? `重试沿用剩余 ${numberText(remaining)} tokens。`
                   : "累计预算已耗尽，可从上方发起新的检查。"}
               </small>
             </>
@@ -191,8 +191,7 @@ export function HealthReportView({
               <div>
                 <dt>任务用量 / 预算</dt>
                 <dd>
-                  {usage.totalTokens.toLocaleString()} /{" "}
-                  {Number(job.payload?.scope?.budgetTokens ?? 0).toLocaleString()} tokens
+                  {numberText(usage.totalTokens)} / {numberText(Number(job.payload?.scope?.budgetTokens ?? 0))} tokens
                 </dd>
               </div>
               <div>
@@ -208,7 +207,7 @@ export function HealthReportView({
             </dl>
             {usage.unreportedTokens > 0 && (
               <p className="health-notice">
-                另保留 {usage.unreportedTokens.toLocaleString()} tokens 的未回报消耗，已计入本任务额度。
+                另保留 {numberText(usage.unreportedTokens)} tokens 的未回报消耗，已计入本任务额度。
               </p>
             )}
             <p className="rule-content">{report.result.summary}</p>

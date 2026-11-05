@@ -32,9 +32,7 @@ export function AppLayout({
           <span className="brand-mark" aria-hidden="true">
             π
           </span>
-          <strong>
-            Pi<span>Code review, remembered.</span>
-          </strong>
+          <strong>Pi Review</strong>
         </a>
         <nav aria-label="主导航">
           {[

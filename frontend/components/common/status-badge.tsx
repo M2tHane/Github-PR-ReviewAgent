@@ -22,10 +22,11 @@ export const statusLabels: Record<string, string> = {
   STILL_VALID: "仍需处理",
   NEEDS_CLARIFICATION: "待补充说明",
   EXCEPTION_PENDING: "例外待确认",
-  high: "高",
-  critical: "严重",
-  medium: "中",
-  low: "低",
+  // 严重度与 GitHub 评论一致，只展示三档。
+  critical: "必须改",
+  high: "必须改",
+  medium: "建议改",
+  low: "可以不改",
 };
 export function Status({ value, label }: { value: string; label?: string }) {
   return <span className={`status status-${value.toLowerCase()}`}>{label ?? statusLabels[value] ?? value}</span>;

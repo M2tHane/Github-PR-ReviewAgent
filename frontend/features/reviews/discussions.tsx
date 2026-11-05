@@ -18,8 +18,13 @@ export function Discussions({ items }: { items: any[] }) {
               <Status value={item.status} />
             </div>
             <p className="muted">
-              {item.repository} · PR #{item.pr_number} · {item.path}
-              {item.line ? ":" + item.line : ""}
+              {[
+                item.repository,
+                `PR #${item.pr_number}`,
+                item.path && `${item.path}${item.line ? ":" + item.line : ""}`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
             {item.human_reply_body && (
               <blockquote>
@@ -190,7 +195,6 @@ export function DiscussionPage({ repositories }: { repositories: Repo[] }) {
     <section>
       <div className="section-head">
         <div>
-          <p className="eyebrow">PR CONVERSATIONS</p>
           <h2>审查讨论</h2>
           <p className="muted">原问题、维护者回复与最新复核结论。</p>
         </div>

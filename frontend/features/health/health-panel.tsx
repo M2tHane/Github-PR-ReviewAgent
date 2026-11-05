@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../api/client.js";
 import { Empty } from "../../components/common/empty-state.js";
 import { Status } from "../../components/common/status-badge.js";
-import { dateText } from "../../format.js";
+import { dateText, numberText } from "../../format.js";
 import type { Job, Repository as Repo } from "../../types.js";
 import { HealthReportView, healthStatuses } from "./health-report.js";
 import type { HealthDetail } from "./types.js";
@@ -178,10 +178,9 @@ export function HealthPanel({
     <section className="health" aria-labelledby="health-title">
       <div className="section-head">
         <div>
-          <p className="eyebrow">REPOSITORY HEALTH</p>
           <h2 id="health-title">仓库健康检查</h2>
+          <p className="muted">查看需要关注的意见与未覆盖范围。</p>
         </div>
-        <p>查看需要关注的意见与未覆盖范围。</p>
       </div>
       {error && (
         <p className="alert" role="alert">
@@ -232,7 +231,7 @@ export function HealthPanel({
                   ))}
                 </select>
               </label>
-              <small>默认分支 · 最近 30 天 · 每任务 {repository?.budgetTokens.toLocaleString() ?? "—"} tokens</small>
+              <small>默认分支 · 最近 30 天 · 每任务 {numberText(repository?.budgetTokens)} tokens</small>
             </div>
             <div className="health-run-actions">
               <button disabled={busy || !repository?.enabled} aria-busy={busy} onClick={() => void run()}>

@@ -12,7 +12,6 @@ export function JobsPage({ items }: { items: Job[] }) {
     <section>
       <div className="section-head">
         <div>
-          <p className="eyebrow">OPERATIONS</p>
           <h2>系统运行记录</h2>
           <p className="muted">最近 200 次运行，默认显示需要排查的记录。</p>
         </div>

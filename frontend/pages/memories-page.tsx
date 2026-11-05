@@ -117,7 +117,6 @@ export function MemoriesPage({
         </a>
         <div className="section-head">
           <div>
-            <p className="eyebrow">EDIT TEAM RULE</p>
             <h2>编辑团队规则</h2>
             <p className="muted">
               {selected.activeVersion || selected.status === "ACTIVE"
@@ -192,13 +191,11 @@ export function MemoriesPage({
     <section className="rules">
       <div className="section-head">
         <div>
-          <p className="eyebrow">DECISIONS THAT STAY WITH YOUR TEAM</p>
           <h2 id="rules-title" tabIndex={-1}>
             团队规则
           </h2>
-          <p className="muted">记住已确认的工程决定，让后续审查有据可依。</p>
+          <p className="muted">从 PR 讨论中提炼、经维护者确认的工程决定，后续审查会据此提醒。</p>
         </div>
-        <span className="muted">来自 PR 讨论，由维护者确认</span>
       </div>
       {error && !selected && (
         <p className="alert" role="alert">

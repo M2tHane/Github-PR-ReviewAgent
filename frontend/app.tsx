@@ -68,7 +68,7 @@ function App() {
     return (
       <main className="login">
         <div className="login-card">
-          <p className="eyebrow">PI · CODE REVIEW & TEAM RULES</p>
+          <p className="eyebrow">Pi · 代码审查与团队规则</p>
           <h1>把团队决定，带进下一次 Review。</h1>
           <p>找到需要处理的问题，记住已经确认的工程约定。</p>
           {initializing ? (

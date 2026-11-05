@@ -1,3 +1,4 @@
+import { numberText } from "../../format.js";
 import { Status } from "./status-badge.js";
 
 export function RunDetails({ runs }: { runs: any[] }) {
@@ -12,23 +13,23 @@ export function RunDetails({ runs }: { runs: any[] }) {
             <div>
               <dt>模型 / 耗时</dt>
               <dd>
-                {run.model ?? "—"} · {run.duration_ms ?? "—"} ms
+                {run.model ?? "—"} · {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)} 秒` : "—"}
               </dd>
             </div>
             <div>
               <dt>用量 / 预算</dt>
               <dd>
-                {run.usage?.totalTokens ?? (run.usage_input_tokens ?? 0) + (run.usage_output_tokens ?? 0)} /{" "}
-                {run.input_budget_tokens} tokens
+                {numberText(run.usage?.totalTokens ?? (run.usage_input_tokens ?? 0) + (run.usage_output_tokens ?? 0))} /{" "}
+                {numberText(run.input_budget_tokens)} tokens
               </dd>
             </div>
           </dl>
           {run.usage?.unreportedTokens > 0 && (
-            <p className="error">未回报消耗：保留 {run.usage.unreportedTokens} tokens 额度。</p>
+            <p className="error">未回报消耗：保留 {numberText(run.usage.unreportedTokens)} tokens 额度。</p>
           )}
           {run.orchestration && (
             <p>
-              全部会话 {run.orchestration.totalUsage.totalTokens} tokens · 合并前后{" "}
+              全部会话 {numberText(run.orchestration.totalUsage.totalTokens)} tokens · 合并前后{" "}
               {run.orchestration.findingsBeforeDedup} → {run.orchestration.findingsAfterDedup}
               {run.orchestration.fallback ? " · 使用已校验专项结果汇总" : ""}
             </p>

@@ -3,7 +3,6 @@ export function SettingsPage() {
     <section>
       <div className="section-head">
         <div>
-          <p className="eyebrow">PREFERENCES & OPERATIONS</p>
           <h2>设置</h2>
           <p className="muted">调整审查方式，查看仓库健康与系统运行情况。</p>
         </div>
@@ -20,7 +19,7 @@ export function SettingsPage() {
               <h3>{title}</h3>
               <p>{description}</p>
             </div>
-            <span aria-hidden="true">↗</span>
+            <span aria-hidden="true">→</span>
           </a>
         ))}
       </div>
