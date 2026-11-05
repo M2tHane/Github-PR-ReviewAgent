@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { extname, matchesGlob } from "node:path";
+import { matchesGlob } from "node:path";
+import { languageOf, normalizeLanguage } from "../config/languages.js";
 import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
 import type { DecisionProposal, MemoryRecord } from "./types.js";
@@ -96,8 +97,8 @@ export function scopeMatches(memory: MemoryRecord, paths: string[], conditions: 
   const scope = memory.scope;
   if (scope.paths?.length && !paths.some((path) => scope.paths!.some((pattern) => matchesGlob(path, pattern)))) return false;
   if (scope.languages?.length) {
-    const languages = new Set(paths.map((path) => ({ ".js": "javascript", ".ts": "typescript", ".java": "java", ".py": "python" })[extname(path)]).filter(Boolean));
-    if (!scope.languages.some((language) => languages.has(language.toLowerCase()))) return false;
+    const languages = new Set(paths.map(languageOf).filter(Boolean));
+    if (!scope.languages.some((language) => languages.has(normalizeLanguage(language)))) return false;
   }
   if (scope.modules?.length && !paths.some((path) => scope.modules!.some((module) => path.split("/").includes(module)))) return false;
   if (scope.conditions?.length && !scope.conditions.every((condition) => conditions.includes(condition))) return false;

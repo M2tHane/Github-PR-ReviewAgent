@@ -1,8 +1,6 @@
-import { readdir, stat } from "node:fs/promises";
-import { relative } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Object as ObjectSchema, String as StringSchema } from "typebox";
-import { readWorkspaceFile } from "../workspace/workspace.js";
+import { readWorkspaceFileHead, searchWorkspace } from "../workspace/workspace.js";
 import type { Finding, ReviewResult } from "./types.js";
 import type { MemoryRecord } from "../memory/types.js";
 import { groupFindings } from "./presentation.js";
@@ -51,39 +49,25 @@ export function parseReviewResult(text: string, concise = false): ReviewResult {
   return { summary: result.summary, findings: concise ? groupFindings(findings, result.findingGroups, result.issueDisplays) : findings, coverage: result.coverage, limitations: result.limitations };
 }
 
-async function files(root: string, dir = root): Promise<string[]> {
-  const found: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    if (entry.name === ".git") continue;
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory()) found.push(...await files(root, path));
-    else if (entry.isFile() && (await stat(path)).size <= 1_000_000) found.push(relative(root, path));
-  }
-  return found;
-}
+const READ_FILE_MAX_BYTES = 64_000;
 
 export function workspaceTools(root: string): ToolDefinition[] {
   return [
     {
-      name: "read_file", label: "Read file", description: "读取当前 Workspace 内的 UTF-8 文件", parameters: ObjectSchema({ path: StringSchema() }),
+      name: "read_file", label: "Read file", description: "读取当前 Workspace 内的 UTF-8 文件；大文件只返回开头部分", parameters: ObjectSchema({ path: StringSchema() }),
       async execute(_id, { path }) {
-        try { return { content: [{ type: "text", text: await readWorkspaceFile(root, path) }], details: {} }; }
+        try {
+          const { text, truncated, totalBytes } = await readWorkspaceFileHead(root, path, READ_FILE_MAX_BYTES);
+          const note = truncated ? `\n\n[文件共 ${totalBytes} 字节，只显示前 ${READ_FILE_MAX_BYTES} 字节；请用 search_text 定位需要的内容]` : "";
+          return { content: [{ type: "text", text: text + note }], details: {} };
+        }
         catch (error) { return { content: [{ type: "text", text: error instanceof Error ? error.message : "读取失败" }], details: {}, isError: true }; }
       },
     },
     {
-      name: "search_text", label: "Search text", description: "在当前 Workspace 的小型文本文件中搜索字面文本", parameters: ObjectSchema({ query: StringSchema() }),
+      name: "search_text", label: "Search text", description: "在当前 Workspace 的文本文件中搜索字面文本，最多返回 50 行", parameters: ObjectSchema({ query: StringSchema() }),
       async execute(_id, { query }) {
-        const matches: string[] = [];
-        if (query) for (const path of await files(root)) {
-          let content: string;
-          try { content = await readWorkspaceFile(root, path); } catch { continue; }
-          for (const [index, line] of content.split("\n").entries()) if (line.includes(query)) {
-            matches.push(`${path}:${index + 1}:${line.slice(0, 300)}`);
-            if (matches.length === 50) break;
-          }
-          if (matches.length === 50) break;
-        }
+        const matches = query ? await searchWorkspace(root, query, 50) : [];
         return { content: [{ type: "text", text: matches.join("\n") || "未找到" }], details: {} };
       },
     },

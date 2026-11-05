@@ -6,20 +6,47 @@ import type { Database } from "../persistence/database.js";
 import { addUsage, DISPLAY_STYLE, emptyUsage, runAgentSession, TimeoutError, type AgentReviewInput, type AgentUsage } from "./agent.js";
 import { Array as ArraySchema, Integer, Literal, Object as ObjectSchema, Optional, String as StringSchema, Union } from "typebox";
 import { scopeMatches } from "../memory/memory.service.js";
+import { languageOf } from "../config/languages.js";
 import type { AgentRole, ComplexityProfile, OrchestrationSummary, ReviewResult } from "./types.js";
 import type { MemoryRecord } from "../memory/types.js";
 import type { ReviewJob } from "../jobs/types.js";
 
+const SECURITY_DIRECTORY = /(^|\/)(auth|security|permissions?|identity|session|oauth|crypto)(\/|$)/i;
+const SECURITY_FILE_WORDS = new Set(["auth", "authentication", "authorization", "security", "permission", "permissions", "oauth", "login", "password", "credential", "credentials", "crypto"]);
+const SECRET_WORDS = new Set(["password", "passwd", "secret", "secrets", "credential", "credentials", "jwt", "csrf", "oauth"]);
+const TOKEN_KINDS = new Set(["access", "auth", "refresh", "bearer", "session", "csrf", "api", "id"]);
+
+// 把标识符拆成小写词：getAccessToken → get access token，max_tokens → max tokens。
+function identifierWords(text: string) {
+  return text.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function addedLines(patch = "") {
+  return patch.split("\n").filter((line) => /^\+(?!\+\+)/.test(line));
+}
+
+// 只看路径和新增行里的整词，避免 maxTokens、budgetTokens 这类普通标识符误触发 Security 专项。
+export function touchesSecurity(file: { filename: string; patch?: string }) {
+  if (SECURITY_DIRECTORY.test(file.filename)) return true;
+  const name = file.filename.split("/").at(-1)!.replace(/\.[^.]+$/, "");
+  if (identifierWords(name).some((word) => SECURITY_FILE_WORDS.has(word))) return true;
+  const words = identifierWords(addedLines(file.patch).join("\n"));
+  return words.some((word, index) =>
+    SECRET_WORDS.has(word) ||
+    (word === "token" || word === "tokens") && TOKEN_KINDS.has(words[index - 1] ?? "") ||
+    word === "key" && (words[index - 1] === "api" || words[index - 1] === "private"));
+}
+
 // 选择性委派、共享预算与 partial 的理由见 .agents/decisions/multi-agent-review.md。
 export function complexityProfile(files: AgentReviewInput["changedFiles"], memories: MemoryRecord[]): ComplexityProfile {
-  const extensions: Record<string, string> = { ts: "typescript", js: "javascript", java: "java", py: "python" };
   const languages = new Set<string>(), modules = new Set<string>();
   let changedLineEstimate = 0, touchesSecurityBoundary = false;
   for (const file of files) {
-    const extension = file.filename.split(".").pop()?.toLowerCase(); if (extension && extensions[extension]) languages.add(extensions[extension]);
+    const language = languageOf(file.filename);
+    if (language) languages.add(language);
     modules.add(file.filename.split("/").slice(0, -1).slice(0, 2).join("/") || ".");
     changedLineEstimate += file.patch?.split("\n").filter((line) => /^(?:\+(?!\+\+)|-(?!--))/.test(line)).length ?? 0;
-    if (/(^|\/)(auth|security|permission|identity|session|oauth)(\/|$)|token|secret|password/i.test(file.filename + "\n" + (file.patch ?? ""))) touchesSecurityBoundary = true;
+    if (touchesSecurity(file)) touchesSecurityBoundary = true;
   }
   // ponytail: 同类规则作用域重叠只是冲突线索；由专项核对语义，不建立规则推理引擎。
   const possibleMemoryConflict = memories.some((memory, index) => memories.slice(index + 1).some((other) =>
