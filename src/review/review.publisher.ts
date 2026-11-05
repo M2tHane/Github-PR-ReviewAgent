@@ -27,6 +27,7 @@ export interface PublicationStore {
   >;
   saveReviewResult?(job: ReviewJob, result: ReviewResult): Promise<void>;
   saveFindings?(job: ReviewJob, findings: Finding[], inline: Set<Finding>): Promise<StoredFinding[]>;
+  getOpenFindings?(job: ReviewJob): Promise<StoredFinding[]>;
   bindFindings?(job: ReviewJob, reviewId: number, comments: Array<{ id: number; body: string }>): Promise<number>;
 }
 

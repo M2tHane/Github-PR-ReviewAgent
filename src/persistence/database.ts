@@ -42,6 +42,7 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly saveFindings = this.findings.saveFindings.bind(this.findings);
   readonly bindFindings = this.findings.bindFindings.bind(this.findings);
   readonly getFinding = this.findings.getFinding.bind(this.findings);
+  readonly getOpenFindings = this.findings.getOpenFindings.bind(this.findings);
   readonly getFindingByRoot = this.findings.getFindingByRoot.bind(this.findings);
   readonly acceptReply = this.replies.acceptReply.bind(this.replies);
   readonly retargetReply = this.replies.retargetReply.bind(this.replies);

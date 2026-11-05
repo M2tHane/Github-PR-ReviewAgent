@@ -21,6 +21,8 @@ export interface Finding {
   display?: import("./presentation.js").FindingDisplay;
   relatedLocations?: Array<{ path?: string; line?: number; side?: "LEFT" | "RIGHT" }>;
   mergedCount?: number;
+  // 与本 PR 之前某次 Review 里仍未解决的问题是同一个；不再重复发行内评论。
+  repeatOf?: { id: string; commentId?: number; title: string };
   path?: string;
   line?: number;
   side?: "LEFT" | "RIGHT";
@@ -85,4 +87,6 @@ export interface ReviewResult {
   findings: Finding[];
   coverage: string[];
   limitations: string[];
+  // 之前提过、这次没再出现的问题数，只用于总评展示。
+  resolvedPrevious?: number;
 }

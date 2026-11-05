@@ -56,6 +56,7 @@ export class FindingRepository {
             mergedCount: finding.mergedCount,
             memory: finding.memory,
             candidates: finding.candidates,
+            repeatOf: finding.repeatOf,
           }),
         ],
       );
@@ -86,6 +87,25 @@ export class FindingRepository {
       [job.id, reviewId],
     );
     return bound.size;
+  }
+
+  // 上一次成功 Review 里出现过（首次提出或被认作重复）、且仍未解决的已绑定问题。
+  // 只看上一次，避免更早已经消失的问题每次都被算成"这次没再发现"。
+  async getOpenFindings(job: ReviewJob) {
+    const result = await this.pool.query(
+      `WITH last AS (
+         SELECT id FROM jobs
+         WHERE job_type='PR_REVIEW' AND repository_id=$1 AND pr_number=$2 AND target_sha<>$3 AND status IN ('succeeded','partial')
+         ORDER BY created_at DESC LIMIT 1
+       ), seen AS (
+         SELECT COALESCE(presentation->'repeatOf'->>'id', id) AS id FROM review_findings WHERE job_id=(SELECT id FROM last)
+       )
+       SELECT * FROM review_findings
+       WHERE id IN (SELECT id FROM seen) AND binding_status='bound' AND status IN ('OPEN','STILL_VALID','NEEDS_CLARIFICATION')
+       ORDER BY created_at`,
+      [job.repositoryId, job.prNumber, job.headSha],
+    );
+    return result.rows.map(rowToFinding);
   }
 
   async getFinding(id: string) {

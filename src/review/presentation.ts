@@ -7,6 +7,7 @@ export interface FindingDisplay {
   fix: string;
   code?: string;
   language?: string;
+  previousFindingId?: string;
 }
 // 内部保留四级严重度，对开发者只展示三档。
 export const severityLabel = { critical: "🔴 必须改", high: "🔴 必须改", medium: "🟠 建议改", low: "🟡 可以不改" };
@@ -43,6 +44,11 @@ export function validateDisplay(value: unknown): asserts value is FindingDisplay
     throw new Error("短评代码最多 5 行 / 240 字符");
   if (d.language !== undefined && (typeof d.language !== "string" || !/^[a-zA-Z0-9_+-]{0,20}$/.test(d.language)))
     throw new Error("短评代码语言无效");
+  if (
+    d.previousFindingId !== undefined &&
+    (typeof d.previousFindingId !== "string" || d.previousFindingId.length > 100)
+  )
+    throw new Error("短评 previousFindingId 无效");
 }
 
 // 候选聚合与证据保留的边界见 .agents/decisions/multi-agent-review.md。
@@ -119,15 +125,32 @@ export function codeLocation(job: ReviewJob, f: Pick<Finding, "path" | "line" | 
   const sha = f.side === "LEFT" ? job.baseSha : job.headSha;
   return `[${name}](https://github.com/${job.repository}/blob/${sha}/${f.path.split("/").map(encodeURIComponent).join("/")}${f.line ? "#L" + f.line : ""})`;
 }
+function previousCommentLink(job: ReviewJob, f: Finding) {
+  const id = f.repeatOf?.commentId;
+  return id
+    ? `[之前的评论](https://github.com/${job.repository}/pull/${job.prNumber}#discussion_r${id})`
+    : "之前的评论";
+}
+
 export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false, detailsUrl?: string) {
-  const findings = [...result.findings].sort((a, b) => rank[b.severity] - rank[a.severity]);
+  const bySeverity = [...result.findings].sort((a, b) => rank[b.severity] - rank[a.severity]);
+  const fresh = bySeverity.filter((f) => !f.repeatOf);
+  const repeats = bySeverity.filter((f) => f.repeatOf);
+  const resolved = result.resolvedPrevious ?? 0;
   const lines = ["## Pi Review", ""];
-  if (findings.length) {
-    lines.push(`发现 ${findings.length} 个问题`, "");
-    for (const f of findings)
+  if (fresh.length) {
+    lines.push(`发现 ${fresh.length} 个${repeats.length || resolved ? "新" : ""}问题`, "");
+    for (const f of fresh)
       lines.push(`- ${severityLabel[f.severity]} · ${codeLocation(job, f)} · ${safe(displayFinding(f).title)}`);
-  } else lines.push(partial ? "⚠ 部分检查未完成，已检查的部分没发现问题" : "✅ 没发现需要改的问题");
-  const unmapped = findings.filter((f) => !f.path || !f.line || !f.side);
+  } else if (repeats.length) lines.push("没有发现新问题");
+  else lines.push(partial ? "⚠ 部分检查未完成，已检查的部分没发现问题" : "✅ 没发现需要改的问题");
+  if (repeats.length) {
+    lines.push("", `之前提过、仍未解决的 ${repeats.length} 个：`, "");
+    for (const f of repeats)
+      lines.push(`- ${severityLabel[f.severity]} · ${previousCommentLink(job, f)} · ${safe(f.repeatOf!.title)}`);
+  }
+  if (resolved) lines.push("", `之前的 ${resolved} 个问题这次没有再发现。`);
+  const unmapped = fresh.filter((f) => !f.path || !f.line || !f.side);
   if (unmapped.length)
     lines.push(
       "",
@@ -138,7 +161,7 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
       "",
       "</details>",
     );
-  if (partial && findings.length) lines.push("", "⚠ 部分检查未完成，结果可能不全");
+  if (partial && (fresh.length || repeats.length)) lines.push("", "⚠ 部分检查未完成，结果可能不全");
   lines.push("", "仅静态审查，未运行测试" + (detailsUrl ? ` · [查看详情](${detailsUrl})` : ""));
   return lines.join("\n");
 }

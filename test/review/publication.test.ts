@@ -359,3 +359,149 @@ test("发布结果不明时先查 GitHub：已创建就记为已发布，确认�
   assert.equal(fresh.lists, 0, "首次发布不额外查询 GitHub");
   assert.equal(fresh.posts, 1);
 });
+
+test("同一个问题在新提交上不再发行内评论，总评指回原评论", async () => {
+  const source = await mkdtemp(join(tmpdir(), "pi-repeat-test-"));
+  const git = async (...args: string[]) =>
+    (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
+  try {
+    await git("init", "-q");
+    await git("config", "user.name", "test");
+    await git("config", "user.email", "test@example.invalid");
+    await mkdir(join(source, "src"));
+    await writeFile(join(source, "src/a.ts"), "a\n");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    const baseSha = await git("rev-parse", "HEAD");
+    await writeFile(join(source, "src/a.ts"), "a\nlog(token)\nnew bug\n");
+    await git("commit", "-qam", "head");
+    const headSha = await git("rev-parse", "HEAD");
+    const config = {
+      appId: "1",
+      privateKey: "",
+      allowedRepositories: new Set(["owner/test"]),
+      agentTimeoutMs: 10_000,
+      modelName: "test",
+    } as Config;
+    const job = {
+      id: "job2",
+      deliveryId: "d2",
+      repositoryId: 1,
+      installationId: 1,
+      repository: "owner/test",
+      prNumber: 2,
+      cloneUrl: source,
+      baseSha,
+      headSha,
+      title: "",
+      body: "",
+      status: "running",
+    } satisfies ReviewJob;
+    const old = {
+      path: "src/a.ts",
+      line: 2,
+      side: "RIGHT",
+      category: "security",
+      severity: "high",
+      evidenceLevel: "strong",
+      description: "token logged",
+      evidence: "log",
+      impact: "leak",
+      id: "finding_old",
+      jobId: "job1",
+      repositoryId: 1,
+      prNumber: 2,
+      headSha: "old",
+      fingerprint: "old",
+      status: "OPEN",
+      githubCommentId: 41,
+      bindingStatus: "bound",
+      display: { title: "令牌写进日志", reason: "r", fix: "f" },
+    } satisfies StoredFinding;
+    const base = {
+      side: "RIGHT",
+      category: "security",
+      severity: "high",
+      evidenceLevel: "strong",
+      evidence: "e",
+      impact: "i",
+      path: "src/a.ts",
+    } as const;
+    const repeat: Finding = {
+      ...base,
+      line: 2,
+      description: "still logs token",
+      display: { title: "日志里仍有令牌", reason: "r", fix: "f", previousFindingId: "finding_old" },
+    };
+    const fresh: Finding = {
+      ...base,
+      line: 3,
+      description: "new bug",
+      display: { title: "新问题", reason: "r", fix: "f" },
+    };
+    let saved: { findings: Finding[]; inline: Set<Finding> } | undefined,
+      posted: { body: string; comments: unknown[] } | undefined,
+      seenPrevious: unknown;
+    const github = {
+      installationToken: async () => "t",
+      getPullRequest: async () => ({ state: "open", draft: false, base: { sha: baseSha }, head: { sha: headSha } }),
+      getFiles: async () => [
+        { filename: "src/a.ts", status: "modified", patch: "@@ -1 +1,3 @@\n a\n+log(token)\n+new bug" },
+      ],
+      createReview: async (_t: string, _j: ReviewJob, body: string, comments: unknown[]) => {
+        posted = { body, comments };
+        return { id: 5, html_url: "u" };
+      },
+      getReviewCommentsForReview: async () => [],
+    } as unknown as GitHubClient;
+    const store = {
+      getRepositoryConfig: async () => ({
+        enabled: true,
+        includePaths: [],
+        excludePaths: [],
+        outputLanguage: "zh-CN",
+        budgetTokens: 1000,
+        reviewMode: "single" as const,
+        maxDelegates: 0,
+      }),
+      getOpenFindings: async () => [old],
+      saveFindings: async (_job: ReviewJob, findings: Finding[], inline: Set<Finding>) => {
+        saved = { findings, inline };
+        return findings.map((finding, index) => ({
+          ...finding,
+          id: `f${index}`,
+          jobId: job.id,
+          repositoryId: 1,
+          prNumber: 2,
+          headSha,
+          fingerprint: `f${index}`,
+          status: "OPEN" as const,
+          bindingStatus: inline.has(finding) ? ("pending" as const) : ("summary" as const),
+        }));
+      },
+      beginPublication: async () => ({ status: "pending", inserted: true }),
+      finishPublication: async () => {},
+      bindFindings: async () => 1,
+    };
+    await createReviewProcessor(config, github, store, undefined, async (input) => {
+      seenPrevious = input.previousFindings;
+      return {
+        result: { summary: "", findings: [repeat, fresh], coverage: [], limitations: [] },
+        model: "test",
+        durationMs: 1,
+        usage: emptyUsage(),
+      };
+    })({ ...job });
+    assert.deepEqual(seenPrevious, [{ id: "finding_old", path: "src/a.ts", title: "令牌写进日志", reason: "r" }]);
+    assert.equal(saved!.inline.size, 1);
+    assert(saved!.inline.has(fresh));
+    assert.equal(posted!.comments.length, 1, "只给新问题发行内评论");
+    assert.match(posted!.body, /发现 1 个新问题/);
+    assert.match(
+      posted!.body,
+      /\[之前的评论\]\(https:\/\/github\.com\/owner\/test\/pull\/2#discussion_r41\) · 令牌写进日志/,
+    );
+  } finally {
+    await rm(source, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { Finding } from "./types.js";
+import type { Finding, StoredFinding } from "./types.js";
+import { displayFinding } from "./presentation.js";
 import type { ReviewJob } from "../jobs/types.js";
 
 export function diffLines(files: Array<{ filename: string; patch?: string }>) {
@@ -56,4 +57,19 @@ export function findingIdentity(job: ReviewJob, finding: Finding, occurrence = 0
     )
     .digest("hex");
   return { id: `finding_${fingerprint.slice(0, 24)}`, fingerprint };
+}
+
+// 把模型标出的"和之前同一个问题"落到 finding 上；返回之前的问题里这次没再出现的数量。
+// 只接受同一文件里、尚未被别的问题认领的旧问题，对不上就当新问题照常发布。
+export function linkRepeats(findings: Finding[], previous: StoredFinding[]) {
+  const byId = new Map(previous.map((finding) => [finding.id, finding]));
+  const used = new Set<string>();
+  for (const finding of findings) {
+    const id = finding.display?.previousFindingId;
+    const prior = id ? byId.get(id) : undefined;
+    if (!id || !prior || used.has(id) || prior.path !== finding.path) continue;
+    used.add(id);
+    finding.repeatOf = { id, commentId: prior.githubCommentId, title: displayFinding(prior).title };
+  }
+  return previous.length - used.size;
 }

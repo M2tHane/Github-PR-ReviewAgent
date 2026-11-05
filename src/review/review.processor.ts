@@ -6,7 +6,8 @@ import type { ReviewJob } from "../jobs/types.js";
 import type { ReviewResult } from "./types.js";
 import type { MemoryService } from "../memory/memory.service.js";
 import { matchesGlob } from "node:path";
-import { diffLines, normalizeFindingLocation } from "./finding.js";
+import { diffLines, linkRepeats, normalizeFindingLocation } from "./finding.js";
+import { displayFinding } from "./presentation.js";
 import { complexityProfile, orchestrateReview, shouldOrchestrate } from "./orchestration.js";
 import { publishReview, type PublicationStore } from "./review.publisher.js";
 
@@ -59,6 +60,11 @@ export function createReviewProcessor(
             paths: files.map((file) => file.filename),
             text: recallText(job, files),
           })) ?? [];
+        const previous = (await publications?.getOpenFindings?.(job)) ?? [];
+        const previousFindings = previous.map((finding) => {
+          const display = displayFinding(finding);
+          return { id: finding.id, path: finding.path, title: display.title, reason: display.reason };
+        });
         let review;
         const profile = complexityProfile(files, recalled);
         if (
@@ -77,6 +83,7 @@ export function createReviewProcessor(
             maxDelegates: repositoryConfig?.maxDelegates ?? 2,
             signal: controller.signal,
             outputLanguage: repositoryConfig?.outputLanguage,
+            previousFindings,
           });
         } else {
           singleRunId = await database?.startAgentRun?.(
@@ -98,6 +105,7 @@ export function createReviewProcessor(
             headSha: job.headSha,
             changedFiles: files,
             memories: recalled,
+            previousFindings,
             outputLanguage: repositoryConfig?.outputLanguage,
             budgetTokens: repositoryConfig?.budgetTokens,
             signal: controller.signal,
@@ -121,8 +129,12 @@ export function createReviewProcessor(
         validateMemoryReferences(review.result, recalled, job.repositoryId);
         const validDiffLines = diffLines(files);
         for (const location of locations) normalizeFindingLocation(location, validDiffLines);
+        review.result.resolvedPrevious = linkRepeats(review.result.findings, previous);
+        // 和之前同一个问题的不再发行内评论，只在总评里指回原评论。
         const inline = new Set(
-          review.result.findings.filter((finding) => normalizeFindingLocation(finding, validDiffLines)),
+          review.result.findings.filter(
+            (finding) => !finding.repeatOf && normalizeFindingLocation(finding, validDiffLines),
+          ),
         );
         if (singleRunId) {
           await database!.finishAgentRun(singleRunId, {
