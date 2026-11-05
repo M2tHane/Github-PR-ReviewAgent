@@ -21,7 +21,10 @@ export function createApplication() {
   const extract = createDecisionProcessor(config, database);
   const reply = createReplyProcessor(config, database, memories);
   const health = createHealthProcessor(config, database, memories);
-  const runner = new PersistentRunner(database, createJobDispatcher({ PR_REVIEW: review, DECISION_EXTRACT: extract, REPLY_HANDLE: reply, HEALTH_AUDIT: health }));
+  const runner = new PersistentRunner(
+    database,
+    createJobDispatcher({ PR_REVIEW: review, DECISION_EXTRACT: extract, REPLY_HANDLE: reply, HEALTH_AUDIT: health }),
+  );
   const { server } = createApp(config, database, createAdminHandler(config, database));
   const scheduleAbort = new AbortController();
   const github = new GitHubClient(config.appId, config.privateKey);
@@ -31,8 +34,12 @@ export function createApplication() {
   const pollSchedules = () => {
     if (scheduling || scheduleAbort.signal.aborted) return;
     scheduling = enqueueDueHealthJobs(config, database, github, scheduleAbort.signal)
-      .catch(() => { if (!scheduleAbort.signal.aborted) console.error(JSON.stringify({ event: "health_schedule_poll_failed" })); })
-      .finally(() => { scheduling = undefined; });
+      .catch(() => {
+        if (!scheduleAbort.signal.aborted) console.error(JSON.stringify({ event: "health_schedule_poll_failed" }));
+      })
+      .finally(() => {
+        scheduling = undefined;
+      });
   };
 
   return {

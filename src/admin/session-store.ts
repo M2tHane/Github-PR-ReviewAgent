@@ -1,10 +1,18 @@
 export class ExpiringStore<T> {
   private values = new Map<string, { value: T; expiresAt: number; timer: ReturnType<typeof setTimeout> }>();
-  constructor(private ttlMs: number, private capacity: number) {}
-  get size() { return this.values.size; }
+  constructor(
+    private ttlMs: number,
+    private capacity: number,
+  ) {}
+  get size() {
+    return this.values.size;
+  }
   get(key: string): T | undefined {
     const entry = this.values.get(key);
-    if (entry && entry.expiresAt <= Date.now()) { this.delete(key); return undefined; }
+    if (entry && entry.expiresAt <= Date.now()) {
+      this.delete(key);
+      return undefined;
+    }
     return entry?.value;
   }
   set(key: string, value: T): boolean {

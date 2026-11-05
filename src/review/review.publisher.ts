@@ -7,10 +7,24 @@ import type { AgentUsage } from "./agent.js";
 import { inlineBody, reviewBody } from "./presentation.js";
 
 export interface PublicationStore {
-  beginPublication(job: ReviewJob, fingerprint: string): Promise<{ status: string; github_review_id?: string; github_review_url?: string; inserted?: boolean }>;
+  beginPublication(
+    job: ReviewJob,
+    fingerprint: string,
+  ): Promise<{ status: string; github_review_id?: string; github_review_url?: string; inserted?: boolean }>;
   finishPublication(job: ReviewJob, status: "published" | "failed" | "uncertain"): Promise<void>;
   isRepositoryEnabled?(repositoryId: number): Promise<boolean>;
-  getRepositoryConfig?(repositoryId: number): Promise<{ enabled: boolean; includePaths: string[]; excludePaths: string[]; outputLanguage: string; budgetTokens: number; reviewMode?: "single" | "auto"; maxDelegates?: number } | undefined>;
+  getRepositoryConfig?(repositoryId: number): Promise<
+    | {
+        enabled: boolean;
+        includePaths: string[];
+        excludePaths: string[];
+        outputLanguage: string;
+        budgetTokens: number;
+        reviewMode?: "single" | "auto";
+        maxDelegates?: number;
+      }
+    | undefined
+  >;
   saveReviewResult?(job: ReviewJob, result: ReviewResult): Promise<void>;
   saveFindings?(job: ReviewJob, findings: Finding[], inline: Set<Finding>): Promise<StoredFinding[]>;
   bindFindings?(job: ReviewJob, reviewId: number, comments: Array<{ id: number; body: string }>): Promise<number>;
@@ -21,7 +35,12 @@ type PublishedReview = { id: number; html_url: string };
 // 总评末尾的隐藏标记，用于在 GitHub 上认出本服务为同一 PR/head 发过的 Review。
 const reviewMarker = (fingerprint: string) => `<!-- pi-review:${fingerprint} -->`;
 
-async function findPublishedReview(github: GitHubClient, token: string, job: ReviewJob, fingerprint: string): Promise<PublishedReview | undefined> {
+async function findPublishedReview(
+  github: GitHubClient,
+  token: string,
+  job: ReviewJob,
+  fingerprint: string,
+): Promise<PublishedReview | undefined> {
   const reviews = await github.getReviews(token, job.repository, job.prNumber);
   return reviews.find((review) => review.commit_id === job.headSha && review.body?.includes(reviewMarker(fingerprint)));
 }
@@ -31,24 +50,50 @@ async function markUncertain(publications: PublicationStore | undefined, job: Re
   await publications?.finishPublication(job, "uncertain");
 }
 
-export async function publishReview(config: Config, github: GitHubClient, publications: PublicationStore | undefined, job: ReviewJob, token: string, controller: AbortController, review: { result: ReviewResult; model: string; durationMs: number; usage: AgentUsage }, stored: StoredFinding[], publishedResult: ReviewResult) {
-  const detailsUrl = config.githubOAuthCallbackUrl ? new URL(config.githubOAuthCallbackUrl).origin + "/#reviews/" + job.id : undefined;
+export async function publishReview(
+  config: Config,
+  github: GitHubClient,
+  publications: PublicationStore | undefined,
+  job: ReviewJob,
+  token: string,
+  controller: AbortController,
+  review: { result: ReviewResult; model: string; durationMs: number; usage: AgentUsage },
+  stored: StoredFinding[],
+  publishedResult: ReviewResult,
+) {
+  const detailsUrl = config.githubOAuthCallbackUrl
+    ? new URL(config.githubOAuthCallbackUrl).origin + "/#reviews/" + job.id
+    : undefined;
   const current = await github.getPullRequest(token, job.repository, job.prNumber);
   controller.signal.throwIfAborted();
-  if (current.state !== "open" || current.draft || current.head.sha !== job.headSha || !config.allowedRepositories.has(job.repository.toLowerCase()) || publications?.isRepositoryEnabled && !await publications.isRepositoryEnabled(job.repositoryId)) {
+  if (
+    current.state !== "open" ||
+    current.draft ||
+    current.head.sha !== job.headSha ||
+    !config.allowedRepositories.has(job.repository.toLowerCase()) ||
+    (publications?.isRepositoryEnabled && !(await publications.isRepositoryEnabled(job.repositoryId)))
+  ) {
     job.status = "superseded";
     return;
   }
-  const fingerprint = createHash("sha256").update(`${job.repositoryId}:${job.prNumber}:${job.headSha}:COMMENT`).digest("hex");
+  const fingerprint = createHash("sha256")
+    .update(`${job.repositoryId}:${job.prNumber}:${job.headSha}:COMMENT`)
+    .digest("hex");
   const prior = await publications?.beginPublication(job, fingerprint);
   if (prior?.status === "published") {
     job.reviewId = Number(prior.github_review_id);
     job.reviewUrl = prior.github_review_url;
     return;
   }
-  const pending = stored.filter((finding) => finding.bindingStatus === "pending" && finding.path && finding.line && finding.side);
-  const comments = [...new Map(pending.map((finding) => [finding.id, finding])).values()]
-    .map((finding) => ({ path: finding.path!, line: finding.line!, side: finding.side!, body: inlineBody(job, finding, detailsUrl) }));
+  const pending = stored.filter(
+    (finding) => finding.bindingStatus === "pending" && finding.path && finding.line && finding.side,
+  );
+  const comments = [...new Map(pending.map((finding) => [finding.id, finding])).values()].map((finding) => ({
+    path: finding.path!,
+    line: finding.line!,
+    side: finding.side!,
+    body: inlineBody(job, finding, detailsUrl),
+  }));
 
   // 上次发布中断（进程退出）或结果不明：先查 GitHub 上是否已有这次的 Review，有就直接记为已发布。
   if (prior?.inserted === false && (prior.status === "pending" || prior.status === "uncertain")) {
@@ -66,7 +111,8 @@ export async function publishReview(config: Config, github: GitHubClient, public
   controller.signal.throwIfAborted();
   let published: PublishedReview;
   try {
-    const body = reviewBody(job, publishedResult, job.status === "partial", detailsUrl) + "\n\n" + reviewMarker(fingerprint);
+    const body =
+      reviewBody(job, publishedResult, job.status === "partial", detailsUrl) + "\n\n" + reviewMarker(fingerprint);
     published = await github.createReview(token, job, body, comments);
   } catch (error) {
     // 4xx：GitHub 明确拒绝，没有创建。
@@ -93,7 +139,15 @@ export async function publishReview(config: Config, github: GitHubClient, public
   await recordPublished(github, publications, job, token, published, comments.length, review);
 }
 
-async function recordPublished(github: GitHubClient, publications: PublicationStore | undefined, job: ReviewJob, token: string, published: PublishedReview, commentCount: number, review: { model: string; durationMs: number; usage: AgentUsage }) {
+async function recordPublished(
+  github: GitHubClient,
+  publications: PublicationStore | undefined,
+  job: ReviewJob,
+  token: string,
+  published: PublishedReview,
+  commentCount: number,
+  review: { model: string; durationMs: number; usage: AgentUsage },
+) {
   job.reviewId = published.id;
   job.reviewUrl = published.html_url;
   await publications?.finishPublication(job, "published");
@@ -101,11 +155,27 @@ async function recordPublished(github: GitHubClient, publications: PublicationSt
     try {
       const reviewComments = await github.getReviewCommentsForReview(token, job.repository, job.prNumber, published.id);
       const bound = await publications.bindFindings(job, published.id, reviewComments);
-      if (bound !== commentCount) console.error(JSON.stringify({ event: "finding_binding_incomplete", jobId: job.id, expected: commentCount, bound }));
+      if (bound !== commentCount)
+        console.error(
+          JSON.stringify({ event: "finding_binding_incomplete", jobId: job.id, expected: commentCount, bound }),
+        );
     } catch {
       await publications.bindFindings(job, published.id, []).catch(() => undefined);
       console.error(JSON.stringify({ event: "finding_binding_incomplete", jobId: job.id, reviewId: published.id }));
     }
   }
-  console.info(JSON.stringify({ event: "review_published", jobId: job.id, deliveryId: job.deliveryId, repositoryId: job.repositoryId, prNumber: job.prNumber, headSha: job.headSha, reviewId: job.reviewId, model: review.model, durationMs: review.durationMs, usage: review.usage }));
+  console.info(
+    JSON.stringify({
+      event: "review_published",
+      jobId: job.id,
+      deliveryId: job.deliveryId,
+      repositoryId: job.repositoryId,
+      prNumber: job.prNumber,
+      headSha: job.headSha,
+      reviewId: job.reviewId,
+      model: review.model,
+      durationMs: review.durationMs,
+      usage: review.usage,
+    }),
+  );
 }

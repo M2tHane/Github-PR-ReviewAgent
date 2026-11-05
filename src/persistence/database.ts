@@ -23,9 +23,15 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly health = new HealthRepository(this.pool, () => this.isStopping());
   private readonly memories = new MemoryRepository(this.pool);
 
-  constructor(url: string) { super(new Pool({ connectionString: url, max: 5, connectionTimeoutMillis: 3000 })); }
-  async close() { await this.pool.end(); }
-  async check() { await this.pool.query("SELECT 1"); }
+  constructor(url: string) {
+    super(new Pool({ connectionString: url, max: 5, connectionTimeoutMillis: 3000 }));
+  }
+  async close() {
+    await this.pool.end();
+  }
+  async check() {
+    await this.pool.query("SELECT 1");
+  }
   migrate = (directory?: string) => migrate(this.pool, directory);
   readonly isRepositoryEnabled = this.repositories.isRepositoryEnabled.bind(this.repositories);
   readonly setHealthSchedule = this.repositories.setHealthSchedule.bind(this.repositories);

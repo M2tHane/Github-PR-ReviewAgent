@@ -4,8 +4,31 @@ import { diffLines, findingIdentity, normalizeFindingLocation } from "../../src/
 import type { Finding } from "../../src/review/types.js";
 import type { ReviewJob } from "../../src/jobs/types.js";
 
-const job = { id: "job", deliveryId: "delivery", installationId: 1, repositoryId: 2, repository: "owner/repo", cloneUrl: "url", prNumber: 3, title: "", body: "", baseSha: "base", headSha: "head", status: "running" } satisfies ReviewJob;
-const finding = { path: "src/a.ts", line: 11, side: "RIGHT", category: "correctness", severity: "high", evidenceLevel: "strong", description: "Null dereference", evidence: "x is null", impact: "crash" } satisfies Finding;
+const job = {
+  id: "job",
+  deliveryId: "delivery",
+  installationId: 1,
+  repositoryId: 2,
+  repository: "owner/repo",
+  cloneUrl: "url",
+  prNumber: 3,
+  title: "",
+  body: "",
+  baseSha: "base",
+  headSha: "head",
+  status: "running",
+} satisfies ReviewJob;
+const finding = {
+  path: "src/a.ts",
+  line: 11,
+  side: "RIGHT",
+  category: "correctness",
+  severity: "high",
+  evidenceLevel: "strong",
+  description: "Null dereference",
+  evidence: "x is null",
+  impact: "crash",
+} satisfies Finding;
 
 test("diff 行映射只接受真实 LEFT/RIGHT 行", () => {
   const lines = diffLines([{ filename: "src/a.ts", patch: "@@ -10,2 +10,3 @@\n same\n-old\n+new\n+more" }]);

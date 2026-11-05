@@ -32,11 +32,19 @@ function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): nu
 }
 
 export function loadConfig(env = process.env): Config {
-  const repositories = required(env, "GITHUB_ALLOWED_REPOSITORIES").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
-  if (!repositories.every((x) => /^[^/\s]+\/[^/\s]+$/.test(x))) throw new Error("配置 GITHUB_ALLOWED_REPOSITORIES 格式错误");
+  const repositories = required(env, "GITHUB_ALLOWED_REPOSITORIES")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+  if (!repositories.every((x) => /^[^/\s]+\/[^/\s]+$/.test(x)))
+    throw new Error("配置 GITHUB_ALLOWED_REPOSITORIES 格式错误");
   const privateKeyPath = required(env, "GITHUB_PRIVATE_KEY_PATH");
   let privateKey: string;
-  try { privateKey = readFileSync(privateKeyPath, "utf8"); } catch { throw new Error("无法读取 GITHUB_PRIVATE_KEY_PATH"); }
+  try {
+    privateKey = readFileSync(privateKeyPath, "utf8");
+  } catch {
+    throw new Error("无法读取 GITHUB_PRIVATE_KEY_PATH");
+  }
   return {
     appId: required(env, "GITHUB_APP_ID"),
     privateKey,

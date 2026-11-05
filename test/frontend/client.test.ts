@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { api, setCsrf } from "../../frontend/api/client.js";
 
-test("admin API preserves JSON, CSRF, error and abort behavior", async t => {
+test("admin API preserves JSON, CSRF, error and abort behavior", async (t) => {
   const requests: { path: string; init: RequestInit }[] = [];
   t.mock.method(globalThis, "fetch", async (path: string, init: RequestInit) => {
     requests.push({ path, init });

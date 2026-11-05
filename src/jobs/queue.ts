@@ -8,15 +8,21 @@ export class JobQueue {
   private succeeded = new Set<string>();
   private running = false;
 
-  constructor(private capacity: number, private execute: (job: ReviewJob) => Promise<void>) {}
+  constructor(
+    private capacity: number,
+    private execute: (job: ReviewJob) => Promise<void>,
+  ) {}
 
   enqueue(input: Omit<ReviewJob, "id" | "status">): { kind: "accepted" | "duplicate" | "full"; job?: ReviewJob } {
     const prior = this.deliveries.get(input.deliveryId);
-    if (prior && this.jobs.get(prior)?.status !== "failed" && this.jobs.get(prior)?.status !== "timeout") return { kind: "duplicate", job: this.jobs.get(prior) };
+    if (prior && this.jobs.get(prior)?.status !== "failed" && this.jobs.get(prior)?.status !== "timeout")
+      return { kind: "duplicate", job: this.jobs.get(prior) };
     const key = `${input.repositoryId}:${input.prNumber}:${input.headSha}`;
     if (this.succeeded.has(key)) return { kind: "duplicate" };
     if (this.pending.length + Number(this.running) >= this.capacity) return { kind: "full" };
-    for (const job of this.pending) if (job.repositoryId === input.repositoryId && job.prNumber === input.prNumber && job.headSha !== input.headSha) job.status = "superseded";
+    for (const job of this.pending)
+      if (job.repositoryId === input.repositoryId && job.prNumber === input.prNumber && job.headSha !== input.headSha)
+        job.status = "superseded";
     this.pending = this.pending.filter((job) => job.status !== "superseded");
     const job: ReviewJob = { ...input, id: randomUUID(), status: "queued" };
     this.jobs.set(job.id, job);
@@ -31,7 +37,7 @@ export class JobQueue {
     if (this.running) return;
     this.running = true;
     try {
-      for (let job; (job = this.pending.shift());) {
+      for (let job; (job = this.pending.shift()); ) {
         if (job.status === "superseded") continue;
         job.status = "running";
         try {
@@ -43,10 +49,23 @@ export class JobQueue {
         } catch (error) {
           if (job.status === "running") job.status = "failed";
           job.error = error instanceof Error ? error.message : "未知错误";
-          console.error(JSON.stringify({ event: "job_failed", jobId: job.id, deliveryId: job.deliveryId, repositoryId: job.repositoryId, prNumber: job.prNumber, headSha: job.headSha, status: job.status, error: job.error }));
+          console.error(
+            JSON.stringify({
+              event: "job_failed",
+              jobId: job.id,
+              deliveryId: job.deliveryId,
+              repositoryId: job.repositoryId,
+              prNumber: job.prNumber,
+              headSha: job.headSha,
+              status: job.status,
+              error: job.error,
+            }),
+          );
         }
       }
-    } finally { this.running = false; }
+    } finally {
+      this.running = false;
+    }
   }
 
   private trim() {

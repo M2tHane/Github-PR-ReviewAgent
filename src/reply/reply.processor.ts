@@ -14,30 +14,117 @@ summary 用一句大白话说明当前结论，不超过60字，尽量不写类�
 
 const REPLY_TEXT_LIMIT = 100;
 const conclusions = new Set(["FIXED", "MISJUDGMENT", "VALID_EXCEPTION", "STILL_VALID", "NEEDS_CLARIFICATION"]);
-const statuses = { FIXED: "FIXED", MISJUDGMENT: "WITHDRAWN", VALID_EXCEPTION: "EXCEPTION_PENDING", STILL_VALID: "STILL_VALID", NEEDS_CLARIFICATION: "NEEDS_CLARIFICATION" } as const;
+const statuses = {
+  FIXED: "FIXED",
+  MISJUDGMENT: "WITHDRAWN",
+  VALID_EXCEPTION: "EXCEPTION_PENDING",
+  STILL_VALID: "STILL_VALID",
+  NEEDS_CLARIFICATION: "NEEDS_CLARIFICATION",
+} as const;
 
-export function parseReplyResult(text: string, binding: { finding: StoredFinding; headSha: string; paths: Set<string>; memories: MemoryRecord[] }): ReplyResult {
+export function parseReplyResult(
+  text: string,
+  binding: { finding: StoredFinding; headSha: string; paths: Set<string>; memories: MemoryRecord[] },
+): ReplyResult {
   if (text.length > 50_000) throw new Error("ReplyResult 输出超过预算");
   let value: any;
-  try { value = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); } catch { throw new Error("ReplyResult 不是合法 JSON"); }
-  if (!value || typeof value !== "object" || value.findingId !== binding.finding.id || value.analysisHeadSha !== binding.headSha || !conclusions.has(value.conclusion) || value.suggestedFindingStatus !== statuses[value.conclusion as keyof typeof statuses] || typeof value.summary !== "string" || !value.summary.trim() || !Array.isArray(value.evidence) || !value.evidence.length || !Array.isArray(value.memoryReferences) || !Array.isArray(value.limitations) || !value.limitations.every((x: unknown) => typeof x === "string")) throw new Error("ReplyResult 结构或绑定无效");
-  for (const evidence of value.evidence) if (!evidence || typeof evidence.detail !== "string" || !evidence.detail.trim() || (evidence.path !== undefined && (typeof evidence.path !== "string" || evidence.path.startsWith("/") || evidence.path.split("/").includes(".."))) || (evidence.line !== undefined && (!evidence.path || !Number.isSafeInteger(evidence.line) || evidence.line <= 0))) throw new Error("ReplyResult 代码证据无效");
+  try {
+    value = JSON.parse(
+      text
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, ""),
+    );
+  } catch {
+    throw new Error("ReplyResult 不是合法 JSON");
+  }
+  if (
+    !value ||
+    typeof value !== "object" ||
+    value.findingId !== binding.finding.id ||
+    value.analysisHeadSha !== binding.headSha ||
+    !conclusions.has(value.conclusion) ||
+    value.suggestedFindingStatus !== statuses[value.conclusion as keyof typeof statuses] ||
+    typeof value.summary !== "string" ||
+    !value.summary.trim() ||
+    !Array.isArray(value.evidence) ||
+    !value.evidence.length ||
+    !Array.isArray(value.memoryReferences) ||
+    !Array.isArray(value.limitations) ||
+    !value.limitations.every((x: unknown) => typeof x === "string")
+  )
+    throw new Error("ReplyResult 结构或绑定无效");
+  for (const evidence of value.evidence)
+    if (
+      !evidence ||
+      typeof evidence.detail !== "string" ||
+      !evidence.detail.trim() ||
+      (evidence.path !== undefined &&
+        (typeof evidence.path !== "string" ||
+          evidence.path.startsWith("/") ||
+          evidence.path.split("/").includes(".."))) ||
+      (evidence.line !== undefined && (!evidence.path || !Number.isSafeInteger(evidence.line) || evidence.line <= 0))
+    )
+      throw new Error("ReplyResult 代码证据无效");
   const allowed = new Set(binding.memories.map((memory) => `${memory.id}:${memory.version}`));
-  if (!value.memoryReferences.every((memory: any) => memory && typeof memory.id === "string" && Number.isSafeInteger(memory.version) && allowed.has(`${memory.id}:${memory.version}`))) throw new Error("ReplyResult Memory 引用无效");
-  if (value.conclusion === "NEEDS_CLARIFICATION" && (typeof value.clarificationQuestion !== "string" || !value.clarificationQuestion.trim())) throw new Error("ReplyResult 缺少澄清问题");
+  if (
+    !value.memoryReferences.every(
+      (memory: any) =>
+        memory &&
+        typeof memory.id === "string" &&
+        Number.isSafeInteger(memory.version) &&
+        allowed.has(`${memory.id}:${memory.version}`),
+    )
+  )
+    throw new Error("ReplyResult Memory 引用无效");
+  if (
+    value.conclusion === "NEEDS_CLARIFICATION" &&
+    (typeof value.clarificationQuestion !== "string" || !value.clarificationQuestion.trim())
+  )
+    throw new Error("ReplyResult 缺少澄清问题");
   // 回复会原样发到 GitHub，超长视为不合格而不是截断成半句话；Prompt 要求 60 字，这里留余量。
   for (const text of [value.summary, value.clarificationQuestion]) {
-    if (typeof text === "string" && [...text.trim()].length > REPLY_TEXT_LIMIT) throw new Error(`ReplyResult 回复超过 ${REPLY_TEXT_LIMIT} 字`);
+    if (typeof text === "string" && [...text.trim()].length > REPLY_TEXT_LIMIT)
+      throw new Error(`ReplyResult 回复超过 ${REPLY_TEXT_LIMIT} 字`);
   }
   if (value.conclusion === "VALID_EXCEPTION" && !value.decisionClue) throw new Error("ReplyResult 缺少 decision clue");
-  if (value.decisionClue !== undefined && (!value.decisionClue || !new Set(["possible_exception", "possible_rule_change", "implementation_rationale"]).has(value.decisionClue.type) || typeof value.decisionClue.summary !== "string" || !value.decisionClue.summary.trim())) throw new Error("ReplyResult decision clue 无效");
+  if (
+    value.decisionClue !== undefined &&
+    (!value.decisionClue ||
+      !new Set(["possible_exception", "possible_rule_change", "implementation_rationale"]).has(
+        value.decisionClue.type,
+      ) ||
+      typeof value.decisionClue.summary !== "string" ||
+      !value.decisionClue.summary.trim())
+  )
+    throw new Error("ReplyResult decision clue 无效");
   return value as ReplyResult;
 }
 
-async function runReplyAgent(config: Config, root: string, input: object, binding: Parameters<typeof parseReplyResult>[1], budgetTokens: number, signal: AbortSignal) {
-  const run = await runAgentSession({ root, provider: config.modelProvider, modelName: config.modelName, apiKey: config.modelApiKey, timeoutMs: config.agentTimeoutMs, budgetTokens, signal, systemPrompt: SYSTEM_PROMPT, prompt: input });
-  try { return { ...run, result: parseReplyResult(run.text, binding) }; }
-  catch (error) { throw Object.assign(error as Error, { usage: run.usage, model: run.model }); }
+async function runReplyAgent(
+  config: Config,
+  root: string,
+  input: object,
+  binding: Parameters<typeof parseReplyResult>[1],
+  budgetTokens: number,
+  signal: AbortSignal,
+) {
+  const run = await runAgentSession({
+    root,
+    provider: config.modelProvider,
+    modelName: config.modelName,
+    apiKey: config.modelApiKey,
+    timeoutMs: config.agentTimeoutMs,
+    budgetTokens,
+    signal,
+    systemPrompt: SYSTEM_PROMPT,
+    prompt: input,
+  });
+  try {
+    return { ...run, result: parseReplyResult(run.text, binding) };
+  } catch (error) {
+    throw Object.assign(error as Error, { usage: run.usage, model: run.model });
+  }
 }
 
 export function replyBody(result: ReplyResult, detailsUrl?: string) {
@@ -53,61 +140,189 @@ export function replyBody(result: ReplyResult, detailsUrl?: string) {
   return `${labels[result.conclusion]}：${text}${details}\n\n<!-- pi-reply-source -->`;
 }
 
-export function createReplyProcessor(config: Config, database: Database, memories: MemoryService, github = new GitHubClient(config.appId, config.privateKey), execute = runReplyAgent) {
+export function createReplyProcessor(
+  config: Config,
+  database: Database,
+  memories: MemoryService,
+  github = new GitHubClient(config.appId, config.privateKey),
+  execute = runReplyAgent,
+) {
   return async (job: ReviewJob) => {
     if (!job.findingId || !job.sourceCommentId || !job.rootCommentId) throw new Error("Reply Job 输入无效");
-    if (!config.allowedRepositories.has(job.repository.toLowerCase())) { job.status = "cancelled"; return; }
+    if (!config.allowedRepositories.has(job.repository.toLowerCase())) {
+      job.status = "cancelled";
+      return;
+    }
     const prior = await database.getReplyPublication(job.sourceCommentId);
     if (prior?.status === "published") return;
-    if (prior?.status === "uncertain") { job.status = "uncertain"; throw new Error("GitHub thread reply 发布结果待核对"); }
+    if (prior?.status === "uncertain") {
+      job.status = "uncertain";
+      throw new Error("GitHub thread reply 发布结果待核对");
+    }
     const finding = await database.getFinding(job.findingId);
-    if (!finding || finding.repositoryId !== job.repositoryId || finding.prNumber !== job.prNumber || finding.githubCommentId !== job.rootCommentId) throw new Error("Reply finding 绑定无效");
-    if (job.humanReplyCreatedAt && await database.isOlderReply(job.findingId, job.sourceCommentId, job.humanReplyCreatedAt)) { job.status = "superseded"; return; }
+    if (
+      !finding ||
+      finding.repositoryId !== job.repositoryId ||
+      finding.prNumber !== job.prNumber ||
+      finding.githubCommentId !== job.rootCommentId
+    )
+      throw new Error("Reply finding 绑定无效");
+    if (
+      job.humanReplyCreatedAt &&
+      (await database.isOlderReply(job.findingId, job.sourceCommentId, job.humanReplyCreatedAt))
+    ) {
+      job.status = "superseded";
+      return;
+    }
     const token = await github.installationToken(job.installationId);
     const current = await github.getPullRequest(token, job.repository, job.prNumber);
-    if (current.state !== "open" || current.draft || !await database.isRepositoryEnabled(job.repositoryId)) { job.status = "cancelled"; return; }
+    if (current.state !== "open" || current.draft || !(await database.isRepositoryEnabled(job.repositoryId))) {
+      job.status = "cancelled";
+      return;
+    }
     await database.retargetReply(job, current.base.sha, current.head.sha);
     const repositoryConfig = await database.getRepositoryConfig(job.repositoryId);
-    const [files, thread] = await Promise.all([github.getFiles(token, job.repository, job.prNumber), github.getReviewComments(token, job.repository, job.prNumber)]);
-    const relevantMemories = (await Promise.all([finding.memory ? memories.get(job.repositoryId, finding.memory.id) : undefined, memories.retrieve(job.repositoryId, { paths: files.map((file) => file.filename), text: `${finding.description} ${job.humanReplyBody ?? ""}` })])).flat().filter((memory): memory is MemoryRecord => Boolean(memory)).filter((memory, index, all) => all.findIndex((item) => item.id === memory.id && item.version === memory.version) === index);
-    let result: ReplyResult | undefined, publishing = false, runId: string | undefined, agentUsage: AgentUsage | undefined;
+    const [files, thread] = await Promise.all([
+      github.getFiles(token, job.repository, job.prNumber),
+      github.getReviewComments(token, job.repository, job.prNumber),
+    ]);
+    const relevantMemories = (
+      await Promise.all([
+        finding.memory ? memories.get(job.repositoryId, finding.memory.id) : undefined,
+        memories.retrieve(job.repositoryId, {
+          paths: files.map((file) => file.filename),
+          text: `${finding.description} ${job.humanReplyBody ?? ""}`,
+        }),
+      ])
+    )
+      .flat()
+      .filter((memory): memory is MemoryRecord => Boolean(memory))
+      .filter(
+        (memory, index, all) =>
+          all.findIndex((item) => item.id === memory.id && item.version === memory.version) === index,
+      );
+    let result: ReplyResult | undefined,
+      publishing = false,
+      runId: string | undefined,
+      agentUsage: AgentUsage | undefined;
     const controller = new AbortController();
     database.registerReviewAbort(job, controller);
     try {
       await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-        const binding = { finding, headSha: job.headSha, paths: new Set(files.map((file) => file.filename)), memories: relevantMemories };
+        const binding = {
+          finding,
+          headSha: job.headSha,
+          paths: new Set(files.map((file) => file.filename)),
+          memories: relevantMemories,
+        };
         controller.signal.throwIfAborted();
-        runId = await database.startAgentRun(job.id, "reply_handler", repositoryConfig?.budgetTokens ?? 20_000, config.agentTimeoutMs);
-        const run = await execute(config, root, { task: "复核人类对 inline finding 的回复", finding, humanReply: { id: job.sourceCommentId, author: job.humanActorLogin, body: job.humanReplyBody }, thread: thread.filter((comment) => comment.id === job.rootCommentId || comment.in_reply_to_id === job.rootCommentId).sort((a, b) => a.created_at.localeCompare(b.created_at)), currentPullRequest: { baseSha: job.baseSha, headSha: job.headSha }, changedFiles: files, relevantMemories }, binding, repositoryConfig?.budgetTokens ?? 20_000, controller.signal);
+        runId = await database.startAgentRun(
+          job.id,
+          "reply_handler",
+          repositoryConfig?.budgetTokens ?? 20_000,
+          config.agentTimeoutMs,
+        );
+        const run = await execute(
+          config,
+          root,
+          {
+            task: "复核人类对 inline finding 的回复",
+            finding,
+            humanReply: { id: job.sourceCommentId, author: job.humanActorLogin, body: job.humanReplyBody },
+            thread: thread
+              .filter((comment) => comment.id === job.rootCommentId || comment.in_reply_to_id === job.rootCommentId)
+              .sort((a, b) => a.created_at.localeCompare(b.created_at)),
+            currentPullRequest: { baseSha: job.baseSha, headSha: job.headSha },
+            changedFiles: files,
+            relevantMemories,
+          },
+          binding,
+          repositoryConfig?.budgetTokens ?? 20_000,
+          controller.signal,
+        );
         result = run.result;
         agentUsage = run.usage;
         for (const evidence of result.evidence) if (evidence.path) await readWorkspaceFile(root, evidence.path);
-        await database.finishAgentRun(runId, { status: "succeeded", model: run.model, usage: run.usage, limitations: result.limitations });
+        await database.finishAgentRun(runId, {
+          status: "succeeded",
+          model: run.model,
+          usage: run.usage,
+          limitations: result.limitations,
+        });
         runId = undefined;
       });
       controller.signal.throwIfAborted();
       const latest = await github.getPullRequest(token, job.repository, job.prNumber);
-      if (latest.state !== "open" || latest.draft || !config.allowedRepositories.has(job.repository.toLowerCase()) || !await database.isRepositoryEnabled(job.repositoryId)) { job.status = "cancelled"; return; }
-      if (latest.head.sha !== job.headSha) { await database.requeueReply(job, latest.base.sha, latest.head.sha); return; }
+      if (
+        latest.state !== "open" ||
+        latest.draft ||
+        !config.allowedRepositories.has(job.repository.toLowerCase()) ||
+        !(await database.isRepositoryEnabled(job.repositoryId))
+      ) {
+        job.status = "cancelled";
+        return;
+      }
+      if (latest.head.sha !== job.headSha) {
+        await database.requeueReply(job, latest.base.sha, latest.head.sha);
+        return;
+      }
       controller.signal.throwIfAborted();
       publishing = true;
-      const published = await github.replyToReviewComment(token, job.repository, job.prNumber, job.rootCommentId, replyBody(result!, config.githubOAuthCallbackUrl ? new URL(config.githubOAuthCallbackUrl).origin + "/#reviews/" + finding.jobId : undefined));
+      const published = await github.replyToReviewComment(
+        token,
+        job.repository,
+        job.prNumber,
+        job.rootCommentId,
+        replyBody(
+          result!,
+          config.githubOAuthCallbackUrl
+            ? new URL(config.githubOAuthCallbackUrl).origin + "/#reviews/" + finding.jobId
+            : undefined,
+        ),
+      );
       await database.finishReply(job, result!, published);
-      console.info(JSON.stringify({ event: "reply_published", jobId: job.id, findingId: finding.id, sourceCommentId: job.sourceCommentId, conclusion: result!.conclusion, replyCommentId: published.id, analysisHeadSha: result!.analysisHeadSha }));
+      console.info(
+        JSON.stringify({
+          event: "reply_published",
+          jobId: job.id,
+          findingId: finding.id,
+          sourceCommentId: job.sourceCommentId,
+          conclusion: result!.conclusion,
+          replyCommentId: published.id,
+          analysisHeadSha: result!.analysisHeadSha,
+        }),
+      );
     } catch (error) {
-      if (runId) await database.finishAgentRun(runId, { status: controller.signal.aborted ? "cancelled" : error instanceof TimeoutError ? "timeout" : "failed", model: config.modelName, usage: (error as { usage?: AgentUsage })?.usage ?? agentUsage, error: error instanceof Error ? error.message : String(error) });
+      if (runId)
+        await database.finishAgentRun(runId, {
+          status: controller.signal.aborted ? "cancelled" : error instanceof TimeoutError ? "timeout" : "failed",
+          model: config.modelName,
+          usage: (error as { usage?: AgentUsage })?.usage ?? agentUsage,
+          error: error instanceof Error ? error.message : String(error),
+        });
       if (controller.signal.reason === "superseded") {
         const latest = await github.getPullRequest(token, job.repository, job.prNumber);
-        if (latest.state === "open" && !latest.draft && config.allowedRepositories.has(job.repository.toLowerCase()) && await database.isRepositoryEnabled(job.repositoryId)) await database.requeueReply(job, latest.base.sha, latest.head.sha);
+        if (
+          latest.state === "open" &&
+          !latest.draft &&
+          config.allowedRepositories.has(job.repository.toLowerCase()) &&
+          (await database.isRepositoryEnabled(job.repositoryId))
+        )
+          await database.requeueReply(job, latest.base.sha, latest.head.sha);
         else job.status = "cancelled";
         return;
       }
-      if (controller.signal.reason === "cancelled") { job.status = "cancelled"; return; }
+      if (controller.signal.reason === "cancelled") {
+        job.status = "cancelled";
+        return;
+      }
       const uncertain = publishing && !(error instanceof GitHubApiError);
       await database.markReplyPublication(job, uncertain ? "uncertain" : "failed", result);
       if (uncertain) job.status = "uncertain";
       else if (error instanceof TimeoutError) job.status = "timeout";
       throw error;
-    } finally { database.unregisterReviewAbort(job); }
+    } finally {
+      database.unregisterReviewAbort(job);
+    }
   };
 }

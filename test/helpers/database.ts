@@ -14,13 +14,25 @@ export function useTestDatabase() {
     url.searchParams.set("options", `-c search_path=${schema}`);
     databaseUrl = url.toString();
     const isolated = new Database(databaseUrl);
-    try { await isolated.migrate(); } finally { await isolated.close(); }
+    try {
+      await isolated.migrate();
+    } finally {
+      await isolated.close();
+    }
   });
   after(async () => {
     if (!control) return;
-    try { await control.pool.query(`DROP SCHEMA "${schema}" CASCADE`); } finally { await control.close(); }
+    try {
+      await control.pool.query(`DROP SCHEMA "${schema}" CASCADE`);
+    } finally {
+      await control.close();
+    }
   });
-  return { get url() { return databaseUrl; } };
+  return {
+    get url() {
+      return databaseUrl;
+    },
+  };
 }
 
 export async function waitFor(check: () => Promise<boolean>, timeoutMs = 5000) {

@@ -1,7 +1,19 @@
-export type FindingCategory = "correctness" | "security" | "architecture" | "maintainability" | "team_rule" | "memory_conflict";
+export type FindingCategory =
+  | "correctness"
+  | "security"
+  | "architecture"
+  | "maintainability"
+  | "team_rule"
+  | "memory_conflict";
 export type FindingSeverity = "low" | "medium" | "high" | "critical";
 export type EvidenceLevel = "weak" | "moderate" | "strong";
-export type FindingStatus = "OPEN" | "NEEDS_CLARIFICATION" | "STILL_VALID" | "FIXED" | "WITHDRAWN" | "EXCEPTION_PENDING";
+export type FindingStatus =
+  | "OPEN"
+  | "NEEDS_CLARIFICATION"
+  | "STILL_VALID"
+  | "FIXED"
+  | "WITHDRAWN"
+  | "EXCEPTION_PENDING";
 
 export interface Finding {
   candidates?: Finding[];
@@ -19,7 +31,12 @@ export interface Finding {
   evidence: string;
   impact: string;
   suggestion?: string;
-  memory?: { id: string; version: number; title?: string; source: { pullRequestNumber?: number; commentIds?: number[] } };
+  memory?: {
+    id: string;
+    version: number;
+    title?: string;
+    source: { pullRequestNumber?: number; commentIds?: number[] };
+  };
 }
 
 export interface StoredFinding extends Finding {
@@ -35,9 +52,33 @@ export interface StoredFinding extends Finding {
   bindingStatus: "pending" | "bound" | "summary" | "incomplete";
 }
 
-export type AgentRole = "general_review" | "java_reviewer" | "security_reviewer" | "architecture_reviewer" | "memory_conflict_reviewer";
-export interface ComplexityProfile { changedFileCount: number; changedLineEstimate: number; languages: string[]; modules: string[]; touchesSecurityBoundary: boolean; activeMemoryCount: number; possibleMemoryConflict: boolean }
-export interface OrchestrationSummary { mode: "single" | "orchestrated"; rolesRun: string[]; rolesFailed: string[]; totalDurationMs: number; totalUsage: import("./agent.js").AgentUsage; parentUsage: import("./agent.js").AgentUsage; findingsBeforeDedup: number; findingsAfterDedup: number; partial: boolean; fallback?: "validated_children" }
+export type AgentRole =
+  | "general_review"
+  | "java_reviewer"
+  | "security_reviewer"
+  | "architecture_reviewer"
+  | "memory_conflict_reviewer";
+export interface ComplexityProfile {
+  changedFileCount: number;
+  changedLineEstimate: number;
+  languages: string[];
+  modules: string[];
+  touchesSecurityBoundary: boolean;
+  activeMemoryCount: number;
+  possibleMemoryConflict: boolean;
+}
+export interface OrchestrationSummary {
+  mode: "single" | "orchestrated";
+  rolesRun: string[];
+  rolesFailed: string[];
+  totalDurationMs: number;
+  totalUsage: import("./agent.js").AgentUsage;
+  parentUsage: import("./agent.js").AgentUsage;
+  findingsBeforeDedup: number;
+  findingsAfterDedup: number;
+  partial: boolean;
+  fallback?: "validated_children";
+}
 
 export interface ReviewResult {
   summary: string;

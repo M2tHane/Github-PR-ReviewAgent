@@ -13,7 +13,16 @@ export interface ReviewJob {
   body: string;
   baseSha: string;
   headSha: string;
-  status: "queued" | "running" | "succeeded" | "partial" | "failed" | "timeout" | "superseded" | "cancelled" | "uncertain";
+  status:
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "partial"
+    | "failed"
+    | "timeout"
+    | "superseded"
+    | "cancelled"
+    | "uncertain";
   error?: string;
   reviewId?: number;
   reviewUrl?: string;
@@ -28,7 +37,20 @@ export interface ReviewJob {
   humanReplyCreatedAt?: string;
 }
 
-export interface HealthJob extends Pick<ReviewJob, "id" | "installationId" | "repositoryId" | "repository" | "cloneUrl" | "title" | "headSha" | "status" | "error" | "attempt"> {
+export interface HealthJob
+  extends Pick<
+    ReviewJob,
+    | "id"
+    | "installationId"
+    | "repositoryId"
+    | "repository"
+    | "cloneUrl"
+    | "title"
+    | "headSha"
+    | "status"
+    | "error"
+    | "attempt"
+  > {
   jobType: "HEALTH_AUDIT";
   defaultBranch: string;
   windowStart: string;

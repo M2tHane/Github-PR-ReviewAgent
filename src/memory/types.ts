@@ -1,5 +1,11 @@
 export interface DecisionProposal {
-  type: "architecture_decision" | "engineering_rule" | "security_rule" | "coding_convention" | "exception" | "deprecated_pattern";
+  type:
+    | "architecture_decision"
+    | "engineering_rule"
+    | "security_rule"
+    | "coding_convention"
+    | "exception"
+    | "deprecated_pattern";
   title: string;
   content: string;
   rationale: string;
