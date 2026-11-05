@@ -146,7 +146,7 @@ test("Health 文件工具只读受限的已跟踪文本，记录实际返回行�
       writeFile(join(root, "src/a.ts"), "first\nsecond\nthird"),
       writeFile(join(root, "README.md"), "readme"),
       writeFile(join(root, "excluded.txt"), "excluded"),
-      writeFile(join(root, "large.txt"), "x".repeat(70000)),
+      writeFile(join(root, "large.txt"), "x".repeat(300_000)),
       writeFile(join(root, "binary.dat"), Buffer.from([0, 1, 2])),
     ]);
     await symlink("/etc/passwd", join(root, "escape"));

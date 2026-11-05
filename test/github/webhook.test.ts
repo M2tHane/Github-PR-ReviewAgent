@@ -31,6 +31,7 @@ const config: Config = {
   webhookMaxBytes: 10_000,
   queueCapacity: 2,
   agentTimeoutMs: 100,
+  vulnerabilityScan: false,
 };
 
 const payload = {

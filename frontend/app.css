@@ -1551,6 +1551,47 @@ a.stat:hover {
 .health-evidence li {
   margin: 0.4rem 0;
 }
+.vuln-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0;
+}
+.health-finding .vuln-package {
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+.vuln-package code {
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+.health-finding .vuln-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.9rem;
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: normal;
+}
+.vuln-ids {
+  margin-top: 0.4rem;
+}
+.vuln-ids ul {
+  font-size: 0.8rem;
+  max-height: 24rem;
+  overflow-y: auto;
+}
+.health-finding .vuln-ids li p {
+  margin: 0.15rem 0 0.5rem;
+}
+.vuln-others > summary {
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+.vuln-manifests {
+  font-size: 0.8rem;
+  margin-top: 0.6rem;
+}
 .health-memory-ref {
   display: block;
   font-size: 0.8rem;

@@ -7,7 +7,7 @@ export interface HealthScope {
   budgetTokens: number;
 }
 
-export type HealthDimension = "code" | "ci" | "dependencies" | "documentation";
+export type HealthDimension = "code" | "ci" | "dependencies" | "documentation" | "security";
 export interface HealthMissingData {
   source: string;
   reason: string;
@@ -27,7 +27,31 @@ export interface HealthSource {
 export type HealthReference =
   | { kind: "code"; path: string; line: number; detail: string }
   | { kind: "ci"; sourceId: string; detail: string }
-  | { kind: "memory"; id: string; version: number; detail: string };
+  | { kind: "memory"; id: string; version: number; detail: string }
+  | { kind: "vulnerability"; id: string; detail: string };
+export type DependencyEcosystem = "npm" | "Go" | "crates.io" | "PyPI" | "Maven";
+export type VulnerabilitySeverity = "critical" | "high" | "medium" | "low" | "unknown";
+// 一条已知漏洞落在某个锁文件里的某个依赖版本上；全部字段来自锁文件和 OSV，不经过模型。
+export interface VulnerabilityRecord {
+  id: string;
+  aliases: string[];
+  summary: string;
+  severity: VulnerabilitySeverity;
+  ecosystem: DependencyEcosystem;
+  package: string;
+  version: string;
+  manifestPath: string;
+  line?: number;
+  dev: boolean;
+  fixedVersions: string[];
+  url: string;
+}
+export interface DependencyAudit {
+  status: "disabled" | "no_manifest" | "complete" | "incomplete";
+  manifests: Array<{ path: string; ecosystem: DependencyEcosystem; dependencies: number }>;
+  queried: number;
+  vulnerabilities: VulnerabilityRecord[];
+}
 export interface HealthFinding {
   id: string;
   dimension: HealthDimension;
@@ -68,5 +92,7 @@ export interface HealthReport {
   };
   sources: HealthSource[];
   missingData: HealthMissingData[];
+  // health-v2 起才有；旧报告没有这一项。
+  dependencyAudit?: DependencyAudit;
   result: HealthResult;
 }

@@ -1,4 +1,9 @@
-import type { HealthDimension } from "../../../src/health/types.js";
+import type { DependencyAudit, HealthDimension } from "../../../src/health/types.js";
+import {
+  groupVulnerabilities,
+  isPriorityVulnerability,
+  type VulnerableDependency,
+} from "../../../src/health/vulnerability-records.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
 import type { HealthDetail } from "./types.js";
@@ -8,6 +13,7 @@ const healthLabels: Record<HealthDimension, string> = {
   ci: "CI / 测试结果",
   dependencies: "依赖声明",
   documentation: "文档一致性",
+  security: "安全",
 };
 const healthSourceLabels: Record<string, string> = {
   checks: "GitHub Checks",
@@ -15,8 +21,131 @@ const healthSourceLabels: Record<string, string> = {
   files: "源码",
   memory: "团队规则",
   dependencies: "依赖",
+  vulnerabilities: "依赖漏洞",
   analysis: "分析",
 };
+const vulnerabilitySeverity: Record<string, string> = {
+  critical: "严重",
+  high: "高危",
+  medium: "中危",
+  low: "低危",
+  unknown: "未知等级",
+};
+const isPriorityDependency = (group: VulnerableDependency) => group.records.some(isPriorityVulnerability);
+
+function VulnerableDependencies({
+  groups,
+  fileUrl,
+}: {
+  groups: VulnerableDependency[];
+  fileUrl: (path: string, line?: number) => string;
+}) {
+  return (
+    <ul className="vuln-list">
+      {groups.map((group) => {
+        const [first] = group.records;
+        return (
+          <li className={`health-finding severity-${group.severity}`} key={group.key}>
+            <div className="health-finding-labels">
+              <Status value={group.severity} label={vulnerabilitySeverity[group.severity]} />
+              <span>{group.ecosystem}</span>
+              {group.dev && <span>开发依赖</span>}
+            </div>
+            <h5 className="vuln-package">
+              {group.package} <code>{group.version}</code>
+            </h5>
+            <p>
+              <strong>修复：</strong>
+              {group.upgradeTo ? `升级到 ${group.upgradeTo} 或更高` : "暂无修复版本"}
+              {group.records.length > 1 &&
+                (group.upgradeTo
+                  ? `，可修掉 ${group.records.length - group.unfixed} 个漏洞${group.unfixed ? `，另有 ${group.unfixed} 个暂无修复版本` : ""}`
+                  : `，共 ${group.records.length} 个漏洞`)}
+            </p>
+            <p className="muted">
+              {group.records.length > 1 ? "最严重的一条：" : ""}
+              {first!.summary || "漏洞库没有提供摘要。"}
+            </p>
+            <p className="vuln-meta">
+              {group.records.length === 1 && (
+                <a href={first!.url} target="_blank" rel="noreferrer">
+                  {first!.id}
+                </a>
+              )}
+              {group.records.length === 1 && first!.aliases.find((alias) => alias.startsWith("CVE-"))}
+              <a href={fileUrl(group.manifestPath, group.line)} target="_blank" rel="noreferrer">
+                {group.manifestPath}
+                {group.line ? `:${group.line}` : ""}
+              </a>
+            </p>
+            {group.records.length > 1 && (
+              <details className="vuln-ids">
+                <summary>查看全部 {group.records.length} 个漏洞</summary>
+                <ul>
+                  {group.records.map((record) => (
+                    <li key={record.id}>
+                      <a href={record.url} target="_blank" rel="noreferrer">
+                        {record.id}
+                      </a>{" "}
+                      · {vulnerabilitySeverity[record.severity]}
+                      {record.fixedVersions.length ? ` · 修复于 ${record.fixedVersions.join(" / ")}` : " · 暂无修复"}
+                      {record.summary && <p>{record.summary}</p>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function DependencyAuditView({
+  audit,
+  fileUrl,
+}: {
+  audit: DependencyAudit;
+  fileUrl: (path: string, line?: number) => string;
+}) {
+  // 一个依赖只出现一次：只要有一条高危以上且能修复的漏洞，整个依赖就排进优先列表。
+  const groups = groupVulnerabilities(audit.vulnerabilities);
+  const priority = groups.filter(isPriorityDependency),
+    others = groups.filter((group) => !isPriorityDependency(group));
+  const otherCount = others.reduce((sum, group) => sum + group.records.length, 0);
+  return (
+    <section className="health-dimension" aria-label="依赖漏洞">
+      <h4>依赖漏洞 {audit.queried > 0 && <span className="muted">{audit.vulnerabilities.length} 个</span>}</h4>
+      <p>
+        {audit.status === "disabled"
+          ? "依赖漏洞检查已关闭（VULNERABILITY_SCAN_ENABLED=false）。"
+          : audit.status === "no_manifest"
+            ? "检查范围内没有支持的锁文件，未检查依赖漏洞。目前支持 package-lock.json、go.mod、Cargo.lock、poetry.lock、uv.lock、requirements*.txt 和 pom.xml。"
+            : !audit.queried
+              ? "依赖漏洞没有查成，原因见上方。"
+              : !audit.vulnerabilities.length
+                ? `已查询 ${audit.queried} 个依赖版本，没有发现已知漏洞${audit.status === "incomplete" ? "；部分依赖未检查，原因见上方" : ""}。`
+                : `已查询 ${audit.queried} 个依赖版本，发现 ${audit.vulnerabilities.length} 个已知漏洞${priority.length ? `。${priority.length} 个依赖有高危以上且已能修复的漏洞，建议优先升级` : "，没有高危以上且已能修复的"}${audit.status === "incomplete" ? "。部分依赖未检查，原因见上方" : ""}。`}
+      </p>
+      {priority.length > 0 && <VulnerableDependencies groups={priority} fileUrl={fileUrl} />}
+      {others.length > 0 && (
+        <details className="vuln-others">
+          <summary>
+            其余 {others.length} 个依赖，共 {otherCount} 个漏洞（中低危、未知等级或暂无修复版本）
+          </summary>
+          <VulnerableDependencies groups={others} fileUrl={fileUrl} />
+        </details>
+      )}
+      {audit.manifests.length > 0 && (
+        <p className="muted vuln-manifests">
+          锁文件：
+          {audit.manifests.map((manifest) => `${manifest.path}（${manifest.dependencies} 个依赖）`).join("、")}
+        </p>
+      )}
+    </section>
+  );
+}
 export const healthStatuses: Record<string, string> = {
   queued: "排队中",
   running: "执行中",
@@ -44,8 +173,11 @@ export function HealthReportView({
     0,
     Number(job.payload?.scope?.budgetTokens ?? 0) - usage.totalTokens - usage.unreportedTokens,
   );
-  const sourceUrl = (path: string, line: number) =>
-    `https://github.com/${job.repository}/blob/${job.target_sha}/${path.split("/").map(encodeURIComponent).join("/")}#L${line}`;
+  const sourceUrl = (path: string, line?: number) =>
+    `https://github.com/${job.repository}/blob/${job.target_sha}/${path.split("/").map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
+  const priorityVulnerabilities = groupVulnerabilities(report?.dependencyAudit?.vulnerabilities ?? []).filter(
+    isPriorityDependency,
+  ).length;
   return (
     <article className="health-report" id="health-detail">
       <header className="health-report-head">
@@ -87,7 +219,8 @@ export function HealthReportView({
           <h4 className="health-verdict">
             {job.status === "partial"
               ? "覆盖不足"
-              : report.result.findings.some((finding) => ["high", "critical"].includes(finding.severity))
+              : priorityVulnerabilities ||
+                  report.result.findings.some((finding) => ["high", "critical"].includes(finding.severity))
                 ? "有高优先级意见"
                 : report.result.findings.length
                   ? "有建议需要查看"
@@ -97,6 +230,7 @@ export function HealthReportView({
             {report.result.findings.length} 条意见 ·{" "}
             {report.result.findings.filter((finding) => ["high", "critical"].includes(finding.severity)).length} 条高 /
             严重
+            {priorityVulnerabilities > 0 && ` · ${priorityVulnerabilities} 个依赖需优先升级`}
           </p>
           {report.missingData.length > 0 && (
             <section className="health-notice" aria-label="缺失数据与覆盖限制">
@@ -111,6 +245,7 @@ export function HealthReportView({
               </ul>
             </section>
           )}
+          {report.dependencyAudit && <DependencyAuditView audit={report.dependencyAudit} fileUrl={sourceUrl} />}
           {(Object.keys(healthLabels) as HealthDimension[])
             .filter((dimension) => report.result.findings.some((finding) => finding.dimension === dimension))
             .map((dimension) => {
@@ -152,6 +287,14 @@ export function HealthReportView({
                                   <code>
                                     {reference.id} v{reference.version}
                                   </code>
+                                ) : reference.kind === "vulnerability" ? (
+                                  <a
+                                    href={`https://osv.dev/vulnerability/${encodeURIComponent(reference.id)}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    依赖漏洞 · {reference.id}
+                                  </a>
                                 ) : (
                                   <a
                                     href={report.sources.find((source) => source.id === reference.sourceId)?.url}

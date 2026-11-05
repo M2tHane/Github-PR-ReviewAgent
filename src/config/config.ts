@@ -18,6 +18,8 @@ export interface Config {
   githubClientSecret?: string;
   githubOAuthCallbackUrl?: string;
   sessionSecret?: string;
+  // 健康检查时把锁文件里的"包名 + 版本"发给 OSV 查已知漏洞；私有仓库的内部包名也会发出去。
+  vulnerabilityScan: boolean;
 }
 
 // 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
@@ -53,6 +55,14 @@ function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): nu
   return value;
 }
 
+function flag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+  const value = env[name]?.trim().toLowerCase();
+  if (!value) return fallback;
+  if (["true", "1", "on"].includes(value)) return true;
+  if (["false", "0", "off"].includes(value)) return false;
+  throw new Error(`配置 ${name} 只能是 true / false`);
+}
+
 export function loadConfig(env = process.env): Config {
   const repositories = required(env, "GITHUB_ALLOWED_REPOSITORIES")
     .split(",")
@@ -85,5 +95,6 @@ export function loadConfig(env = process.env): Config {
     githubClientSecret: env.GITHUB_CLIENT_SECRET?.trim() || undefined,
     githubOAuthCallbackUrl: env.GITHUB_OAUTH_CALLBACK_URL?.trim() || undefined,
     sessionSecret: env.SESSION_SECRET?.trim() || undefined,
+    vulnerabilityScan: flag(env, "VULNERABILITY_SCAN_ENABLED", true),
   };
 }

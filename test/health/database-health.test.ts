@@ -158,6 +158,10 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     git("init", "--quiet");
     await mkdir(join(root, "src"));
     await writeFile(join(root, "src/a.ts"), "export const timeout = -1;\n");
+    await writeFile(
+      join(root, "package-lock.json"),
+      JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/lodash": { version: "4.17.20" } } }, null, 2),
+    );
     git("add", ".");
     git("commit", "--quiet", "-m", "test health snapshot");
     const sha = git("rev-parse", "HEAD"),
@@ -175,7 +179,34 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
       modelName: "model",
       modelApiKey: "test",
       agentTimeoutMs: 5000,
+      vulnerabilityScan: true,
     } as Config;
+    const audited: string[] = [];
+    const osv = {
+      audit: async (dependencies: any[]) => {
+        audited.push(...dependencies.map((item) => `${item.name}@${item.version}`));
+        return {
+          queried: dependencies.length,
+          missingData: [],
+          vulnerabilities: [
+            {
+              id: "GHSA-35jh-r3h4-6jhm",
+              aliases: ["CVE-2021-23337"],
+              summary: "Command Injection in lodash",
+              severity: "high",
+              ecosystem: "npm",
+              package: "lodash",
+              version: "4.17.20",
+              manifestPath: "package-lock.json",
+              line: 4,
+              dev: false,
+              fixedVersions: ["4.17.21"],
+              url: "https://osv.dev/vulnerability/GHSA-35jh-r3h4-6jhm",
+            },
+          ],
+        };
+      },
+    };
     const github = {
       installationToken: async () => "test",
       repositorySnapshot: async () => ({ defaultBranch: "main", headSha: "b".repeat(40) }),
@@ -188,9 +219,11 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     let mode = "valid",
       calls = 0,
       workspace = "";
-    const budgets: number[] = [];
+    const budgets: number[] = [],
+      prompts: any[] = [];
     const execute = async (input: any) => {
       calls++;
+      prompts.push(input.prompt);
       workspace = input.root;
       budgets.push(input.budgetTokens);
       await input.onUsage({ ...emptyUsage(), unreportedTokens: 1000 });
@@ -221,6 +254,15 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
                     suggestion: "使用正数",
                     references: [{ kind: "code", path: "src/a.ts", line: 1, detail: "负数声明" }],
                   },
+                  {
+                    dimension: "security",
+                    severity: "high",
+                    evidenceLevel: "moderate",
+                    description: "lodash 4.17.20 有命令注入漏洞",
+                    impact: "template 处理外部输入时可执行命令",
+                    suggestion: "升级到 4.17.21",
+                    references: [{ kind: "vulnerability", id: "GHSA-35jh-r3h4-6jhm", detail: "OSV 记录" }],
+                  },
                 ],
                 limitations: [],
               }),
@@ -229,7 +271,14 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
         durationMs: 1,
       };
     };
-    const processHealth = api.createHealthProcessor(config, database, new MemoryService(database), github, execute);
+    const processHealth = api.createHealthProcessor(
+      config,
+      database,
+      new MemoryService(database),
+      github,
+      execute,
+      osv,
+    );
     runner = new PersistentRunner(
       database,
       async (job) => {
@@ -243,7 +292,16 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     await waitFor(async () => (await database.getJob(first.job!.id))?.status === "partial");
     const report = (await database.getHealthReport(first.job!.id))!;
     assert.equal(report.headSha, sha, "远端前进不改变已绑定快照");
-    assert.equal(report.result.findings.length, 1);
+    assert.equal(report.result.findings.length, 2);
+    assert.deepEqual(audited, ["lodash@4.17.20"]);
+    assert.deepEqual(prompts[0].dependencyAudit, { status: "complete", queried: 1, total: 1, provided: 1 });
+    assert.equal(prompts[0].vulnerabilities[0].id, "GHSA-35jh-r3h4-6jhm");
+    assert.equal(prompts[0].vulnerabilities[0].url, undefined);
+    assert.equal(report.dependencyAudit?.status, "complete");
+    assert.deepEqual(report.dependencyAudit?.manifests, [
+      { path: "package-lock.json", ecosystem: "npm", dependencies: 1 },
+    ]);
+    assert.equal(report.dependencyAudit?.vulnerabilities[0]?.fixedVersions[0], "4.17.21");
     assert.equal(report.usage.totalTokens, 150);
     assert.equal(report.usage.unreportedTokens, 4000);
     assert.equal(budgets[0], 6000);

@@ -16,22 +16,23 @@ import type {
   HealthResult,
   HealthScope,
   HealthSource,
+  VulnerabilityRecord,
 } from "./types.js";
 import type { HealthJob } from "../jobs/types.js";
 import type { MemoryRecord } from "../memory/types.js";
 
 const exec = promisify(execFile);
-export const HEALTH_VERSION = "health-v1";
+export const HEALTH_VERSION = "health-v2";
 export const HEALTH_LIMITS = {
   files: 200,
-  fileBytes: 65_536,
-  totalBytes: 2_097_152,
+  fileBytes: 262_144,
+  totalBytes: 4_194_304,
   toolChars: 16_000,
   toolLines: 200,
   ciRecords: 50,
   timeoutMs: 120_000,
 };
-export const healthDimensions: HealthDimension[] = ["code", "ci", "dependencies", "documentation"];
+export const healthDimensions: HealthDimension[] = ["code", "ci", "dependencies", "documentation", "security"];
 
 function fields(value: unknown, allowed: string[], label: string): Record<string, any> {
   if (
@@ -56,6 +57,7 @@ export function parseHealthResult(
     readLines: Map<string, Set<number>>;
     sources: HealthSource[];
     memories: MemoryRecord[];
+    vulnerabilities?: VulnerabilityRecord[];
   },
 ): HealthResult {
   if (raw.length > 60_000) throw new Error("Health 结果过长");
@@ -130,10 +132,18 @@ export function parseHealthResult(
         )
       )
         return { kind: "memory", id: ref.id, version: ref.version, detail };
+      if (
+        ref.kind === "vulnerability" &&
+        typeof ref.id === "string" &&
+        binding.vulnerabilities?.some((record) => record.id === ref.id)
+      )
+        return { kind: "vulnerability", id: ref.id, detail };
       throw new Error("Health 引用了未提供的来源或 Memory");
     });
     if (!references.some((reference) => reference.kind !== "memory"))
       throw new Error("Health finding 缺少代码或 CI 证据");
+    if (item.dimension === "security" && !references.some((reference) => reference.kind === "vulnerability"))
+      throw new Error("Health security finding 必须引用服务端提供的漏洞记录");
     const description = text(item.description, "description"),
       impact = text(item.impact, "impact"),
       suggestion = text(item.suggestion, "suggestion");
@@ -161,10 +171,10 @@ export function parseHealthResult(
   };
 }
 
-export async function collectHealthFiles(root: string, scope: HealthScope, signal: AbortSignal) {
+export async function scopedPaths(root: string, scope: HealthScope, signal: AbortSignal) {
   signal.throwIfAborted();
   const { stdout } = await exec("git", ["-C", root, "ls-files", "-z"], { signal, maxBuffer: 4 * 1024 * 1024 });
-  const paths = stdout
+  return stdout
     .split("\0")
     .filter(
       (path) =>
@@ -173,6 +183,10 @@ export async function collectHealthFiles(root: string, scope: HealthScope, signa
         !scope.excludePaths.some((pattern) => matchesGlob(path, pattern)),
     )
     .sort();
+}
+
+export async function collectHealthFiles(root: string, scope: HealthScope, signal: AbortSignal) {
+  const paths = await scopedPaths(root, scope, signal);
   const files = new Map<string, string>(),
     skippedFiles: Array<{ path: string; reason: string }> = [];
   let totalBytes = 0,
@@ -402,6 +416,7 @@ export function compareHealthReports(current: HealthReport, previous?: HealthRep
     ci: ["checks", "workflows", "analysis"],
     dependencies: ["files", "dependencies", "analysis"],
     documentation: ["files", "analysis"],
+    security: ["vulnerabilities", "analysis"],
   };
   return {
     previousJobId: previous?.jobId,
@@ -410,9 +425,14 @@ export function compareHealthReports(current: HealthReport, previous?: HealthRep
         sources[dimension].includes(item.source),
       );
       const incompleteFiles =
-        dimension !== "ci" &&
+        !["ci", "security"].includes(dimension) &&
         [current, previous].some((report) => report?.coverage.files.some((file) => file.readLines < file.totalLines));
-      const comparable = Boolean(same && !missing && !incompleteFiles);
+      const auditIncomplete =
+        dimension === "security" &&
+        [current, previous].some(
+          (report) => report && !["complete", "no_manifest"].includes(report.dependencyAudit?.status ?? ""),
+        );
+      const comparable = Boolean(same && !missing && !incompleteFiles && !auditIncomplete);
       const after = current.result.findings.filter((finding) => finding.dimension === dimension),
         before = previous?.result.findings.filter((finding) => finding.dimension === dimension) ?? [];
       const severity = (findings: HealthFinding[]) =>

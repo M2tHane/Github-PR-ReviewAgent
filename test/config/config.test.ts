@@ -31,6 +31,9 @@ test("自定义模型服务是可选配置，填写时校验地址、接口类�
     assert.throws(() => loadConfig({ ...base, MODEL_BASE_URL: "gw.example" }), /MODEL_BASE_URL/);
     assert.throws(() => loadConfig({ ...base, MODEL_API: "grpc" }), /MODEL_API/);
     assert.throws(() => loadConfig({ ...base, MODEL_THINKING: "max" }), /MODEL_THINKING/);
+    assert.equal(loadConfig(base).vulnerabilityScan, true, "依赖漏洞检查默认开启");
+    assert.equal(loadConfig({ ...base, VULNERABILITY_SCAN_ENABLED: "false" }).vulnerabilityScan, false);
+    assert.throws(() => loadConfig({ ...base, VULNERABILITY_SCAN_ENABLED: "no" }), /VULNERABILITY_SCAN_ENABLED/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
