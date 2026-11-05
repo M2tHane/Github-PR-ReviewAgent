@@ -89,7 +89,7 @@ Memory 具备以下约束：
 - 异常重启后恢复未完成任务。
 - 指数退避与有限次数重试。
 - Publication Fingerprint 防止重复发布。
-- GitHub 发布结果不确定时进入 `uncertain`，先核对远端状态，而不是直接重发。
+- PR Review 发布失败或中断时，先查一次 GitHub 上是否已有本次 Review：已有就记为已发布；收到 GitHub 错误响应且查不到才重试；网络中断且查不到时进入 `uncertain`，停下不重发，需要人工处理（管理页只能查看，暂无处理入口）。线程回复暂不自动核对，结果不明时同样进入 `uncertain`。
 - 新 Head、Draft、关闭 PR、仓库暂停等情况会取消过期 Review。
 - Main、Specialist 和 Reply Agent 均不获得 shell、写文件、GitHub 写操作或 Memory Mutation 权限。
 
@@ -396,7 +396,7 @@ node --env-file=.env eval/evaluate-ux.mjs
 当前实现刻意保持以下约束：
 
 - 单 PostgreSQL Worker，不提供多 Worker 调度保证。
-- 不承诺 exactly-once；通过幂等、状态机和远端核对降低重复副作用。
+- 不承诺 exactly-once；通过幂等、状态机和发布前的远端查询降低重复副作用。
 - Team Memory 不是全仓库自动学习系统，ACTIVE 规则必须经过人工确认。
 - Health Audit 是有限范围的只读检查，不代表完整代码安全证明。
 - Review 质量受模型、Token Budget、Workspace 覆盖范围和规则召回结果影响。

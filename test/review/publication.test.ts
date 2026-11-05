@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createReviewProcessor } from "../../src/review/review.processor.js";
+import { publishReview, type PublicationStore } from "../../src/review/review.publisher.js";
 import { createReplyProcessor } from "../../src/reply/reply.processor.js";
 import { emptyUsage } from "../../src/review/agent.js";
 import { GitHubApiError, type GitHubClient } from "../../src/github/client.js";
@@ -85,4 +86,56 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
       }
     }
   } finally { await rm(source, { recursive: true, force: true }); }
+});
+
+test("发布结果不明时先查 GitHub：已创建就记为已发布，确认未创建才允许重试，网络中断查不到则停下", async () => {
+  const config = { allowedRepositories: new Set(["owner/test"]) } as Config;
+  const headSha = "h".repeat(40);
+  const job = { id: "job", deliveryId: "d", repositoryId: 1, installationId: 1, repository: "owner/test", prNumber: 2, cloneUrl: "", baseSha: "b".repeat(40), headSha, title: "", body: "", status: "running" } satisfies ReviewJob;
+  const review = { result: { summary: "", findings: [], coverage: [], limitations: [] }, model: "test", durationMs: 1, usage: emptyUsage() };
+  type Scenario = { prior?: { status: string; inserted: boolean }; createError?: Error; remoteHasReview?: boolean; listError?: boolean };
+  async function run(scenario: Scenario) {
+    let fingerprint = "", posts = 0, lists = 0;
+    const statuses: string[] = [];
+    const github = {
+      getPullRequest: async () => ({ state: "open", draft: false, head: { sha: headSha } }),
+      createReview: async () => { posts++; if (scenario.createError) throw scenario.createError; return { id: 7, html_url: "https://example/review/7" }; },
+      getReviews: async () => {
+        lists++;
+        if (scenario.listError) throw new Error("fetch failed");
+        return scenario.remoteHasReview ? [{ id: 5, html_url: "https://example/review/5", commit_id: headSha, body: `## Pi Review\n\n<!-- pi-review:${fingerprint} -->` }] : [];
+      },
+    } as unknown as GitHubClient;
+    const store: PublicationStore = {
+      beginPublication: async (_job, value) => { fingerprint = value; return scenario.prior ?? { status: "pending", inserted: true }; },
+      finishPublication: async (_job, status) => { statuses.push(status); },
+    };
+    const target: ReviewJob = { ...job };
+    const error = await publishReview(config, github, store, target, "token", new AbortController(), review, [], review.result).then(() => undefined, (value: Error) => value);
+    return { target, statuses, posts, lists, error };
+  }
+
+  const networkFoundRemote = await run({ createError: new Error("fetch failed"), remoteHasReview: true });
+  assert.deepEqual(networkFoundRemote.statuses, ["published"]); assert.equal(networkFoundRemote.target.reviewId, 5); assert.equal(networkFoundRemote.error, undefined);
+
+  const badGatewayNotCreated = await run({ createError: new GitHubApiError("/reviews", 502) });
+  assert.deepEqual(badGatewayNotCreated.statuses, ["failed"]); assert.notEqual(badGatewayNotCreated.target.status, "uncertain");
+
+  const networkNotFound = await run({ createError: new Error("fetch failed") });
+  assert.deepEqual(networkNotFound.statuses, ["uncertain"]); assert.equal(networkNotFound.target.status, "uncertain");
+
+  const lookupFails = await run({ createError: new GitHubApiError("/reviews", 502), listError: true });
+  assert.deepEqual(lookupFails.statuses, ["uncertain"]);
+
+  const rejected = await run({ createError: new GitHubApiError("/reviews", 422) });
+  assert.deepEqual(rejected.statuses, ["failed"]); assert.equal(rejected.lists, 0);
+
+  const interruptedButCreated = await run({ prior: { status: "pending", inserted: false }, remoteHasReview: true });
+  assert.equal(interruptedButCreated.posts, 0); assert.deepEqual(interruptedButCreated.statuses, ["published"]);
+
+  const interruptedNotCreated = await run({ prior: { status: "pending", inserted: false } });
+  assert.equal(interruptedNotCreated.posts, 1); assert.deepEqual(interruptedNotCreated.statuses, ["published"]);
+
+  const fresh = await run({});
+  assert.equal(fresh.lists, 0, "首次发布不额外查询 GitHub"); assert.equal(fresh.posts, 1);
 });

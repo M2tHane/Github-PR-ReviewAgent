@@ -74,6 +74,8 @@ test("持久 Runner 恢复 running Job 并保存发布结果", { skip: !fixture.
     assert.ok(job.jobType !== "HEALTH_AUDIT");
     const publication = await database.beginPublication(job, `fingerprint-${job.id}`);
     assert.equal(publication.status, "pending");
+    assert.equal(publication.inserted, true);
+    assert.equal((await database.beginPublication(job, `fingerprint-${job.id}`)).inserted, false);
     job.reviewId = 123;
     job.reviewUrl = "https://example/review/123";
     await database.finishPublication(job, "published");

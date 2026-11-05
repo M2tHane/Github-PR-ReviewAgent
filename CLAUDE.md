@@ -50,7 +50,7 @@ npm run check:docs
 - **Prompt 里不能写评测样本的答案。** `REVIEW_PROMPT`、`MAIN_PROMPT`、`roleRegistry` 每次审查都会发出去；只写通用规则。改完 Prompt 用 `eval/` 回归。
 - **新 Agent 调用一律走 `runAgentSession`。** 它负责预算预留、关闭 SDK 重试与压缩、超时和取消。直接调 `createAgentSession` 时如果不传 `settingsManager`，SDK 会按 `SettingsManager.create(cwd, ~/.pi/agent)` 读取待审仓库的 `.pi/settings.json`（默认视为可信）和宿主机全局设置。`decision.processor.ts` 目前就是这样，属于已知问题。
 - **模型输出的校验。** `parseReviewResult`、`parseDecisionProposals`、`validateDisplay` 是信任边界。改字段时同步改 Prompt 里的 JSON 说明、`src/review/types.ts` 和对应测试。
-- **发布状态。** 只有 `GitHubApiError`（消息以 `GitHub API ` 开头）会记为 `failed`，其余异常记为 `uncertain`。`uncertain` 目前不会自动对账，管理页也只能查看、不能处理。
+- **发布状态。** PR Review 总评末尾带 `<!-- pi-review:<fingerprint> -->` 标记；发布失败或上次中断时按这个标记查 GitHub 已有 Review 再决定（见 `review.publisher.ts`）。不要删掉这个标记。线程回复没有这套核对。`uncertain` 是终态，管理页只能查看、不能处理。
 - **重试判断靠正则匹配错误消息。** `transient()` 用 `\b5\d\d\b` 等规则匹配；新增的错误消息里不要出现无关的 5xx 形态数字，否则会被误判为可重试。
 - **语言识别有两份。** `orchestration.ts` 的 `complexityProfile` 和 `memory.service.ts` 的 `scopeMatches` 各维护一份扩展名映射，改一处要同步另一处。
 - **风格。** 现有代码大量单行超过 200 字符，仓库没有配格式化工具。新写或改动的代码按正常换行写，不要沿用超长行；也不要顺手重排未改动的文件，否则 diff 难以审查。
