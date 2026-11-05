@@ -28,13 +28,20 @@ test("健康快照读取真实默认分支并校验仓库归属，取消后不�
   const github: any = new GitHubClient("app", "unused");
   assert.equal(typeof github.repositorySnapshot, "function");
   const calls: string[] = []; let otherRepository = false;
-  const signal = new AbortController().signal;
+  const signal = new AbortController().signal, requestSignals: AbortSignal[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    calls.push(url); assert.equal(init.signal, signal);
+    calls.push(url); requestSignals.push(init.signal!);
     return Response.json(url.includes("/branches/") ? { commit: { sha: job.headSha } } : { id: otherRepository ? 2 : 1, default_branch: "release/main" });
   });
   assert.deepEqual(await github.repositorySnapshot("token", job.repository, 1, signal), { defaultBranch: "release/main", headSha: job.headSha });
   assert(calls[1].endsWith("/branches/release%2Fmain"));
+  // 请求信号同时带超时；任务取消仍要能中止请求。
+  const cancel = new AbortController();
+  await github.repositorySnapshot("token", job.repository, 1, cancel.signal);
+  const linked = requestSignals.at(-1)!;
+  assert.equal(linked.aborted, false);
+  cancel.abort();
+  assert.equal(linked.aborted, true);
   otherRepository = true;
   await assert.rejects(github.repositorySnapshot("token", job.repository, 1, signal));
   const before = calls.length;
