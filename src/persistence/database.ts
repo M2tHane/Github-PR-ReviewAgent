@@ -8,6 +8,7 @@ import { ReplyRepository } from "./repositories/reply.repository.js";
 import { AgentRunRepository } from "./repositories/agent-run.repository.js";
 import { HealthRepository } from "./repositories/health.repository.js";
 import { MemoryRepository } from "./repositories/memory.repository.js";
+import { RetentionRepository } from "./repositories/retention.repository.js";
 import { migrate } from "./migrations.js";
 import type { ReviewReplyInput } from "./repositories/reply.repository.js";
 
@@ -22,9 +23,11 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly agents = new AgentRunRepository(this.pool);
   private readonly health = new HealthRepository(this.pool, () => this.isStopping());
   private readonly memories = new MemoryRepository(this.pool);
+  private readonly retention = new RetentionRepository(this.pool);
 
-  constructor(url: string) {
-    super(new Pool({ connectionString: url, max: 5, connectionTimeoutMillis: 3000 }));
+  // 每个并发任务会同时占用几条连接（领取、续租、写结果），连接池随并发数放大。
+  constructor(url: string, concurrency = 1) {
+    super(new Pool({ connectionString: url, max: 5 + concurrency * 3, connectionTimeoutMillis: 3000 }));
   }
   async close() {
     await this.pool.end();
@@ -54,6 +57,7 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly getDecisionClues = this.replies.getDecisionClues.bind(this.replies);
   readonly checkpointAgentUsage = this.agents.checkpointAgentUsage.bind(this.agents);
   readonly startAgentRun = this.agents.startAgentRun.bind(this.agents);
+  readonly jobUsage = this.agents.jobUsage.bind(this.agents);
   readonly finishAgentRun = this.agents.finishAgentRun.bind(this.agents);
   readonly activeHealthJob = this.health.activeHealthJob.bind(this.health);
   readonly enqueueHealth = this.health.enqueueHealth.bind(this.health);
@@ -62,4 +66,5 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly getHealthReport = this.health.getHealthReport.bind(this.health);
   readonly finishHealthReport = this.health.finishHealthReport.bind(this.health);
   readonly insertCandidates = this.memories.insertCandidates.bind(this.memories);
+  readonly purgeExpired = this.retention.purgeExpired.bind(this.retention);
 }

@@ -6,7 +6,7 @@
 
 ## Decision
 
-[Workspace 入口](../../src/workspace/workspace.ts) 使用 GitHub App installation token，通过仅传给 Git 子进程的 Basic authorization header 认证。remote URL 和命令参数不含 token；`GIT_TERMINAL_PROMPT=0` 使认证失败立即返回，credential helper 与 hooks 被禁用。每个 Job 创建临时仓库，checkout 后核对目标 head SHA，结束时删除。
+[Workspace 入口](../../src/workspace/workspace.ts) 使用 GitHub App installation token，通过仅传给 Git 子进程的 Basic authorization header 认证。remote URL 和命令参数不含 token；`GIT_TERMINAL_PROMPT=0` 使认证失败立即返回，credential helper 与 hooks 被禁用。每个 Job 创建临时仓库，checkout 后核对目标 head SHA，结束时删除。Git 子进程只拿到 `gitEnv()` 给的最小环境变量（PATH、代理、CA），不继承服务密钥，不读宿主机全局／系统 git 配置，不拉 LFS；认证头只对克隆地址所在站点生效，只允许克隆地址本身的协议。
 
 Agent 只能通过服务提供的受限只读工具访问该 Workspace。读取文件时同时检查规范化路径、父目录和最终真实路径，拒绝符号链接越界。仓库里的 README、AGENTS.md、提示词、源码和评论都只是待审数据，不能注册工具、改变身份或授权，也不运行目标仓库脚本。
 
@@ -20,5 +20,6 @@ GitHub Smart HTTP 对曾尝试的 Bearer header 回退到交互式用户名提�
 
 - token 不得进入 clone URL、Git remote、日志、模型输入或目标仓库文件。
 - Git 认证失败必须终止任务，不能等待终端输入或回退到用户 credential helper。
+- 新增的 git 调用都要传 `env: gitEnv()`；不要用 `...process.env`，否则模型 Key、数据库地址等会进入处理不受信仓库的子进程，宿主机的 filter／helper 也会作用到待审仓库。
 - 任何新增文件工具都必须遵守固定 Workspace、真实路径与只读边界。
 - 发布前仍须重新确认仓库授权、PR 状态和当前 head；固定本地 checkout 不代替远端复核。

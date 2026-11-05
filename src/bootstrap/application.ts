@@ -11,11 +11,12 @@ import { createHealthProcessor } from "../health/health.processor.js";
 import { enqueueDueHealthJobs } from "../health/health.scheduler.js";
 import { GitHubClient } from "../github/client.js";
 import { createJobDispatcher } from "../jobs/dispatcher.js";
+import { log } from "../logging.js";
 
 // 单进程模块边界的理由见 .agents/decisions/repository-architecture.md。
 export function createApplication() {
   const config = loadConfig();
-  const database = new Database(config.databaseUrl);
+  const database = new Database(config.databaseUrl, config.workerConcurrency);
   const memories = new MemoryService(database);
   const review = createReviewProcessor(config, undefined, database, memories);
   const extract = createDecisionProcessor(config, database);
@@ -24,6 +25,8 @@ export function createApplication() {
   const runner = new PersistentRunner(
     database,
     createJobDispatcher({ PR_REVIEW: review, DECISION_EXTRACT: extract, REPLY_HANDLE: reply, HEALTH_AUDIT: health }),
+    500,
+    { concurrency: config.workerConcurrency },
   );
   const { server } = createApp(config, database, createAdminHandler(config, database));
   const scheduleAbort = new AbortController();
@@ -34,11 +37,28 @@ export function createApplication() {
   const pollSchedules = () => {
     if (scheduling || scheduleAbort.signal.aborted) return;
     scheduling = enqueueDueHealthJobs(config, database, github, scheduleAbort.signal)
-      .catch(() => {
-        if (!scheduleAbort.signal.aborted) console.error(JSON.stringify({ event: "health_schedule_poll_failed" }));
+      .catch((error) => {
+        if (!scheduleAbort.signal.aborted) log("error", "health_schedule_poll_failed", {}, error);
       })
       .finally(() => {
         scheduling = undefined;
+      });
+  };
+
+  // 数据清理：启动后先跑一次，之后每 6 小时一次。多实例时由数据库锁保证同一时间只有一个在跑。
+  let purging: Promise<void> | undefined;
+  let purgeTimer: ReturnType<typeof setInterval> | undefined;
+  const purge = () => {
+    if (purging || scheduleAbort.signal.aborted) return;
+    if (!config.dataRetentionDays && !config.revokedDataGraceDays) return;
+    purging = database
+      .purgeExpired({ retentionDays: config.dataRetentionDays, revokedGraceDays: config.revokedDataGraceDays })
+      .then((result) => {
+        if (result.jobs || result.deliveries || result.repositories) log("info", "data_purged", { ...result });
+      })
+      .catch((error) => log("error", "data_purge_failed", {}, error))
+      .finally(() => {
+        purging = undefined;
       });
   };
 
@@ -47,13 +67,16 @@ export function createApplication() {
       await runner.start();
       scheduleTimer = setInterval(pollSchedules, 30_000);
       pollSchedules();
-      server.listen(config.port, () => console.info(JSON.stringify({ event: "listening", port: config.port })));
+      purgeTimer = setInterval(purge, 6 * 60 * 60_000);
+      purge();
+      server.listen(config.port, () => log("info", "listening", { port: config.port }));
     },
     async stop() {
       if (scheduleTimer) clearInterval(scheduleTimer);
+      if (purgeTimer) clearInterval(purgeTimer);
       scheduleAbort.abort();
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      await Promise.all([closed, runner.stop(), scheduling]);
+      await Promise.all([closed, runner.stop(), scheduling, purging]);
       await database.close();
     },
   };

@@ -14,6 +14,19 @@ export async function handleInstallation(
   const raw = payload as any;
   const revoke =
     eventName === "installation" ? ["deleted", "suspend"].includes(raw?.action) : raw?.action === "removed";
+  const restored =
+    eventName === "installation"
+      ? raw?.action === "created" && raw.repositories
+      : raw?.action === "added" && raw.repositories_added;
+  if (!revoke && Array.isArray(restored) && typeof target !== "function" && target.restoreRepositories) {
+    const ids = restored.map((repository: any) => repository?.id).filter((id: unknown) => Number.isSafeInteger(id));
+    try {
+      await target.restoreRepositories(ids.slice(0, 1000));
+      return send(response, 200, { restored: ids.length });
+    } catch {
+      return send(response, 503, { error: "恢复授权持久化失败" });
+    }
+  }
   if (!revoke || typeof target === "function" || !target.revokeInstallation)
     return send(response, 200, { ignored: true });
   if (!Number.isSafeInteger(raw?.installation?.id) || raw.installation.id <= 0)

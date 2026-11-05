@@ -9,18 +9,26 @@ import { MemoryService, type CandidatePatch } from "../memory/memory.service.js"
 import { HealthRequestError } from "../health/health.scheduler.js";
 import { repository, type Repository, type Session } from "./dto.js";
 import { json, cookies, body } from "./http.js";
-import { ExpiringStore } from "./session-store.js";
+import { DatabaseSessionStore, type SessionStore } from "./session-store.js";
 import { createRepositoryService } from "./repository.service.js";
 import { createHealthRoutes, isHealthRoute } from "./health.routes.js";
 import { createFindingsRoute } from "./findings.routes.js";
+
+export interface AdminStores {
+  sessions: SessionStore<Session>;
+  states: SessionStore<number>;
+}
 
 export function createAdminHandler(
   config: Config,
   database: Database,
   github = new GitHubClient(config.appId, config.privateKey),
+  // 会话存在数据库里，多个实例共用登录状态。
+  { sessions, states }: AdminStores = {
+    sessions: new DatabaseSessionStore(database.pool, "session", 8 * 60 * 60_000, 1000, config.sessionSecret ?? ""),
+    states: new DatabaseSessionStore(database.pool, "oauth_state", 10 * 60_000, 1000, config.sessionSecret ?? ""),
+  },
 ) {
-  const sessions = new ExpiringStore<Session>(8 * 60 * 60_000, 1000);
-  const states = new ExpiringStore<number>(10 * 60_000, 1000);
   const memories = new MemoryService(database);
   const { allowedRepositories, listJobs } = createRepositoryService(database, github);
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
@@ -40,22 +48,22 @@ export function createAdminHandler(
   const cookie = (name: string, value: string, maxAge = 3600) =>
     `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
 
-  function session(request: IncomingMessage) {
+  async function session(request: IncomingMessage) {
     const [id, signature] = (cookies(request).session ?? "").split(".");
     if (!id || !signature) return undefined;
     const expected = Buffer.from(sign(id));
     const actual = Buffer.from(signature);
     if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return undefined;
-    const value = sessions.get(id);
+    const value = await sessions.get(id);
     if (!value || value.expiresAt <= Date.now()) {
-      sessions.delete(id);
+      await sessions.delete(id);
       return undefined;
     }
     return value;
   }
 
   async function authorize(request: IncomingMessage, response: ServerResponse, repositoryId: number) {
-    const user = session(request);
+    const user = await session(request);
     if (!user) {
       json(response, 401, { error: "请先登录" });
       return undefined;
@@ -93,7 +101,7 @@ export function createAdminHandler(
       if (request.method === "GET" && url.pathname === "/auth/github") {
         if (!configured) return json(response, 503, { error: "OAuth 未配置" });
         const state = randomBytes(32).toString("base64url");
-        if (!states.set(state, Date.now() + 10 * 60_000))
+        if (!(await states.set(state, Date.now() + 10 * 60_000)))
           return json(response, 503, { error: "登录请求过多，请稍后重试" });
         response
           .writeHead(302, {
@@ -106,7 +114,7 @@ export function createAdminHandler(
       if (request.method === "GET" && url.pathname === "/auth/github/callback") {
         const code = url.searchParams.get("code");
         const state = url.searchParams.get("state");
-        const expiresAt = state ? states.get(state) : undefined;
+        const expiresAt = state ? await states.get(state) : undefined;
         if (
           !configured ||
           !code ||
@@ -116,17 +124,17 @@ export function createAdminHandler(
           expiresAt <= Date.now()
         )
           return json(response, 400, { error: "OAuth state 无效" });
-        states.delete(state);
+        await states.delete(state);
         const token = await github.exchangeOAuthCode(config.githubClientId!, config.githubClientSecret!, code);
         const actor = await github.getUser(token);
         const id = randomBytes(32).toString("base64url");
         if (
-          !sessions.set(id, {
+          !(await sessions.set(id, {
             ...actor,
             token,
             csrf: randomBytes(24).toString("base64url"),
             expiresAt: Date.now() + 8 * 60 * 60_000,
-          })
+          }))
         )
           return json(response, 503, { error: "登录会话已满，请稍后重试" });
         response
@@ -138,20 +146,20 @@ export function createAdminHandler(
         return;
       }
       if (request.method === "POST" && url.pathname === "/auth/logout") {
-        const user = session(request);
+        const user = await session(request);
         if (user && requireCsrf(request, response, user))
-          sessions.delete((cookies(request).session ?? "").split(".")[0]!);
+          await sessions.delete((cookies(request).session ?? "").split(".")[0]!);
         if (!response.headersSent) response.writeHead(204, { "set-cookie": cookie("session", "", 0) }).end();
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/session") {
-        const user = session(request);
+        const user = await session(request);
         return user
           ? json(response, 200, { user: { id: user.id, login: user.login }, csrf: user.csrf })
           : json(response, 401, { error: "请先登录" });
       }
       if (url.pathname.startsWith("/api/")) {
-        const user = session(request);
+        const user = await session(request);
         if (!user) return json(response, 401, { error: "请先登录" });
         if (request.method !== "GET" && !requireCsrf(request, response, user)) return;
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
@@ -208,7 +216,7 @@ export function createAdminHandler(
               value.maxDelegates ?? null,
             ],
           );
-          if (value.enabled === false) database.cancelRepository(access.repository.id);
+          if (value.enabled === false) await database.cancelRepository(access.repository.id);
           return json(response, 200, repository(updated.rows[0]));
         }
         if (request.method === "GET" && url.pathname === "/api/jobs") {

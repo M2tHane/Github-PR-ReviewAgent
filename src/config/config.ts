@@ -23,6 +23,12 @@ export interface Config {
   // 健康检查用本地规则跑 Semgrep；只解析代码，不构建、不运行仓库脚本。
   sastScan: boolean;
   semgrepPath: string;
+  // 每个实例同时执行的任务数；同一仓库的 PR 任务仍然一个一个来。
+  workerConcurrency: number;
+  // 已结束任务（含审查结果、Agent 记录）保留天数，0 表示永久保留。
+  dataRetentionDays: number;
+  // 卸载 App 或移除仓库后，再等多少天删除该仓库的全部数据（含团队规则），0 表示不删除。
+  revokedDataGraceDays: number;
 }
 
 // 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
@@ -55,6 +61,12 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
 function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   const value = Number(env[name] ?? fallback);
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`配置 ${name} 必须是正整数`);
+  return value;
+}
+
+function nonNegativeInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = Number(env[name]?.trim() || fallback);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`配置 ${name} 必须是非负整数`);
   return value;
 }
 
@@ -101,5 +113,8 @@ export function loadConfig(env = process.env): Config {
     vulnerabilityScan: flag(env, "VULNERABILITY_SCAN_ENABLED", true),
     sastScan: flag(env, "SAST_SCAN_ENABLED", true),
     semgrepPath: env.SEMGREP_PATH?.trim() || "semgrep",
+    workerConcurrency: positiveInt(env, "WORKER_CONCURRENCY", 2),
+    dataRetentionDays: nonNegativeInt(env, "DATA_RETENTION_DAYS", 90),
+    revokedDataGraceDays: nonNegativeInt(env, "REVOKED_DATA_GRACE_DAYS", 30),
   };
 }

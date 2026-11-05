@@ -22,20 +22,26 @@ export function addedLines(patch: string | undefined) {
 }
 
 // 扫描改动后文件的全文（多行私钥也能识别），只保留落在新增行上的命中。结果不含密钥原文。
+// 没扫到的文件写进 limitations，PR 上会说明"这些文件没检查密钥"，不能当成没有密钥。
 export async function checkAddedSecrets(
   root: string,
   files: Array<{ filename: string; status?: string; patch?: string }>,
   previous: StoredFinding[],
   signal: AbortSignal,
-): Promise<Finding[]> {
-  const findings: Finding[] = [];
+): Promise<{ findings: Finding[]; limitations: string[] }> {
+  const findings: Finding[] = [],
+    skipped: string[] = [];
   for (const file of files) {
     signal.throwIfAborted();
     const added = addedLines(file.patch);
     if (file.status === "removed" || !added.size) continue;
     try {
       const info = await lstat(join(root, file.filename));
-      if (!info.isFile() || info.isSymbolicLink() || info.size > SECRET_LIMITS.fileBytes) continue;
+      if (!info.isFile() || info.isSymbolicLink()) continue;
+      if (info.size > SECRET_LIMITS.fileBytes) {
+        skipped.push(file.filename);
+        continue;
+      }
       const content = await readWorkspaceFile(root, file.filename, signal);
       for (const record of scanSecrets(file.filename, content)) {
         if (!added.has(record.line)) continue;
@@ -62,9 +68,15 @@ export async function checkAddedSecrets(
       }
     } catch {
       signal.throwIfAborted();
+      skipped.push(file.filename);
     }
   }
-  return findings;
+  const limitations = skipped.length
+    ? [
+        `${skipped.length} 个改动文件过大或无法读取，没有检查新增密钥：${skipped.slice(0, 5).join("、")}${skipped.length > 5 ? " 等" : ""}。`,
+      ]
+    : [];
+  return { findings, limitations };
 }
 
 // 兜底：模型写的意见里如果原样带出了密钥，保存和发布前一律打码。

@@ -136,7 +136,7 @@ test("持久 Runner 恢复 running Job 并保存发布结果", { skip: !fixture.
   }
 });
 
-test("transient 最多重试三次，永久错误只执行一次", { skip: !fixture.url }, async () => {
+test("临时故障最多执行五次，永久错误只执行一次", { skip: !fixture.url }, async () => {
   const repositoryId = 9_000_000_003;
   const database = new Database(fixture.url!);
   const make = (deliveryId: string, prNumber: number, title: string) => ({
@@ -177,9 +177,9 @@ test("transient 最多重试三次，永久错误只执行一次", { skip: !fixt
     await runner.start();
     await waitFor(async () => (await database.getJob(transient.job!.id))?.status === "failed", 6000);
     await waitFor(async () => (await database.getJob(permanent.job!.id))?.status === "failed");
-    assert.equal(counts.get(transient.job!.id), 3);
+    assert.equal(counts.get(transient.job!.id), 5);
     assert.equal(counts.get(permanent.job!.id), 1);
-    assert.equal((await database.getJob(transient.job!.id))?.attempt, 3);
+    assert.equal((await database.getJob(transient.job!.id))?.attempt, 5);
   } finally {
     await runner.stop();
     await database.pool.query("DELETE FROM jobs WHERE repository_id=$1", [repositoryId]);

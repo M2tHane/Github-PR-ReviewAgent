@@ -11,6 +11,7 @@ import {
   type PreviousFinding,
   runAgentSession,
   TimeoutError,
+  ProviderError,
   type AgentReviewInput,
   type AgentUsage,
 } from "./agent.js";
@@ -29,6 +30,7 @@ import { surfaceKinds } from "../health/attack-surface.js";
 import type { AgentRole, ComplexityProfile, OrchestrationSummary, ReviewResult } from "./types.js";
 import type { MemoryRecord } from "../memory/types.js";
 import type { ReviewJob } from "../jobs/types.js";
+import { parseModelJson } from "../shared/model-json.js";
 
 const SECURITY_DIRECTORY = /(^|\/)(auth|security|permissions?|identity|session|oauth|crypto)(\/|$)/i;
 const SECURITY_FILE_WORDS = new Set([
@@ -251,7 +253,8 @@ export async function orchestrateReview(
   const usage = emptyUsage(),
     childUsage = emptyUsage();
   let parentUsage = emptyUsage(),
-    mainError: Error | undefined;
+    mainError: Error | undefined,
+    providerError: ProviderError | undefined;
   const parentRunId = await input.database.startAgentRun(
     input.job.id,
     "governance_main",
@@ -348,6 +351,7 @@ export async function orchestrateReview(
                 if (!completed.some((run) => run.role === args.role) && !failed.includes(args.role))
                   failed.push(args.role);
                 const message = error instanceof Error ? error.message : "专项取消";
+                if (error instanceof ProviderError) providerError ??= error;
                 limitations.push(args.role + ": " + message);
                 addUsage(childUsage, (error as { usage?: AgentUsage })?.usage ?? {});
                 return {
@@ -371,12 +375,7 @@ export async function orchestrateReview(
         ],
       });
       parentUsage = run.usage;
-      const value = JSON.parse(
-        run.text
-          .trim()
-          .replace(/^```(?:json)?\s*/i, "")
-          .replace(/\s*```$/, ""),
-      );
+      const value = parseModelJson(run.text, "Main 输出") as any;
       if (typeof value?.summary !== "string" || !value.summary.trim() || value.summary.length > 10_000)
         throw new Error("Main summary 结构无效");
       if (!Array.isArray(value.findingGroups) || !Array.isArray(value.issueDisplays))
@@ -390,7 +389,8 @@ export async function orchestrateReview(
     addUsage(usage, parentUsage);
     addUsage(usage, childUsage);
     signal.throwIfAborted();
-    if (!completed.length) throw mainError ?? new Error("所有专项 Agent 均失败或未执行");
+    // 全部失败时抛出模型服务的原始错误，让任务按"能否重试"处理（例如限流时稍后重试）。
+    if (!completed.length) throw mainError ?? providerError ?? new Error("所有专项 Agent 均失败或未执行");
     const result = aggregated ?? aggregate(input.job, completed, failed);
     if (summary) result.summary = summary + "\n\n" + result.summary;
     result.limitations.push(...limitations);

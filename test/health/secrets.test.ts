@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { collectSecrets, redactSecrets, scanSecrets } from "../../src/health/secrets.js";
-import { parseHealthResult } from "../../src/health/health.service.js";
+import { parseHealthResult, scopedPaths } from "../../src/health/health.service.js";
 import { checkAddedSecrets, redactFinding } from "../../src/review/secret-check.js";
 import type { HealthJob } from "../../src/jobs/types.js";
 import type { Finding } from "../../src/review/types.js";
@@ -51,14 +51,22 @@ test("全仓扫描：遵守范围排除，超大文件写进缺失数据", async
     await writeFile(join(root, "big.txt"), "x".repeat(1_100_000));
     await writeFile(join(root, "vendor.ts"), `const t = "${FAKE_GITHUB_TOKEN}";\n`);
     await exec("git", ["-C", root, "add", "."]);
-    const result = await collectSecrets(
+    const signal = AbortSignal.timeout(5000);
+    const { paths } = await scopedPaths(
       root,
       { includePaths: [], excludePaths: ["vendor.ts"], outputLanguage: "zh-CN", budgetTokens: 1 },
-      AbortSignal.timeout(5000),
+      signal,
+    );
+    // 已读过的文件直接复用原文：这里给 a.ts 一份不同的内容，证明没有再读磁盘。
+    const result = await collectSecrets(
+      root,
+      paths,
+      signal,
+      new Map([["a.ts", `const t = "${FAKE_GITHUB_TOKEN}";\n`]]),
     );
     assert.deepEqual(
       result.records.map((record) => `${record.path}:${record.line}:${record.label}`),
-      ["a.ts:2:GitHub Token"],
+      ["a.ts:1:GitHub Token"],
     );
     assert.equal(result.missingData[0]?.reason, "scan_limit");
   } finally {
@@ -100,12 +108,18 @@ test("PR 只对新增行里的疑似密钥发提醒，模型意见里的密钥�
   const root = await mkdtemp(join(tmpdir(), "pi-pr-secrets-"));
   try {
     await writeFile(join(root, "a.ts"), `const old = "${FAKE_GITHUB_TOKEN}";\nconst added = "${FAKE_GITHUB_TOKEN}";\n`);
-    const findings = await checkAddedSecrets(
+    await writeFile(join(root, "big.ts"), "x".repeat(1_100_000));
+    const { findings, limitations } = await checkAddedSecrets(
       root,
-      [{ filename: "a.ts", status: "modified", patch: `@@ -1 +1,2 @@\n const old = "x";\n+const added = "y";` }],
+      [
+        { filename: "a.ts", status: "modified", patch: `@@ -1 +1,2 @@\n const old = "x";\n+const added = "y";` },
+        { filename: "big.ts", status: "added", patch: "@@ -0,0 +1 @@\n+x" },
+        { filename: "gone.ts", status: "modified", patch: "@@ -0,0 +1 @@\n+x" },
+      ],
       [],
       AbortSignal.timeout(5000),
     );
+    assert.deepEqual(limitations, ["2 个改动文件过大或无法读取，没有检查新增密钥：big.ts、gone.ts。"]);
     assert.deepEqual(
       findings.map((finding) => [finding.path, finding.line, finding.severity]),
       [["a.ts", 2, "critical"]],

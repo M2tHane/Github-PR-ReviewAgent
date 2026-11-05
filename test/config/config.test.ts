@@ -34,6 +34,10 @@ test("自定义模型服务是可选配置，填写时校验地址、接口类�
     assert.equal(loadConfig(base).vulnerabilityScan, true, "依赖漏洞检查默认开启");
     assert.equal(loadConfig({ ...base, VULNERABILITY_SCAN_ENABLED: "false" }).vulnerabilityScan, false);
     assert.throws(() => loadConfig({ ...base, VULNERABILITY_SCAN_ENABLED: "no" }), /VULNERABILITY_SCAN_ENABLED/);
+    assert.equal(loadConfig(base).dataRetentionDays, 90);
+    assert.equal(loadConfig(base).revokedDataGraceDays, 30);
+    assert.equal(loadConfig({ ...base, DATA_RETENTION_DAYS: "0" }).dataRetentionDays, 0, "0 表示永久保留");
+    assert.throws(() => loadConfig({ ...base, DATA_RETENTION_DAYS: "-1" }), /DATA_RETENTION_DAYS/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -134,11 +134,18 @@ repository
 - 模型临时错误。
 - GitHub / 模型短暂 5xx。
 
+判断（`src/jobs/runner.ts` 的 `transient()`）先看错误类型：
+
+- 模型服务错误（`ProviderError`）：按服务方说明判断，限流、过载、5xx、网络和流中断可以重试；额度／账单用完、认证失败、参数错误不重试。
+- GitHub（`GitHubApiError`）：429、5xx、带等待时间的 403（二级限流或主限流用尽）重试；其余 4xx 不重试。
+- 网络错误按错误码（ECONNRESET、ETIMEDOUT 等，沿 cause 链查找）；预算不足不重试；执行超时重试。
+- 都不是时才按错误文字兜底匹配。
+
 策略：
 
-- 有上限的指数退避。
-- 尊重 Retry-After。
-- 建议最多 3 次执行尝试。
+- 最多执行 5 次；等待 30 秒、1、2、4 分钟（单次最长 15 分钟），能撑过一次几分钟的服务故障。
+- 服务方给了 Retry-After 或限流重置时间时照它等，最长 1 小时。
+- Token 预算按任务累计：重试沿用同一个任务，之前尝试用掉的 Token（含未回报的预留）从预算里扣掉，用完就不再重试。PR Review、Reply 和健康检查都这样；Decision Extract 没有 agent run 记录，仍按单次预算。
 
 不可持续重试：
 
@@ -151,22 +158,20 @@ repository
 
 这些进入 failed / manual intervention。
 
-## 8. 服务恢复
+## 8. 服务恢复与多实例
 
-M1 单实例启动时：
+可以起多个实例共用一个数据库，每个实例同时执行 `WORKER_CONCURRENCY`（默认 2）个任务。
 
-- 恢复 queued Job。
-- 识别异常退出遗留的 running Job。
-- 将中断任务恢复为可重新领取状态。
+- **领取原子性**：领取在一把全局 advisory lock 下进行，同一仓库同一时间只跑一个 PR 任务（Review、Reply、Decision Extract）；健康检查不受这条限制，但有多个槽位时至少留一个给 PR 任务。
+- **租约**：领取时写 `lease_token`、`locked_by`、`lease_expires_at`（60 秒），Worker 每 5 秒续租。只有持有租约的实例能写回结果。
+- **实例崩溃**：租约过期的任务在下一次领取时重新排队；已被要求取消的直接结束；失联满 3 次的标为 failed，防止一个任务反复拖垮实例。对应的 running agent run 标为 cancelled。
+- **正常停止（部署）**：不再领取新任务，中止正在跑的会话，任务放回队列且不计入尝试次数；已开始发布、状态不确定的保留 `uncertain`。
+- **跨实例取消**：PR 关闭、有新提交、仓库停用时，本实例的会话立即中止；其他实例上的任务写入 `cancel_requested`，执行实例续租时看到即中止。
+- **升级**：迁移给已有 running 任务 10 分钟租约，让旧版本进程跑完。
+- **探针**：`GET /healthz` 只看进程；`GET /readyz` 检查数据库，停止中返回 503。
+- 管理页登录会话和 OAuth state 存在 `admin_sessions`，多个实例共用；ID 只存 SHA-256，内容用 `SESSION_SECRET` 派生的密钥加密。
 
-多 Worker 后再增加：
-
-- Job lease。
-- lease expiration。
-- 领取原子性。
-- Worker crash recovery。
-
-不提前为尚未出现的扩容问题引入复杂队列平台。
+不提前引入 Redis／BullMQ 等队列平台。
 
 ## 9. 漏投递补偿
 
@@ -355,17 +360,14 @@ Pull requests Write 只用于 COMMENT Review / 评论。
 
 Job 工作区在任务完成后回收。
 
-Session / 审计可按服务配置保留，例如试用默认 30 天。
+服务启动后每 6 小时清理一次（多实例时由 advisory lock 保证只有一个在跑，每批最多 500 条）：
 
-Team Memory 独立保存，并遵循自身生命周期。
-
-仓库撤销接入或团队要求删除数据时，需要明确：
-
-- Job 是否删除。
-- Review 结果是否删除。
-- Audit 是否保留。
-- Memory 是否删除或归档。
-- 工作区和缓存是否立即回收。
+- **已结束任务**：保留 `DATA_RETENTION_DAYS` 天（默认 90，0 表示永久保留），连同审查结果、finding、发布记录、线程回复、规则线索和 agent run 一起删除（外键级联）。
+  - PR 相关任务按 PR 整组判断：这个 PR 最近一次活动早于保留期才删，活跃 PR 的全部历史保留，"之前提过的问题"去重和线程回复不会断。
+  - 健康检查每个仓库保留最近一份报告。
+  - 投递记录没有任务引用、又过了保留期的才删。
+- **卸载 App 或移除仓库**：记下 `revoked_at`，再等 `REVOKED_DATA_GRACE_DAYS` 天（默认 30，0 表示不删）删除该仓库的全部数据，包括 Team Memory 和审计记录。暂停安装不算撤销；重新安装或重新加入仓库会取消待删除标记。
+- Team Memory 在仓库仍接入时独立保存，不受任务保留期影响。
 
 ## 19. 预算与资源限制
 

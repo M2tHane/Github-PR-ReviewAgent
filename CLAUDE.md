@@ -6,7 +6,7 @@
 
 ## 项目一句话
 
-GitHub App + Pi SDK 的 PR Review 服务：Webhook 进 PostgreSQL 任务表 → 单 Worker 串行执行 → 固定 SHA 的只读 Workspace 里跑模型 → 校验后发布 `COMMENT` Review；合并后抽取团队规则候选，维护者确认后进入后续 Review 的召回。
+GitHub App + Pi SDK 的 PR Review 服务：Webhook 进 PostgreSQL 任务表 → Worker 按租约领取（可多实例，同仓库 PR 任务串行）→ 固定 SHA 的只读 Workspace 里跑模型 → 校验后发布 `COMMENT` Review；合并后抽取团队规则候选，维护者确认后进入后续 Review 的召回。
 
 ## 命令
 
@@ -31,7 +31,7 @@ npm run format           # Biome 格式化；check:format 只检查
 | --- | --- |
 | Webhook 验签、路由 | `src/github/webhook/`（`handler.ts` 入口） |
 | 入队、去重、取消 | `src/persistence/repositories/job.repository.ts` |
-| Worker 领取与重试 | `src/jobs/runner.ts`（`transient()` 决定是否重排） |
+| Worker 领取与重试 | `src/jobs/runner.ts`（并发槽位、心跳续租；`transient()` 决定是否重排） |
 | PR Review 主流程 | `src/review/review.processor.ts` |
 | 单 Agent / Session / 预算 / 工具 | `src/review/agent.ts`（`runAgentSession`、`REVIEW_PROMPT`、`workspaceTools`） |
 | 多 Agent 编排 | `src/review/orchestration.ts`（`complexityProfile` → `allowedRoles` → Main → `aggregate`） |
@@ -42,7 +42,10 @@ npm run format           # Biome 格式化；check:format 只检查
 | 规则抽取 / 召回 | `src/memory/decision.processor.ts`、`src/memory/memory.service.ts`（`retrieve`、`scopeMatches`） |
 | 健康检查 | `src/health/` |
 | 管理 API / 页面 | `src/admin/handler.ts`、`frontend/` |
-| 服务组装 | `src/bootstrap/application.ts` |
+| 服务组装 | `src/bootstrap/application.ts`（含数据清理定时器） |
+| 数据清理 | `src/persistence/repositories/retention.repository.ts` |
+| 模型输出解析 | `src/shared/model-json.ts`（各信任边界共用） |
+| 日志 | `src/logging.ts`（`log()`，错误自动带调用栈和 cause） |
 
 `src/jobs/queue.ts` 的内存 `JobQueue` 只在 `webhook/handler.ts` 传入函数型 target 时使用（主要是测试），生产路径走 PostgreSQL。
 
@@ -52,7 +55,7 @@ npm run format           # Biome 格式化；check:format 只检查
 - **新 Agent 调用一律走 `runAgentSession`。** 它负责预算预留、关闭 SDK 重试与压缩、超时和取消。直接调 `createAgentSession` 时如果不传 `settingsManager`，SDK 会按 `SettingsManager.create(cwd, ~/.pi/agent)` 读取待审仓库的 `.pi/settings.json`（默认视为可信）和宿主机全局设置。
 - **模型输出的校验。** `parseReviewResult`、`parseDecisionProposals`、`validateDisplay` 是信任边界。改字段时同步改 Prompt 里的 JSON 说明、`src/review/types.ts` 和对应测试。
 - **发布状态。** PR Review 总评末尾带 `<!-- pi-review:<fingerprint> -->` 标记；发布失败或上次中断时按这个标记查 GitHub 已有 Review 再决定（见 `review.publisher.ts`）。不要删掉这个标记。线程回复没有这套核对。`uncertain` 是终态，管理页只能查看、不能处理。
-- **重试判断靠正则匹配错误消息。** `transient()` 用 `\b5\d\d\b` 等规则匹配；新增的错误消息里不要出现无关的 5xx 形态数字，否则会被误判为可重试。
+- **重试判断先看错误类型。** `transient()` 依次认 `ProviderError`、`GitHubApiError`（按状态码）、`BudgetError`、`TimeoutError` 和网络错误码，最后才用 `\b5\d\d\b` 等正则兜底。新增的外部调用失败时抛带类型的错误；无类型的错误消息里不要出现无关的 5xx 形态数字。
 - **语言识别只有一份。** 扩展名映射和语言别名都在 `src/config/languages.ts`，变更画像和规则 Scope 共用，不要在别处再写一份。
 - **风格。** 用 Biome 格式化：提交前跑 `npm run format`，`npm run check:format` 检查。`npm run lint` 目前有存量报错（主要在管理页的无障碍规则），只作参考，不要顺手批量修。整体格式化的提交记在 `.git-blame-ignore-revs`，本地可执行 `git config blame.ignoreRevsFile .git-blame-ignore-revs`。
 - **数据库迁移。** 全新库用 `migrations/001_baseline.sql`；已有库只加增量迁移。

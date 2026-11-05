@@ -19,7 +19,7 @@ PR Review → PR Merge → Decision Extraction → Maintainer Confirm
 
 M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、预算与取消传播、Discussions 和 Agent runs 详情。
 
-M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ、多 Worker 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
+M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
 
 ## 文档入口与开工顺序
 
@@ -52,12 +52,12 @@ M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与
 - Webhook 基于原始请求体验签，限制大小并校验 header、JSON 和业务字段。一级事件由确定性代码路由。
 - `opened/reopened/synchronize/ready_for_review` 创建 PR Review；`closed + merged=true` 创建 Decision Extraction。
 - 只有人类回复本 App 已绑定的 inline finding 才进入 `REPLY_HANDLE`。Bot、自身回复、其他人的线程和普通 `issue_comment` 不进入 Reply Handler。
-- PostgreSQL 保存 delivery、Job、finding、publication、Memory 与 agent run；一个 Worker 串行领取 Job。
+- PostgreSQL 保存 delivery、Job、finding、publication、Memory 与 agent run；可多实例运行，Worker 按租约领取 Job，同一仓库的 PR 任务串行（见 [reliability-security §8](docs/reliability-security.md#8-服务恢复与多实例)）。
 - 重复 delivery、相同 PR/head 的自动 Review 和相同 source comment 不得产生重复有效发布。
 - Reply 执行时重读当前 head；按 GitHub 创建时间处理已接收的回复，迟到的旧回复不能回退新状态。
 - PR 的 Draft、closed、新 head，以及仓库暂停和服务停止，必须阻止过期 PR 结果发布，并取消对应活动会话。M3 健康任务的固定快照与取消规则见 F06。
 - 发布状态不确定时保留 `uncertain`，先核对远端，不能盲目重发。Review 已创建但线程绑定失败时，保留 published 并显式标记绑定不完整。
-- 不承诺 exactly-once 或多实例一致性。
+- 不承诺 exactly-once；多实例靠租约和发布前核对避免重复发布。
 
 真实评论、测试提交和测试 PR 只在用户已授权的测试仓库内进行。不能使用日常团队 PR 试错。
 

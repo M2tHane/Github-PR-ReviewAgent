@@ -2,6 +2,7 @@ import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { GitHubApiError, GitHubClient } from "../github/client.js";
 import type { HealthJob } from "../jobs/types.js";
+import { log } from "../logging.js";
 
 export class HealthRequestError extends Error {
   constructor(
@@ -83,9 +84,7 @@ export async function enqueueDueHealthJobs(
         "UPDATE repositories SET health_last_error=$3,health_next_run_at=$4,updated_at=now() WHERE id=$1 AND enabled AND health_schedule<>'off' AND health_next_run_at=$2",
         [repository.id, scheduledFor, message, next],
       );
-      console.error(
-        JSON.stringify({ event: "health_schedule_failed", repositoryId: Number(repository.id), error: message }),
-      );
+      log("error", "health_schedule_failed", { repositoryId: Number(repository.id), reason: message }, error);
     }
   }
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ReviewJob } from "./types.js";
+import { log } from "../logging.js";
 
 export class JobQueue {
   readonly jobs = new Map<string, ReviewJob>();
@@ -49,17 +50,18 @@ export class JobQueue {
         } catch (error) {
           if (job.status === "running") job.status = "failed";
           job.error = error instanceof Error ? error.message : "未知错误";
-          console.error(
-            JSON.stringify({
-              event: "job_failed",
+          log(
+            "error",
+            "job_failed",
+            {
               jobId: job.id,
               deliveryId: job.deliveryId,
               repositoryId: job.repositoryId,
               prNumber: job.prNumber,
               headSha: job.headSha,
               status: job.status,
-              error: job.error,
-            }),
+            },
+            error,
           );
         }
       }

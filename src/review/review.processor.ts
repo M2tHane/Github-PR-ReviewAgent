@@ -1,6 +1,6 @@
 import { readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
 import { GitHubClient } from "../github/client.js";
-import { runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
+import { BudgetError, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
 import type { Config } from "../config/config.js";
 import type { ReviewJob } from "../jobs/types.js";
 import type { ReviewResult } from "./types.js";
@@ -54,6 +54,7 @@ export function createReviewProcessor(
       return;
     }
     if (files.length === 0) throw new Error("PR 没有可审查文件");
+    const budgetTokens = await remainingBudget(publications, job.id, repositoryConfig?.budgetTokens ?? 20_000);
     const controller = new AbortController(),
       timer = setTimeout(() => controller.abort(new TimeoutError()), config.agentTimeoutMs);
     const database = publications as import("../persistence/database.js").Database | undefined;
@@ -94,7 +95,7 @@ export function createReviewProcessor(
             root,
             files,
             memories: recalled,
-            budgetTokens: repositoryConfig?.budgetTokens ?? 20_000,
+            budgetTokens,
             maxDelegates: repositoryConfig?.maxDelegates ?? 2,
             signal: controller.signal,
             outputLanguage: repositoryConfig?.outputLanguage,
@@ -102,12 +103,7 @@ export function createReviewProcessor(
             ruleHits: rules.hits,
           });
         } else {
-          singleRunId = await database?.startAgentRun?.(
-            job.id,
-            "general_review",
-            repositoryConfig?.budgetTokens ?? 20_000,
-            config.agentTimeoutMs,
-          );
+          singleRunId = await database?.startAgentRun?.(job.id, "general_review", budgetTokens, config.agentTimeoutMs);
           review = await execute({
             root,
             provider: config.modelProvider,
@@ -124,7 +120,7 @@ export function createReviewProcessor(
             previousFindings,
             ruleHits: rules.hits,
             outputLanguage: repositoryConfig?.outputLanguage,
-            budgetTokens: repositoryConfig?.budgetTokens,
+            budgetTokens,
             signal: controller.signal,
           });
         }
@@ -132,14 +128,15 @@ export function createReviewProcessor(
         controller.signal.throwIfAborted();
         if ((review as any).orchestration?.partial) job.status = "partial";
         const dependencies = await dependencyCheck;
+        const secrets = await checkAddedSecrets(root, files, previous, controller.signal);
         for (const finding of review.result.findings) redactFinding(finding);
         review.result.summary = redactSecrets(review.result.summary);
         review.result.findings.push(
           ...uncoveredRuleFindings(rules.hits, review.result.findings, previous),
-          ...(await checkAddedSecrets(root, files, previous, controller.signal)),
+          ...secrets.findings,
           ...dependencies.findings,
         );
-        review.result.limitations.push(...rules.limitations);
+        review.result.limitations.push(...rules.limitations, ...secrets.limitations);
         review.result.limitations.push(...dependencies.limitations);
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))
@@ -208,6 +205,18 @@ export function createReviewProcessor(
       database?.unregisterReviewAbort?.(job);
     }
   };
+}
+
+// 预算按任务算：重试和"新提交后重排"沿用同一个任务，之前尝试用掉的 Token 要扣掉。
+export async function remainingBudget(
+  store: { jobUsage?: (jobId: string) => Promise<AgentUsage> } | undefined,
+  jobId: string,
+  budget: number,
+) {
+  const prior = await store?.jobUsage?.(jobId);
+  const remaining = budget - (prior ? prior.totalTokens + prior.unreportedTokens : 0);
+  if (remaining <= 0) throw new BudgetError("这个任务之前的尝试已用完 Token 预算，不再重试");
+  return remaining;
 }
 
 // 规则召回只看标题、描述、文件名和新增行；上下文行和删除行会带来大量无关词。

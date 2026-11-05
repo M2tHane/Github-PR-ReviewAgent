@@ -395,7 +395,7 @@ node --env-file=.env eval/evaluate-ux.mjs
 
 当前实现刻意保持以下约束：
 
-- 单 PostgreSQL Worker，不提供多 Worker 调度保证。
+- 可以起多个实例共用一个 PostgreSQL；同一仓库的 PR 任务串行执行（见 [reliability-security §8](docs/reliability-security.md#8-服务恢复与多实例)）。
 - 不承诺 exactly-once；通过幂等、状态机和发布前的远端查询降低重复副作用。
 - Team Memory 不是全仓库自动学习系统，ACTIVE 规则必须经过人工确认。
 - Health Audit 是有限范围的只读检查，不代表完整代码安全证明。

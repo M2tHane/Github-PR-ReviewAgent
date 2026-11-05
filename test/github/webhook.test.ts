@@ -34,6 +34,9 @@ const config: Config = {
   vulnerabilityScan: false,
   sastScan: false,
   semgrepPath: "semgrep",
+  workerConcurrency: 1,
+  dataRetentionDays: 0,
+  revokedDataGraceDays: 0,
 };
 
 const payload = {
@@ -392,7 +395,7 @@ test("配置缺失或格式错误时明确失败", async () => {
 test("ReviewResult 只接受约定结构和有限输出", () => {
   assert.equal(parseReviewResult('{"summary":"ok","findings":[],"coverage":["diff"],"limitations":[]}').summary, "ok");
   assert.throws(() => parseReviewResult('{"summary":"raw"}'), /结构无效/);
-  assert.throws(() => parseReviewResult("x".repeat(50_001)), /超过预算/);
+  assert.throws(() => parseReviewResult("x".repeat(50_001)), /过长/);
   const optional = {
     summary: "ok",
     findings: [

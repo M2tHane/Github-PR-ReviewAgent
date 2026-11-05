@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { Integer, Object as ObjectSchema, Optional, String as StringSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { GitHubApiError, GitHubClient } from "../github/client.js";
-import { readWorkspaceFile } from "../workspace/workspace.js";
+import { gitEnv, readWorkspaceFile } from "../workspace/workspace.js";
 import type {
   HealthDimension,
   HealthFinding,
@@ -22,6 +22,7 @@ import type {
 } from "./types.js";
 import type { HealthJob } from "../jobs/types.js";
 import type { MemoryRecord } from "../memory/types.js";
+import { parseModelJson, requiredText, strictObject } from "../shared/model-json.js";
 
 const exec = promisify(execFile);
 export const HEALTH_VERSION = "health-v2";
@@ -36,20 +37,8 @@ export const HEALTH_LIMITS = {
 };
 export const healthDimensions: HealthDimension[] = ["code", "ci", "dependencies", "documentation", "security"];
 
-function fields(value: unknown, allowed: string[], label: string): Record<string, any> {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => !allowed.includes(key))
-  )
-    throw new Error(`Health ${label} 结构无效`);
-  return value as Record<string, any>;
-}
-function text(value: unknown, label: string, max = 4000): string {
-  if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error(`Health ${label} 文本无效`);
-  return value.trim();
-}
+const fields = (value: unknown, allowed: string[], label: string) => strictObject(value, allowed, `Health ${label}`);
+const text = (value: unknown, label: string, max = 4000) => requiredText(value, `Health ${label}`, max);
 
 export function parseHealthResult(
   raw: string,
@@ -64,18 +53,7 @@ export function parseHealthResult(
     sast?: SastRecord[];
   },
 ): HealthResult {
-  if (raw.length > 60_000) throw new Error("Health 结果过长");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(
-      raw
-        .trim()
-        .replace(/^```(?:json)?\s*/i, "")
-        .replace(/\s*```$/, ""),
-    );
-  } catch {
-    throw new Error("HealthResult 不是合法 JSON");
-  }
+  const parsed = parseModelJson(raw, "Health 结果", 60_000);
   const value = fields(parsed, ["summary", "findings", "limitations"], "结果");
   const summary = text(value.summary, "summary", 8000);
   if (
@@ -186,10 +164,29 @@ export function parseHealthResult(
   };
 }
 
-export async function scopedPaths(root: string, scope: HealthScope, signal: AbortSignal) {
+export const LISTING_LIMIT_BYTES = 32 * 1024 * 1024;
+
+// 范围内的路径只列一次，交给各个扫描器共用。路径列表超过上限时只用已经读到的部分，并标记 truncated。
+export async function scopedPaths(
+  root: string,
+  scope: HealthScope,
+  signal: AbortSignal,
+  maxBuffer = LISTING_LIMIT_BYTES,
+) {
   signal.throwIfAborted();
-  const { stdout } = await exec("git", ["-C", root, "ls-files", "-z"], { signal, maxBuffer: 4 * 1024 * 1024 });
-  return stdout
+  let stdout: string,
+    truncated = false;
+  try {
+    stdout = (await exec("git", ["-C", root, "ls-files", "-z"], { signal, maxBuffer, env: gitEnv() })).stdout;
+  } catch (error: any) {
+    signal.throwIfAborted();
+    if (error?.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw error;
+    // 超出缓冲区时最后一条路径可能被截断，丢掉。
+    stdout = String(error.stdout ?? "");
+    stdout = stdout.slice(0, stdout.lastIndexOf("\0") + 1);
+    truncated = true;
+  }
+  const paths = stdout
     .split("\0")
     .filter(
       (path) =>
@@ -198,10 +195,10 @@ export async function scopedPaths(root: string, scope: HealthScope, signal: Abor
         !scope.excludePaths.some((pattern) => matchesGlob(path, pattern)),
     )
     .sort();
+  return { paths, truncated };
 }
 
-export async function collectHealthFiles(root: string, scope: HealthScope, signal: AbortSignal) {
-  const paths = await scopedPaths(root, scope, signal);
+export async function collectHealthFiles(root: string, paths: string[], signal: AbortSignal) {
   const files = new Map<string, string>(),
     skippedFiles: Array<{ path: string; reason: string }> = [];
   let totalBytes = 0,

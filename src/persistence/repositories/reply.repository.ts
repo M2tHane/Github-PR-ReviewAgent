@@ -119,7 +119,7 @@ export class ReplyRepository {
 
   async requeueReply(job: ReviewJob, baseSha: string, headSha: string) {
     await this.pool.query(
-      "UPDATE jobs SET status='queued',base_sha=$2,target_sha=$3,next_run_at=now(),started_at=NULL,finished_at=NULL,last_error='PR head changed during reply analysis',updated_at=now() WHERE id=$1 AND job_type='REPLY_HANDLE'",
+      "UPDATE jobs SET status='queued',base_sha=$2,target_sha=$3,next_run_at=now(),started_at=NULL,finished_at=NULL,last_error='PR head changed during reply analysis',lease_token=NULL,locked_by=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND job_type='REPLY_HANDLE'",
       [job.id, baseSha, headSha],
     );
     job.status = "queued";

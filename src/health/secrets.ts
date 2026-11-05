@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { readWorkspaceFile } from "../workspace/workspace.js";
-import { scopedPaths } from "./health.service.js";
-import type { HealthMissingData, HealthScope, SecretRecord } from "./types.js";
+import type { HealthMissingData, SecretRecord } from "./types.js";
 
 export const SECRET_LIMITS = { files: 5000, fileBytes: 1_048_576, totalBytes: 50 * 1_048_576, records: 200 };
 
@@ -93,8 +92,13 @@ export function redactSecrets(text: string): string {
   return result + text.slice(last);
 }
 
-export async function collectSecrets(root: string, scope: HealthScope, signal: AbortSignal) {
-  const paths = await scopedPaths(root, scope, signal);
+// known 是健康检查已经读过的文件原文（打码前），这里直接复用，不再读第二遍。
+export async function collectSecrets(
+  root: string,
+  paths: string[],
+  signal: AbortSignal,
+  known: Map<string, string> = new Map(),
+) {
   const records: SecretRecord[] = [],
     missingData: HealthMissingData[] = [];
   let scannedFiles = 0,
@@ -107,16 +111,21 @@ export async function collectSecrets(root: string, scope: HealthScope, signal: A
       continue;
     }
     try {
-      const info = await lstat(join(root, path));
-      if (!info.isFile() || info.isSymbolicLink()) continue;
-      if (info.size > SECRET_LIMITS.fileBytes || totalBytes + info.size > SECRET_LIMITS.totalBytes) {
+      let content = known.get(path),
+        size = content === undefined ? 0 : Buffer.byteLength(content);
+      if (content === undefined) {
+        const info = await lstat(join(root, path));
+        if (!info.isFile() || info.isSymbolicLink()) continue;
+        size = info.size;
+      }
+      if (size > SECRET_LIMITS.fileBytes || totalBytes + size > SECRET_LIMITS.totalBytes) {
         skipped++;
         continue;
       }
-      const content = await readWorkspaceFile(root, path, signal);
+      content ??= await readWorkspaceFile(root, path, signal);
       if (content.includes("\0")) continue;
       scannedFiles++;
-      totalBytes += info.size;
+      totalBytes += size;
       records.push(...scanSecrets(path, content));
     } catch {
       signal.throwIfAborted();

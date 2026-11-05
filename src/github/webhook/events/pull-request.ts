@@ -5,6 +5,7 @@ import type { ReviewJob } from "../../../jobs/types.js";
 import { send } from "../http.js";
 import type { PullRequestEvent } from "../../types.js";
 import { parsePullRequest } from "../parser.js";
+import { log } from "../../../logging.js";
 
 const actions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
@@ -27,7 +28,12 @@ export async function handlePullRequest(
   const pr = event.pull_request;
   const closed = event.action === "closed";
   if (!closed && (pr.draft || pr.state !== "open") && typeof target !== "function")
-    target.cancelReview?.(event.repository.id, pr.number);
+    // 本实例上的会话立即中止；写库失败只影响别的实例，它们发布前还会再核对 PR 状态。
+    await target
+      .cancelReview?.(event.repository.id, pr.number)
+      .catch((error) =>
+        log("error", "cancel_request_failed", { repositoryId: event.repository.id, prNumber: pr.number }, error),
+      );
   if (
     (!actions.has(event.action) && !closed) ||
     (!closed && (pr.draft || pr.state !== "open" || pr.head.repo?.full_name !== event.repository.full_name)) ||

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { readWorkspaceFile } from "../workspace/workspace.js";
+import { gitEnv, readWorkspaceFile } from "../workspace/workspace.js";
 import {
   DEPENDENCY_LIMITS,
   ecosystemOf,
@@ -41,6 +41,7 @@ export async function checkDependencyChanges(
       const before = await exec("git", ["-C", root, "show", `${baseSha}:${filename}`], {
         signal,
         maxBuffer: DEPENDENCY_LIMITS.manifestBytes,
+        env: gitEnv(),
       }).then(
         ({ stdout }) => parseManifest(filename, stdout)!.dependencies,
         () => [] as Dependency[],

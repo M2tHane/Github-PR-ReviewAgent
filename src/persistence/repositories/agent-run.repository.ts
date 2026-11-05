@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import type { AgentUsage } from "../../review/agent.js";
+import { addUsage, emptyUsage, type AgentUsage } from "../../review/agent.js";
 
 export class AgentRunRepository {
   constructor(readonly pool: Pool) {}
+
+  // 这个任务所有尝试累计用掉的 Token（含未回报的预留）。重试时从预算里扣掉，避免每次重试都拿到一份完整预算。
+  async jobUsage(jobId: string): Promise<AgentUsage> {
+    const rows = (await this.pool.query("SELECT usage FROM agent_runs WHERE job_id=$1", [jobId])).rows;
+    const usage = emptyUsage();
+    for (const row of rows) addUsage(usage, row.usage);
+    return usage;
+  }
   async checkpointAgentUsage(id: string, usage: AgentUsage) {
     await this.pool.query("UPDATE agent_runs SET usage=$2,usage_input_tokens=$3,usage_output_tokens=$4 WHERE id=$1", [
       id,

@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { parseHealthResult } from "../../src/health/health.service.js";
+import { parseHealthResult, scopedPaths } from "../../src/health/health.service.js";
+import type { HealthScope } from "../../src/health/types.js";
 import { OsvClient, collectDependencies, parseManifest, type Dependency } from "../../src/health/vulnerabilities.js";
 import {
   compareVersions,
@@ -17,7 +18,7 @@ import type { HealthJob } from "../../src/jobs/types.js";
 import type { VulnerabilityRecord } from "../../src/health/types.js";
 
 const exec = promisify(execFile);
-const scope = { includePaths: [], excludePaths: [], outputLanguage: "zh-CN", budgetTokens: 1000 };
+const scope: HealthScope = { includePaths: [], excludePaths: [], outputLanguage: "zh-CN", budgetTokens: 1000 };
 
 test("锁文件解析：npm、Go、Cargo、uv、requirements、pom 只取能确定的注册表版本", () => {
   const npm = parseManifest(
@@ -123,7 +124,8 @@ test("锁文件单独读取：超过普通文件上限也会检查，范围排�
     await writeFile(join(root, "yarn.lock"), "# yarn\n");
     await writeFile(join(root, "requirements.txt"), "flask>=2\n");
     await exec("git", ["-C", root, "add", "."]);
-    const result = await collectDependencies(root, scope, AbortSignal.timeout(5000));
+    const listed = async (value: typeof scope) => (await scopedPaths(root, value, AbortSignal.timeout(5000))).paths;
+    const result = await collectDependencies(root, await listed(scope), AbortSignal.timeout(5000));
     assert.deepEqual(
       result.dependencies.map((item) => item.name),
       ["lodash"],
@@ -141,7 +143,7 @@ test("锁文件单独读取：超过普通文件上限也会检查，范围排�
     );
     const excluded = await collectDependencies(
       root,
-      { ...scope, excludePaths: ["package-lock.json", "yarn.lock", "requirements.txt"] },
+      await listed({ ...scope, excludePaths: ["package-lock.json", "yarn.lock", "requirements.txt"] }),
       AbortSignal.timeout(5000),
     );
     assert.equal(excluded.manifests.length, 0);

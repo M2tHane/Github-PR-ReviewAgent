@@ -137,6 +137,9 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     vulnerabilityScan: false,
     sastScan: false,
     semgrepPath: "semgrep",
+    workerConcurrency: 1,
+    dataRetentionDays: 0,
+    revokedDataGraceDays: 0,
   } satisfies Config;
   let hasAccess = true;
   const github = {

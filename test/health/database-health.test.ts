@@ -81,7 +81,8 @@ test("Health Job 独立于 PR、活动任务去重、PR 优先且报告与终态
       totalTokens: 0,
       unreportedTokens: 4500,
     });
-    await database.recoverRunning();
+    await database.pool.query("UPDATE jobs SET lease_expires_at=now()-interval '1 second' WHERE id=$1", [health.id]);
+    assert.equal(await database.recoverExpired(), 1, "租约过期的任务重新排队");
     assert.equal((await database.healthUsage(health.id)).unreportedTokens, 4500);
     const recovered = await database.claimNext();
     assert.equal(recovered.headSha, snapshot.headSha);
@@ -607,6 +608,12 @@ test("App 移除仓库的签名事件只撤销对应 installation，并取消健
     ).rows;
     assert.equal(delivery.length, 1);
     assert.equal(delivery[0].repository_id, null);
+    const revokedAt = async () =>
+      (await database.pool.query("SELECT revoked_at FROM repositories WHERE id=$1", [owned])).rows[0].revoked_at;
+    assert.ok(await revokedAt(), "移除仓库后记下撤销时间，宽限期过后清理数据");
+    const added = { action: "added", installation: { id: 99 }, repositories_added: [{ id: owned }] };
+    assert.equal((await post("re-added", "installation_repositories", added)).status, 200);
+    assert.equal(await revokedAt(), null, "重新加入仓库后取消清理");
     assert.equal(
       (await post("revoke-installation", "installation", { action: "deleted", installation: { id: 88 } })).status,
       202,

@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runSemgrep } from "../../src/health/sast.js";
-import { parseHealthResult } from "../../src/health/health.service.js";
+import { parseHealthResult, scopedPaths } from "../../src/health/health.service.js";
 import type { HealthJob } from "../../src/jobs/types.js";
 
 const exec = promisify(execFile);
@@ -43,7 +43,12 @@ test("Semgrep 用本地规则发现 SQL 拼接和命令注入；不安装依赖�
     );
     await exec("git", ["-C", root, "init", "-q"]);
     await exec("git", ["-C", root, "add", "."]);
-    const { scan, missingData } = await runSemgrep(root, scope, semgrep, AbortSignal.timeout(120_000));
+    const { scan, missingData } = await runSemgrep(
+      root,
+      (await scopedPaths(root, scope, AbortSignal.timeout(5000))).paths,
+      semgrep,
+      AbortSignal.timeout(120_000),
+    );
     assert.deepEqual(missingData, []);
     assert.equal(scan.status, "complete");
     assert.deepEqual(
@@ -66,12 +71,18 @@ test("没装 Semgrep 时写进缺失数据，任务照常完成", async () => {
     await writeFile(join(root, "a.py"), "print(1)\n");
     await exec("git", ["-C", root, "init", "-q"]);
     await exec("git", ["-C", root, "add", "."]);
-    const result = await runSemgrep(root, scope, join(root, "no-such-semgrep"), AbortSignal.timeout(5000));
+    const result = await runSemgrep(root, ["a.py"], join(root, "no-such-semgrep"), AbortSignal.timeout(5000));
     assert.equal(result.scan.status, "incomplete");
     assert.deepEqual(
       result.missingData.map((item) => [item.source, item.reason]),
       [["sast", "not_installed"]],
     );
+    // Semgrep 异常退出时，把错误输出的末尾留在缺失数据里，排查时不用重跑。
+    const broken = join(root, "broken-semgrep");
+    await writeFile(broken, `#!/bin/sh\necho "rule parse failed in ${root}/rules.yml" >&2\nexit 2\n`, { mode: 0o755 });
+    const failed = await runSemgrep(root, ["a.py"], broken, AbortSignal.timeout(5000));
+    assert.equal(failed.missingData[0]?.reason, "scan_failed");
+    assert.match(failed.missingData[0]!.detail, /错误输出：rule parse failed in \.\/rules\.yml$/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { scopedPaths } from "./health.service.js";
-import type { HealthMissingData, HealthScope, SastRecord, SastScan } from "./types.js";
+import { redactSecrets } from "./secrets.js";
+import type { HealthMissingData, SastRecord, SastScan } from "./types.js";
 
 const exec = promisify(execFile);
 export const SAST_LIMITS = { files: 3000, fileBytes: 1_000_000, records: 200, timeoutMs: 90_000 };
@@ -14,9 +14,13 @@ export const SEMGREP_RULES = fileURLToPath(new URL("../../../rules/semgrep/", im
 export const SAST_TARGETS = /\.(?:[cm]?[jt]sx?|py|java|go)$/;
 const SEVERITY: Record<string, SastRecord["severity"]> = { ERROR: "high", WARNING: "medium", INFO: "low" };
 
-export async function runSemgrep(root: string, scope: HealthScope, semgrepPath: string, signal: AbortSignal) {
-  const targets = (await scopedPaths(root, scope, signal)).filter((path) => SAST_TARGETS.test(path));
-  return scanWithSemgrep(root, targets, semgrepPath, signal);
+export async function runSemgrep(root: string, paths: string[], semgrepPath: string, signal: AbortSignal) {
+  return scanWithSemgrep(
+    root,
+    paths.filter((path) => SAST_TARGETS.test(path)),
+    semgrepPath,
+    signal,
+  );
 }
 
 // 只用本服务自带的本地规则；不读仓库里的 Semgrep 配置、不联网、不上报统计。健康检查和 PR 审查共用。
@@ -28,7 +32,8 @@ export async function scanWithSemgrep(root: string, targets: string[], semgrepPa
   const scan: SastScan = { status: "complete", scannedFiles: 0, records: [] };
   if (!targets.length) return { scan, missingData };
   const home = await mkdtemp(join(tmpdir(), "pi-semgrep-"));
-  let stdout: string;
+  let stdout: string,
+    stderr = "";
   try {
     stdout = (
       await exec(
@@ -71,8 +76,9 @@ export async function scanWithSemgrep(root: string, targets: string[], semgrepPa
       missing("not_installed", "服务器没有安装 Semgrep（SEMGREP_PATH），没有做代码规则扫描。");
       return { scan: { ...scan, status: "incomplete" as const }, missingData };
     }
-    // Semgrep 有问题时也可能已经输出完整 JSON；没有就当这次没扫成。
+    // Semgrep 有问题时也可能已经输出完整 JSON；没有就当这次没扫成，并留下错误输出的末尾方便排查。
     stdout = typeof error?.stdout === "string" ? error.stdout : "";
+    stderr = String(error?.stderr || error?.message || "");
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -80,7 +86,8 @@ export async function scanWithSemgrep(root: string, targets: string[], semgrepPa
   try {
     output = JSON.parse(stdout);
   } catch {
-    missing("scan_failed", "Semgrep 没有正常完成，没有做代码规则扫描。");
+    const tail = redactSecrets(stderr.replaceAll(root, ".")).replace(/\s+/g, " ").trim().slice(-300);
+    missing("scan_failed", `Semgrep 没有正常完成，没有做代码规则扫描。${tail ? `错误输出：${tail}` : ""}`);
     return { scan: { ...scan, status: "incomplete" as const }, missingData };
   }
   const errors = (Array.isArray(output?.errors) ? output.errors : []).filter((item: any) => item?.level === "error");

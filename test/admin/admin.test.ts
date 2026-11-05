@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
 import * as admin from "../../src/admin/handler.js";
-import { ExpiringStore } from "../../src/admin/session-store.js";
+import { ExpiringStore, memoryStore } from "../../src/admin/session-store.js";
+
+// 单元测试没有数据库，登录状态用内存版存储。
+const stores = () => ({
+  sessions: memoryStore<any>(8 * 60 * 60_000, 1000),
+  states: memoryStore<number>(10 * 60_000, 1000),
+});
 
 // Store tests use fake time so expiration is checked without waiting for a user request.
 test("OAuth stores release abandoned entries, reject overflow and preserve active entries", (t) => {
@@ -70,7 +76,7 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     githubOAuthCallbackUrl: "http://localhost/auth/github/callback",
     sessionSecret: "a".repeat(32),
   };
-  const server = createServer(admin.createAdminHandler(config, db, github));
+  const server = createServer(admin.createAdminHandler(config, db, github, stores()));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address === "object");
@@ -126,7 +132,7 @@ test("OAuth rejects excess starts, consumes state once and rejects expired callb
     },
     getUser: async () => ({ id: 1, login: "tester" }),
   };
-  const server = createServer(admin.createAdminHandler(config, {} as any, github));
+  const server = createServer(admin.createAdminHandler(config, {} as any, github, stores()));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert(address && typeof address === "object");

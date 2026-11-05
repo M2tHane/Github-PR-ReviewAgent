@@ -6,6 +6,7 @@ import type { Finding, ReviewResult, StoredFinding } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 import type { AgentUsage } from "./agent.js";
 import { inlineBody, reviewBody } from "./presentation.js";
+import { log } from "../logging.js";
 
 export interface PublicationStore {
   beginPublication(
@@ -14,6 +15,7 @@ export interface PublicationStore {
   ): Promise<{ status: string; github_review_id?: string; github_review_url?: string; inserted?: boolean }>;
   finishPublication(job: ReviewJob, status: "published" | "failed" | "uncertain"): Promise<void>;
   isRepositoryEnabled?(repositoryId: number): Promise<boolean>;
+  jobUsage?(jobId: string): Promise<import("./agent.js").AgentUsage>;
   getRepositoryConfig?(repositoryId: number): Promise<
     | {
         enabled: boolean;
@@ -160,26 +162,21 @@ async function recordPublished(
       const reviewComments = await github.getReviewCommentsForReview(token, job.repository, job.prNumber, published.id);
       const bound = await publications.bindFindings(job, published.id, reviewComments);
       if (bound !== commentCount)
-        console.error(
-          JSON.stringify({ event: "finding_binding_incomplete", jobId: job.id, expected: commentCount, bound }),
-        );
-    } catch {
+        log("error", "finding_binding_incomplete", { jobId: job.id, expected: commentCount, bound });
+    } catch (error) {
       await publications.bindFindings(job, published.id, []).catch(() => undefined);
-      console.error(JSON.stringify({ event: "finding_binding_incomplete", jobId: job.id, reviewId: published.id }));
+      log("error", "finding_binding_incomplete", { jobId: job.id, reviewId: published.id }, error);
     }
   }
-  console.info(
-    JSON.stringify({
-      event: "review_published",
-      jobId: job.id,
-      deliveryId: job.deliveryId,
-      repositoryId: job.repositoryId,
-      prNumber: job.prNumber,
-      headSha: job.headSha,
-      reviewId: job.reviewId,
-      model: review.model,
-      durationMs: review.durationMs,
-      usage: review.usage,
-    }),
-  );
+  log("info", "review_published", {
+    jobId: job.id,
+    deliveryId: job.deliveryId,
+    repositoryId: job.repositoryId,
+    prNumber: job.prNumber,
+    headSha: job.headSha,
+    reviewId: job.reviewId,
+    model: review.model,
+    durationMs: review.durationMs,
+    usage: review.usage,
+  });
 }

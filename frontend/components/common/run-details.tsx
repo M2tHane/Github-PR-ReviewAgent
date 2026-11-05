@@ -1,7 +1,8 @@
 import { numberText } from "../../format.js";
 import { Status } from "./status-badge.js";
+import type { AgentRunRow } from "../../../src/admin/dto.js";
 
-export function RunDetails({ runs }: { runs: any[] }) {
+export function RunDetails({ runs }: { runs: AgentRunRow[] }) {
   return (
     <>
       {runs.map((run) => (
@@ -24,8 +25,8 @@ export function RunDetails({ runs }: { runs: any[] }) {
               </dd>
             </div>
           </dl>
-          {run.usage?.unreportedTokens > 0 && (
-            <p className="error">未回报消耗：保留 {numberText(run.usage.unreportedTokens)} tokens 额度。</p>
+          {(run.usage?.unreportedTokens ?? 0) > 0 && (
+            <p className="error">未回报消耗：保留 {numberText(run.usage.unreportedTokens ?? 0)} tokens 额度。</p>
           )}
           {run.orchestration && (
             <p>

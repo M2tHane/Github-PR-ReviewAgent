@@ -1,14 +1,7 @@
 import { lstat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { readWorkspaceFile } from "../workspace/workspace.js";
-import type {
-  DependencyEcosystem,
-  HealthMissingData,
-  HealthScope,
-  VulnerabilityRecord,
-  VulnerabilitySeverity,
-} from "./types.js";
-import { scopedPaths } from "./health.service.js";
+import type { DependencyEcosystem, HealthMissingData, VulnerabilityRecord, VulnerabilitySeverity } from "./types.js";
 import { compareVersions, sortVulnerabilities } from "./vulnerability-records.js";
 
 export const DEPENDENCY_LIMITS = {
@@ -256,8 +249,7 @@ export function parseManifest(path: string, content: string): ParsedManifest | u
 }
 
 // 锁文件单独读取：通常比普通源码大很多，不能受健康检查单文件上限影响。
-export async function collectDependencies(root: string, scope: HealthScope, signal: AbortSignal) {
-  const paths = await scopedPaths(root, scope, signal);
+export async function collectDependencies(root: string, paths: string[], signal: AbortSignal) {
   const manifests: Array<{ path: string; ecosystem: DependencyEcosystem; dependencies: number }> = [],
     dependencies: Dependency[] = [],
     missingData: HealthMissingData[] = [];

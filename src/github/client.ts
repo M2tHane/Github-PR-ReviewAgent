@@ -13,12 +13,22 @@ export class GitHubApiError extends Error {
   }
 }
 
+// GitHub 限流时给出的等待秒数：优先 Retry-After；主限流用尽（403/429 且剩余 0）时按重置时间算。
+function retryAfterOf(response: Response) {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter !== null && Number.isFinite(Number(retryAfter)) && Number(retryAfter) >= 0) return Number(retryAfter);
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+  if (response.headers.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset) && reset > 0)
+    return Math.max(1, Math.ceil(reset - Date.now() / 1000));
+  return undefined;
+}
+
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
 export class GitHubClient {
-  // 单 Worker 串行执行，一个挂住的请求会挡住后面所有任务，所以每个请求都有上限。
+  // 一个挂住的请求会一直占着 Worker 槽位，同仓库的后续任务也跟着排队，所以每个请求都有上限。
   constructor(
     private appId: string,
     private privateKey: string,
@@ -82,12 +92,7 @@ export class GitHubClient {
     };
     return this.fetchJson<T>(`${api}${path}`, { ...init, headers }, path, (response) => {
       if (response.ok) return;
-      const retryAfter = Number(response.headers.get("retry-after"));
-      throw new GitHubApiError(
-        path,
-        response.status,
-        Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined,
-      );
+      throw new GitHubApiError(path, response.status, retryAfterOf(response));
     });
   }
 

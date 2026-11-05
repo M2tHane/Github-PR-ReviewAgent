@@ -137,7 +137,7 @@ test("Health 结果只引用已读取的代码和已提供的 CI / Memory，身�
 });
 
 test("Health 文件工具只读受限的已跟踪文本，记录实际返回行并拒绝外部路径", async () => {
-  const { collectHealthFiles, healthTools } = await healthApi();
+  const { collectHealthFiles, healthTools, scopedPaths } = await healthApi();
   await mkdir(resolve("work"), { recursive: true });
   const root = await mkdtemp(resolve("work/m3-files-"));
   try {
@@ -154,7 +154,8 @@ test("Health 文件工具只读受限的已跟踪文本，记录实际返回行�
     await exec("git", ["-C", root, "-c", "core.hooksPath=/dev/null", "add", "."]);
     await writeFile(join(root, "untracked.txt"), "not selected");
     const signal = new AbortController().signal;
-    const selected = await collectHealthFiles(root, { ...job.scope, excludePaths: ["excluded.txt"] }, signal);
+    const listed = (scope: object) => scopedPaths(root, { ...job.scope, ...scope }, signal).then((r: any) => r.paths);
+    const selected = await collectHealthFiles(root, await listed({ excludePaths: ["excluded.txt"] }), signal);
     assert.deepEqual([...selected.files.keys()].sort(), ["README.md", "src/a.ts"]);
     assert(selected.skippedFiles.some((item: any) => item.path === "escape"));
     assert(selected.skippedFiles.some((item: any) => item.path === "large.txt"));
@@ -172,17 +173,26 @@ test("Health 文件工具只读受限的已跟踪文本，记录实际返回行�
     await assert.rejects(read.execute("bad", { path: "../.env" }));
     const controller = new AbortController();
     controller.abort();
-    await assert.rejects(collectHealthFiles(root, job.scope, controller.signal));
+    await assert.rejects(collectHealthFiles(root, await listed({}), controller.signal));
     await Promise.all(
       Array.from({ length: 201 }, (_, index) =>
         writeFile(join(root, "src", `${String(index).padStart(3, "0")}.ts`), "export const value = 1;"),
       ),
     );
     await exec("git", ["-C", root, "-c", "core.hooksPath=/dev/null", "add", "src"]);
-    const bounded = await collectHealthFiles(root, { ...job.scope, includePaths: ["src/**"] }, signal);
+    const bounded = await collectHealthFiles(root, await listed({ includePaths: ["src/**"] }), signal);
     assert.equal(bounded.files.size, 200);
     assert.equal(bounded.limited, true);
     assert.equal(bounded.skippedFileCount, 2);
+    const full = await scopedPaths(root, job.scope, signal);
+    assert.equal(full.truncated, false);
+    const partial = await scopedPaths(root, job.scope, signal, 64);
+    assert.equal(partial.truncated, true, "文件列表超出上限时降级，不让整个任务失败");
+    assert.ok(partial.paths.length > 0 && partial.paths.length < full.paths.length);
+    assert.ok(
+      partial.paths.every((path: string) => full.paths.includes(path)),
+      "不保留被截断的半条路径",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

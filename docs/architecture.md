@@ -252,7 +252,7 @@ Main 不重复完整审查，最终返回 summary 与候选 key 分组。服务�
 
 模型只输出 summary、findings 与 limitations。finding 的身份、报告归属、覆盖统计、来源链接与状态由服务生成。代码引用必须指向工具实际返回过的行，CI 与 Memory 引用必须属于本次输入。没有有效结构化结果时失败；数据或覆盖不完整时保存 partial。报告与 Job 终态在同一事务提交，重复保存以首次报告为准。
 
-Health 独立使用一个 Session。默认分支后续更新不取消固定旧 SHA 的历史检查；暂停、授权撤销、服务停止及总时限会取消它。GitHub 读取、Git 和文件工具均接收同一取消信号。当前总时限最多 120 秒；单 Worker 不抢占正在执行的健康任务。
+Health 独立使用一个 Session。默认分支后续更新不取消固定旧 SHA 的历史检查；暂停、授权撤销、服务停止及总时限会取消它。GitHub 读取、Git 和文件工具均接收同一取消信号。当前总时限最多 120 秒；Worker 不抢占正在执行的健康任务，但有多个槽位时健康检查至少给 PR 任务留一个。
 
 定时配置为 off / daily / weekly，默认 off；进程每 30 秒检查到期仓库。数据库仓库行锁与活动任务唯一索引合并重复触发；定时游标与入队在同一事务推进，停机漏过的多个周期只触发一次当前检查。无法建立快照时记录仓库级错误并推进到下一周期，用户可以手动重试。
 
@@ -294,7 +294,7 @@ Health 独立使用一个 Session。默认分支后续更新不取消固定旧 S
 | Agent | Pi Agent SDK、AgentSession、自定义 Tools / Skills | M2 加入 delegate_agent 与专项会话 |
 | GitHub | GitHub App + 原生 fetch | 线程详情需要时补 GraphQL |
 | HTTP | Node HTTP 或轻量 HTTP 框架 | 按 Webhook / 管理 API 需求确定 |
-| Job | M0 内存；M1 PostgreSQL + 单实例后台执行 | 多 Worker 后再考虑 BullMQ + Redis |
+| Job | M0 内存；M1 PostgreSQL + 单实例后台执行；现在 PostgreSQL 租约 + 多实例 | 吞吐瓶颈出现后再考虑 BullMQ + Redis |
 | Memory | PostgreSQL + 作用域过滤 + 文本检索 | 召回不足时加 pgvector |
 | Workspace | Git 固定提交快照、Agent 只读 | 运行不可信代码时才引入沙箱 |
 | Frontend | React 最小管理界面 | M2/M3 随功能扩展 |

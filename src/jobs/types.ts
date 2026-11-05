@@ -27,6 +27,8 @@ export interface ReviewJob {
   reviewId?: number;
   reviewUrl?: string;
   attempt?: number;
+  // 领取时生成；只有持有它的实例能续租、结束这个任务。
+  leaseToken?: string;
   findingId?: string;
   rootCommentId?: number;
   sourceCommentId?: number;
@@ -50,6 +52,7 @@ export interface HealthJob
     | "status"
     | "error"
     | "attempt"
+    | "leaseToken"
   > {
   jobType: "HEALTH_AUDIT";
   defaultBranch: string;
