@@ -332,6 +332,18 @@ export async function runAgentSession(
         await checkpoint;
         input.signal?.throwIfAborted();
         if (timedOut) throw new TimeoutError();
+        // Pi 1.5 normalizes images and drops invalid ones; never send an incomplete image task.
+        if (input.images?.length) {
+          const imageCount = context.messages.reduce(
+            (count, message) =>
+              count +
+              (message.role === "user" && Array.isArray(message.content)
+                ? message.content.filter((part) => part.type === "image").length
+                : 0),
+            0,
+          );
+          if (imageCount < input.images.length) throw new Error("图片未完整传入模型，请检查图片格式或重新发送。");
+        }
         const prepared = (await options?.onPayload?.(payload, selected)) ?? payload;
         try {
           // 计算 provider 实际发送的 body，避免把 SDK 内保留但未发送的 reasoning 重复预留。
