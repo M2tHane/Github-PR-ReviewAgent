@@ -2,6 +2,8 @@ import { useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
 import { RepositorySettings } from "../features/repositories/repository-settings.js";
+import { NotificationMembers } from "../features/repositories/notification-members.js";
+import { DevelopmentSettingsPanel } from "../features/repositories/development-settings.js";
 import type { Repository } from "../types.js";
 
 export function RepositoryPage({
@@ -16,6 +18,8 @@ export function RepositoryPage({
   const [busy, setBusy] = useState<number | null>(null),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [developmentRepository, setDevelopmentRepository] = useState<Repository>();
+  const [membersRepository, setMembersRepository] = useState<Repository>();
   async function save(repo: Repository, form: HTMLFormElement) {
     const data = new FormData(form),
       lines = (name: string) =>
@@ -76,9 +80,31 @@ export function RepositoryPage({
       ) : (
         <div className="grid">
           {items.map((repo) => (
-            <RepositorySettings key={repo.id} repo={repo} advanced={advanced} busy={busy} save={save} />
+            <RepositorySettings
+              key={repo.id}
+              repo={repo}
+              advanced={advanced}
+              busy={busy}
+              save={save}
+              manageMembers={setMembersRepository}
+              manageDevelopment={setDevelopmentRepository}
+            />
           ))}
         </div>
+      )}
+      {developmentRepository && (
+        <DevelopmentSettingsPanel
+          key={developmentRepository.id}
+          repo={developmentRepository}
+          onClose={() => setDevelopmentRepository(undefined)}
+        />
+      )}
+      {membersRepository && (
+        <NotificationMembers
+          key={membersRepository.id}
+          repo={membersRepository}
+          onClose={() => setMembersRepository(undefined)}
+        />
       )}
     </section>
   );

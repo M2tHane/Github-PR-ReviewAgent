@@ -1,3 +1,4 @@
+import { memorySourceLabel } from "../../../src/memory/types.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Status } from "../../components/common/status-badge.js";
@@ -219,7 +220,7 @@ export function ReviewDetails({ id }: { id: string }) {
                 ))}
                 {finding.memory && (
                   <small>
-                    引用规则版本 v{finding.memory.version} · 来源 PR #{finding.memory.source.pullRequestNumber ?? "—"}
+                    引用规则版本 v{finding.memory.version} · {memorySourceLabel(finding.memory.source)}
                   </small>
                 )}
               </details>

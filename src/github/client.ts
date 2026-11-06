@@ -96,7 +96,7 @@ export class GitHubClient {
     });
   }
 
-  getPullRequest(token: string, repository: string, number: number) {
+  getPullRequest(token: string, repository: string, number: number, signal?: AbortSignal) {
     return this.request<{
       number: number;
       title: string;
@@ -108,7 +108,8 @@ export class GitHubClient {
       merge_commit_sha: string | null;
       base: { sha: string };
       head: { sha: string };
-    }>(token, `/repos/${repository}/pulls/${number}`);
+      user: { id: number; login: string };
+    }>(token, `/repos/${repository}/pulls/${number}`, { signal });
   }
 
   // 公开仓库里的高危安全问题不在 PR 评论里写细节；拿不准时由调用方按公开处理。
@@ -129,6 +130,103 @@ export class GitHubClient {
     );
     if (!branch.commit?.sha || !/^[a-f0-9]{40}$/i.test(branch.commit.sha)) throw new Error("默认分支没有可用提交");
     return { defaultBranch: info.default_branch, headSha: branch.commit.sha };
+  }
+
+  async developmentSnapshot(
+    token: string,
+    repository: string,
+    repositoryId: number,
+    branch: string,
+    signal: AbortSignal,
+  ) {
+    const info = await this.request<{ id: number }>(token, `/repos/${repository}`, { signal });
+    if (info.id !== repositoryId) throw new Error("开发仓库归属无效");
+    const ref = await this.request<{ object: { sha: string } }>(
+      token,
+      `/repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`,
+      { signal },
+    );
+    if (!/^[a-f0-9]{40}$/.test(ref.object?.sha)) throw new Error("开发分支 SHA 无效");
+    const commit = await this.request<{ tree: { sha: string } }>(
+      token,
+      `/repos/${repository}/git/commits/${ref.object.sha}`,
+      { signal },
+    );
+    if (!/^[a-f0-9]{40}$/.test(commit.tree?.sha)) throw new Error("开发分支 tree 无效");
+    return { sha: ref.object.sha, tree: commit.tree.sha };
+  }
+
+  async createDevelopmentCommit(
+    token: string,
+    repository: string,
+    base: { sha: string; tree: string },
+    changes: Array<{ path: string; content: string | null; mode: string }>,
+    title: string,
+    signal: AbortSignal,
+  ) {
+    const tree = await this.request<{ sha: string }>(token, `/repos/${repository}/git/trees`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify({
+        base_tree: base.tree,
+        tree: changes.map((c) => ({
+          path: c.path,
+          mode: c.mode,
+          type: "blob",
+          ...(c.content === null ? { sha: null } : { content: c.content }),
+        })),
+      }),
+    });
+    if (!/^[a-f0-9]{40}$/.test(tree.sha)) throw new Error("Git tree 响应无效");
+    const commit = await this.request<{ sha: string }>(token, `/repos/${repository}/git/commits`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify({ message: title, tree: tree.sha, parents: [base.sha] }),
+    });
+    if (!/^[a-f0-9]{40}$/.test(commit.sha)) throw new Error("Git commit 响应无效");
+    return commit.sha;
+  }
+
+  createDevelopmentBranch(token: string, repository: string, branch: string, sha: string, signal: AbortSignal) {
+    return this.request(token, `/repos/${repository}/git/refs`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }),
+    });
+  }
+
+  async createDevelopmentPullRequest(
+    token: string,
+    repository: string,
+    input: { head: string; base: string; title: string; body: string },
+    signal: AbortSignal,
+  ) {
+    const pr = await this.request<{ number: number; head: { sha: string } }>(token, `/repos/${repository}/pulls`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify(input),
+    });
+    if (!Number.isSafeInteger(pr.number) || pr.number <= 0 || !/^[a-f0-9]{40}$/.test(pr.head?.sha))
+      throw new Error("PR 创建响应无效");
+    return pr;
+  }
+
+  async findDevelopmentPullRequest(
+    token: string,
+    repository: string,
+    branch: string,
+    base: string,
+    signal: AbortSignal,
+  ) {
+    const params = new URLSearchParams({
+      state: "all",
+      head: `${repository.split("/")[0]}:${branch}`,
+      base,
+      per_page: "100",
+    });
+    return this.request<
+      Array<{ number: number; head: { sha: string; ref: string; repo: { full_name: string } }; base: { ref: string } }>
+    >(token, `/repos/${repository}/pulls?${params}`, { signal });
   }
 
   healthChecks(token: string, repository: string, sha: string, signal: AbortSignal) {

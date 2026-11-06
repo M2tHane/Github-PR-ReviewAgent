@@ -257,7 +257,7 @@ async function audit(
   );
 }
 
-function toMemory(row: Record<string, any>): MemoryRecord {
+export function toMemory(row: Record<string, any>): MemoryRecord {
   return {
     activeVersion: row.active_version ? Number(row.active_version) : undefined,
     id: String(row.id),
@@ -271,7 +271,7 @@ function toMemory(row: Record<string, any>): MemoryRecord {
     scope: row.scope,
     source: row.source,
     evidence: row.evidence,
-    confidence: Number(row.confidence),
+    confidence: row.confidence === null ? null : Number(row.confidence),
     uncertainties: row.uncertainties,
     status: row.status,
     exceptionTo: row.exception_to ?? undefined,

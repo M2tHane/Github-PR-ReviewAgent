@@ -1,3 +1,4 @@
+import { memorySourceLabel } from "../memory/types.js";
 import type { Finding, ReviewResult } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 
@@ -181,7 +182,9 @@ export function inlineBody(job: ReviewJob, finding: Finding & { id: string }, de
   const parts = [findingText(finding)];
   if (finding.memory) {
     const pr = finding.memory.source.pullRequestNumber;
-    const source = pr ? `（来源：[PR #${pr}](https://github.com/${job.repository}/pull/${pr})）` : "";
+    const source = pr
+      ? `（来源：[PR #${pr}](https://github.com/${job.repository}/pull/${pr})）`
+      : `（${safe(memorySourceLabel(finding.memory.source))}）`;
     parts.push(
       `<details>\n<summary>规则来源</summary>\n\n${safe(finding.memory.title ?? "团队已确认的规则")}${source}\n\n</details>`,
     );

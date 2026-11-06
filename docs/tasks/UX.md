@@ -174,3 +174,118 @@ ego-browser TaskSpace 3；使用独立 `ux_preview_*` schema 和 OAuth 替身，
 将 `docs/runtime-flow.md` 的问答统一到项目理解指南，保留补充的提取校验、维护者权限、重试次数和流程图预览，删除重复文件并修复引用。未跟踪的 walkthrough、20 张截图及 ZIP 移至被忽略的 `work/document-archive/`，保留本地历史证据，不纳入 Git。阶段任务清单、专题设计、Notes 和 draw.io 文件保留。
 
 本次提交同时包含前述移除启动自动迁移的改动。实际执行 `npm run build`、`npm run check:docs`（8 篇 Note、21 个 Markdown 文件、129 个本地链接和锚点）、`git diff --check`，均通过。没有运行服务、真实数据库迁移、模型调用或业务 GitHub 发布；未重复运行业务／数据库测试和依赖审计，本轮没有改变业务处理或依赖。无新增业务 SHA／delivery／Job／finding／Review／reply 与 usage。
+
+## 2026-11-05：企业微信完成通知与项目成员关联
+
+基于最新 `origin/ops-hardening`（`c4276b2f8ad94a98ce843786e08a0d469517a36c`）创建 `feat/wecom-review-notifications`，本轮未提交、未推送。
+
+- [x] GitHub Review 确认发布时原子写入待通知记录，独立发送完成状态及 PR 链接，不包含审查明细；通过 `mentioned_list` 指定 PR 作者的企业微信成员 ID。
+- [x] 增量迁移 004 保存通知、跨实例限速状态和按项目隔离的成员关联。发送时读取当前项目映射；缺少关联显式失败，不跨项目兜底。
+- [x] 项目「通知成员」以三列表格展示 GitHub 账号、企业微信成员 ID、操作；右上角添加，每行末尾编辑／删除，独立编辑弹窗和删除确认。权限与 CSRF 使用现有管理页约束。
+- [x] 配置及接入、失败排障、性能估算写入 [企业微信通知说明](../wecom-notifications.md)。一个服务共用一个群 Webhook，成员关联按项目维护，保存即生效。
+- [ ] 真实内部测试群的 @ 提醒、PR 链接及 GitHub 发布端到端验收：未提供测试群 Webhook；官方 API 与帮助说明有冲突，不能以接口成功代替客户端提醒验证。
+
+验证证据：
+
+| 实际命令／操作 | 结果 |
+| --- | --- |
+| `npm test`（含 build） | 139 项，104 通过、35 skip、0 失败；10.53 秒，`work/wecom-tests.log`。数据库单独验证。 |
+| 临时 PostgreSQL 18 独立 schema 下 `npm run test:db` | 36 项全通过、0 skip、0 失败；3.66 秒，`work/wecom-db-tests.log`。覆盖项目隔离、权限、发送重试与不确定状态、跨实例互斥／限速及取消。 |
+| 表格调整后 `npm run build` | TypeScript 与管理页打包通过。 |
+| ego-browser 替身登录＋真实本地管理 API／临时数据库 | 验证分项目关联、新增、编辑、取消删除、确认删除、Escape 焦点恢复；桌面和 390px 手机表格截图目视通过，手机页面宽 390px，无横向溢出。截图 `work/wecom-members-table-desktop.png`、`work/wecom-members-table-mobile.png`。 |
+| `npm run check:docs`、`git diff --check` | 通过。 |
+| `npm audit --audit-level=high` | 未通过：现有依赖 2 high、2 moderate，涉及 Pi SDK 间接依赖等；未改依赖及 lockfile。日志 `work/wecom-audit.log`。 |
+
+性能为代码路径估算：每实例空闲约 0.25 次数据库查询／秒；正常通知约 12 次数据库往返、2 次 GitHub HTTP、1 次企微 HTTP，不新增模型调用。未测真实网络延迟或压力负载。没有启动真实队列 Worker、迁移生产数据库、调用业务模型、写入真实 GitHub 或发送企微消息；无新增真实 delivery／Job／finding／Review／reply URL、业务模型角色或 usage。
+
+最终界面按用户要求将行末「编辑／删除」改为无边框、透明背景的文字按钮；再次构建通过，并在桌面与手机截图确认。浏览器任务空间已关闭，本轮临时预览进程正常停止，查询确认预览 schema 已回收，专用测试数据库容器已停止。
+
+### 2026-11-05：真实 PR 与企微联调、通知排版调整
+
+用户明确授权在 `M2tHane/pi-review-sandbox` 创建测试 PR 并发送企微通知。采用独立 schema `wecom_live_1793892929734`，复用真实 App／模型配置，只转发测试分支的真实 GitHub Webhook；未启动主数据库历史任务，未修改 GitHub App 的 Webhook 地址。
+
+- 测试 PR：[PR #5](https://github.com/M2tHane/pi-review-sandbox/pull/5)，分支 `test/wecom-notification-20261105`，head `baef00ee7e07a07fa7080b051aca6f44e7dc76f7`。测试代码故意漏乘商品数量；PR 保持打开且未合并。
+- Delivery `b239c710-d92e-11f1-84ce-aef5c34d7ab8` 被真实验签接受（202）；Job `72de708f-d498-41bd-8074-2f784584afb0` 首次执行成功，15:36:46.800–15:37:18.842 UTC，约 32.04 秒。
+- `general_review` / `gpt-6.1-sol` 找到“小计漏算商品数量”，发布 [Review 5787607234](https://github.com/M2tHane/pi-review-sandbox/pull/5#pullrequestreview-5787607234) 和 [finding_2fa31bd204e39b102beec72b 对应评论](https://github.com/M2tHane/pi-review-sandbox/pull/5#discussion_r4482511786)。Agent 记录耗时 25,012 ms；input 1,881、output 545、cacheRead 1,408、cacheWrite 0、totalTokens 3,834、unreportedTokens 0。
+- 原文本通知于 15:37:23.362 UTC 记录 `sent`，attempt 1，发布时间到送达接口成功约 5.17 秒。用户提供客户端截图，确认收到完成状态、PR 链接，且 `jizhaoqi` 显示为实际成员 `@追逐兔`。截图可确认成员解析与消息展示，系统通知／免打扰提醒未单独验证。
+- 根据用户截图反馈，通知改用普通 `markdown` 的 `<@userid>`，将 @ 放第一行，空行后展示状态、项目和 PR 短链接；去掉 SHA、长网址和末尾重复 @。保留部分审查状态，不发送审查明细。
+- 使用构建后的通知代码，对已发布的 PR #5 单独发送一次排版预览，15:41:01.865 UTC 返回 `sent`。未重跑模型、未重排原通知、未重复发布 GitHub Review。新版客户端排版与 @ 提醒待用户确认。
+- 更新后 `npm test`：104 通过、35 skip、0 失败（11.25 秒）；`npm run test:db`：36 全通过、0 skip、0 失败。日志 `work/wecom-layout-tests.log`、`work/wecom-layout-db-tests.log`。`npm run check:docs`、`git diff --check` 通过。
+- 本次真实测试关联保存在隔离 schema，未写入主数据库；schema 保留用于核对真实结果。临时服务与 Smee 转发进程已停止。证据保存于 `work/wecom-live-evidence.json`、`work/wecom-layout-send.json`，不包含 Webhook 密钥。
+
+限制：Review 内管理页详情链接沿用现有配置 `127.0.0.1:3000`，不能作为远程可访问页面；本轮验证的是 GitHub PR／Review 链接和群通知，未修改该配置。新版排版沿用单次 HTTP 投递，无新增查询或模型开销；未做压力测试。本轮没有改依赖，未重复运行依赖审计；原审计问题仍保留。
+
+### 2026-11-05：PR 标题与独立结果链接
+
+用户确认上一版普通 Markdown 截图已正确展示顶部 @，继续要求正文第二行显示「PR：#编号 标题」，第三行单独显示「查看审查结果」链接。本次保留顶部 @／完成状态及项目行，发送时复用已有 GitHub PR 响应取得最新标题，不增加网络请求或数据库字段；标题经现有密钥打码、换行归一化和 Markdown／@ 语法转义，防止标题改变通知结构或提醒对象。
+
+实际验证：`npm run build` 通过；`node --test dist/test/notifications/wecom.test.js` 7 项通过；`node --env-file=.env --test dist/test/notifications/database-notifications.test.js` 11 项全部通过、0 skip（4.63 秒）。覆盖标题使用当前 PR 值、链接独立一行、标题格式与 @ 注入、原有通知发送状态。`npm run check:docs`、`git diff --check` 通过。本次仅跑相关测试，未重复全量测试或依赖审计。
+
+读取真实 PR #5 当前标题并确认 head 未变，于 15:44:55.871 UTC 单独发送一条新版预览，返回 `sent`；证据 `work/wecom-title-send.json`。没有新建 PR、重复运行模型或重复发布 Review；新版客户端排版待用户确认。
+
+### 2026-11-05：启动本地前后端
+
+用户授权启动日常本地服务。执行 `npm run migrate`（含构建）成功，主数据库增量升级至 004；将已验证的测试仓库成员关联保存到主数据库。执行 `npm start`，前端静态页面及后端 API 同由 3000 端口提供，日志 `work/local-service.log`。
+
+验证：`/`、`/assets/app.js`、`/assets/app.css`、`/healthz`、`/readyz` 均 HTTP 200；未登录访问 `/api/repositories` 返回预期的 401。启动前无 queued/running 历史任务，健康定时关闭。此次未重新启动 Smee 外网 Webhook 转发，未创建新的 PR 或触发模型调用。沿用既有启动流程；启用企微通知增加每实例约 0.25 次/秒的空闲数据库轮询，未做启动性能基准测试。
+
+### 2026-11-05：仓库启用复选框点击范围
+
+用户报告点击仓库卡片空白会切换启用状态。原因是 `.check` 为块级 flex 标签，占满卡片宽度。仅对 `.repository-card > .check` 设置 `width: fit-content`，保留复选框与文字点击、键盘操作；构建后刷新现有前端即可生效。
+
+验证：`npm run build`、`git diff --check` 通过。ego-browser 未登录，未操作真实仓库设置；在本地页面加载实际构建 CSS，并插入与仓库组件一致的标签结构验证：800px 卡片内标签宽约 75.6px，点击右侧空白不切换、点击标签切换、空格键切换，均通过。测试浏览器已关闭。未运行业务测试，无后端行为变更。
+
+同时核实 Webhook 当前来自服务级 `WECOM_WEBHOOK_URL`，按仓库仅保存成员关联；尚未实现每仓库 Webhook 配置。本轮向用户说明现状及改动范围，未擅自改通知目标或凭据存储方式。
+
+### 2026-11-05：主题切换入口
+
+按用户授权，在登录页及登录后页面右上角新增主题选择器（浅色／深色／跟随系统）。选择保存在当前浏览器 localStorage，默认跟随系统；复用既有配色，通过 CSS `light-dark()` 与根节点 `color-scheme` 支持强制主题和实时系统变化。浏览器阻止存储时仍可切换本次页面，并明确提示无法保存。
+
+验证：`npm run build`、`git diff --check` 通过。ego-browser 实测浅色背景 `rgb(247,248,250)`、深色背景 `rgb(11,13,18)`；刷新保留选择；跟随系统时模拟浅／深偏好实时切换通过。登录页操作实测；登录后布局使用浏览器内替身 session/bootstrap 展示，不更改真实登录或仓库数据。桌面／390px 手机截图目视通过，手机文档宽度 390px，无水平溢出。截图 `work/theme-desktop-light.png`、`work/theme-mobile-light.png`，测试浏览器已关闭。首次页面初始化脚本注入未生效导致等待导航超时，改为当前测试页面注入后验证成功。
+
+此次仅涉及前端主题，无新依赖、网络请求、数据库查询或模型调用；未重复业务／数据库测试。已重新构建本地前端，现有服务无需重启，用户刷新即可看到切换入口。
+
+### 2026-11-05：tuzi-api 团队规则研究与冲突核对
+
+用户授权读取 tuzi-api 最新 dev 和历史提交，沉淀可用于 Review 的团队规则，并要求规则不冲突。本轮完成 [15 条规则候选](../team-rules/tuzi-api.md) 及 [历史证据、冲突核对和接入说明](../team-rules/tuzi-api-evidence.md)：12 条有当前明确规范支撑，3 条为限定范围的历史推断；每条包含适用条件、例外、应提示／不应提示例和固定版本证据。尚未导入或激活 Memory。
+
+- tuzi-api 基准：fetch origin dev 后固定 `d2d412bec96698e0f7450b1bd5684f88231887c5`；结束前 `git ls-remote origin refs/heads/dev` 仍为相同 SHA。浏览近期主线及按主题筛选的历史，不声称完整审查全部 10,816 个可达提交。
+- Review Agent 基准：`c4276b2f8ad94a98ce843786e08a0d469517a36c` 加既有工作区改动。遵循 CodeGraph 优先读取规则创建、来源校验、确认、替代和召回路径；本轮只增加两份文档并追加本条记录，保留此前未提交功能。
+- 冲突核对覆盖 17 组易混淆要求，包括 MySQL 替代旧三库规范、主库账务记录与日志库投递、缺失 usage 与明确零、缓存降级与权限未知不放行、同秒续租零行结果、进程内游标与跨实例资金幂等。核对范围和不能泛化的要求写入证据文档。
+
+实际验证：
+
+| 命令／操作 | 结果 |
+| --- | --- |
+| `git -c core.hooksPath=/dev/null fetch origin dev`、固定 SHA 的 `git show`／`git grep`／主题历史查询 | 成功；未切换 tuzi-api 功能分支，未执行待研究仓库脚本。 |
+| Python 调用 `git show SHA:path`、`git rev-parse`、`git merge-base --is-ancestor` | 37 个快照文件及行锚点存在，15 个引用历史提交均属于该 dev 历史；完整引用清单保存在忽略的 `work/tuzi-rule-research/sources.json`。 |
+| 通过 `pg.Client` 连接级只读选项查询目标仓库 | 成功，返回空列表：当前本地配置的管理库未登记 `tuziapi/tuzi-api`；未写仓库、规则或状态。不能据此判断其他部署的规则情况。 |
+| `npm run check:docs` | 通过；22 篇 Markdown、158 个本地文件链接／标题锚点。外部 GitHub 页面可访问性不在该检查范围。 |
+| 规则／证据编号、引用定义和新文件空白检查 | 通过；15 个唯一规则编号对应 15 个证据节，固定源引用无缺失。 |
+| `git diff --check` | 通过；新文档另行检查尾随空白。 |
+
+未运行 build、业务测试、数据库测试、依赖审计或 tuzi-api 的 Go／前端测试：本轮只研究与写文档，没有修改业务代码、配置或依赖。测试文件仅作为源码证据阅读，历史提交中的测试结果不冒充本轮通过。没有调用业务模型、GitHub 写 API、真实支付或部署；无新增 delivery／Job／finding／Review／reply URL、业务模型角色、耗时或 usage。文档未接入运行时，没有新增运行请求延迟、内存、查询或包体积开销。
+
+接入限制：当前候选要求已合并 PR 和人类讨论证据，没有通用 Markdown 导入接口；不同规则 ID 的 approve 也不自动消解语义冲突。后续应先选择补齐 PR 来源或扩展历史证据导入，重新核对实际目标库中的既有规则，再经维护者确认。未伪造 PR、评论、Memory ID 或来源 Job。
+
+### 2026-11-05：tuzi-api 规则扩展至 50 条
+
+用户认为首批 15 条覆盖不足并授权继续，扩展 [规则候选集](../team-rules/tuzi-api.md) 至 50 条（新增 TUZI-016—050），保留原编号和初版完成记录。新增渠道／流式协议、模型折扣与价格恢复、额度管理、任务财务身份、用户设置、索引检查、日志导出、后台租约、权限、SSRF、CSV 及前端刷新／请求生命周期等范围。每条有适用条件、边界、应提示／不应提示例和证据；新增条目还列出核对场景。这些场景是未来回归样本，未冒充本轮执行测试。
+
+[证据文档](../team-rules/tuzi-api-evidence.md) 增加覆盖矩阵、具体流程及 37 组冲突核对。明确记录了五项历史演进：用户模型折扣从替代 Tier 扩大到整个分组倍率；HTTP 200 文本流支持不完整终止；日志自动刷新改为每次进入由用户选择；导出结果保留供统计，不再沿用旧关闭后清理要求；Seedance 渠道存储键由默认关闭改为默认开启。最后一项发现旧文档未同步，以后续实际函数、注释和测试变更证明替代，不推断线上已全部升级。通用规则与专项规则同根因只报一个 finding；历史推断不标为已确认团队共识。
+
+实际验证与范围：
+
+| 命令／操作 | 结果 |
+| --- | --- |
+| `git -c core.hooksPath=/dev/null fetch origin dev`、固定 SHA 的 `git show`／`git grep`／按文件及主题追溯 | 成功；仍固定 `d2d412bec96698e0f7450b1bd5684f88231887c5`。结束前 `git ls-remote origin refs/heads/dev` 相同。 |
+| `python3 work/tuzi-rule-research-v2/validate.py` | 通过：50 个唯一规则、50 个证据节、37 组冲突比较；112 个源码行锚点覆盖 84 个不同文件，48 个历史提交均为固定 dev 的祖先，160 个引用定义与使用匹配。首跑校验器未识别初版的“候选规则”字段，修正脚本后通过，未改变证据分级。 |
+| `npm run check:docs` | 通过：22 篇 Markdown、230 个本地链接／标题锚点。外部链接通过本地对象验证存在与版本，不代表 GitHub 页面已在线访问。 |
+| `git diff --check` 与新文档逐行空白检查 | 通过；包含未跟踪文档的独立检查。 |
+| tuzi-api `git status --short --branch` | 仍为 `feature/373-log-auto-refresh`，仅原有未跟踪 `.playwright-mcp/`；未切换分支、修改源代码或执行其脚本。 |
+
+本轮仅更新上述两份规则文档并追加本记录；研究清单与校验结果保存在忽略的 `work/tuzi-rule-research-v2/`。Review Agent 基准仍为 `c4276b2f8ad94a98ce843786e08a0d469517a36c` 加原有工作区变更，其他未提交功能保持不动。没有逐一阅读全部 10,816 个可达提交，也没有逐个审核全部供应商适配器或核实真实生产行为。结构／引用检查不能证明语义无冲突；语义核对限于文档记录的范围和固定版本。
+
+未运行 build、业务／数据库测试、依赖审计及 tuzi-api 测试，因为只有文档变更；没有启动待研究项目、真实支付、模型调用、GitHub 写操作或部署。无新增 delivery／Job／finding／Review／reply URL、业务模型角色、耗时或 usage；无新增运行时延迟、查询、内存或包体积开销。
+
+规则仍是文档候选，未导入或激活 Memory。现有 PR／人类评论来源合同与导入入口限制仍适用，未来接入实际库时仍要核对已有规则；本轮没有扩展来源模型或伪造 PR／评论证据。

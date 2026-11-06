@@ -18,7 +18,8 @@ export function parsePullRequest(value: unknown): PullRequestEvent {
     typeof pr.draft !== "boolean" ||
     typeof pr.state !== "string" ||
     typeof pr.base?.sha !== "string" ||
-    typeof pr.head?.sha !== "string"
+    typeof pr.head?.sha !== "string" ||
+    (pr.head.ref !== undefined && typeof pr.head.ref !== "string")
   )
     throw new Error("缺少 pull_request 必需字段");
   if (

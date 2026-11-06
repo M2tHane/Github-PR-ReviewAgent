@@ -17,6 +17,30 @@ export interface DecisionProposal {
   uncertainties: string[];
 }
 
+export type ImportedMemorySource = {
+  kind: "markdown_import" | "project_import";
+  importedBy: number;
+  importedByLogin: string;
+  importedAt: string;
+  documentName?: string;
+  documentSha256?: string;
+  documentRuleId?: string;
+  repositoryId?: number;
+  repositoryName?: string;
+  memoryId?: string;
+  memoryVersion?: number;
+  pullRequestNumber?: never;
+  commitSha?: never;
+  commentIds?: never;
+};
+export type MemorySource = (DecisionProposal["source"] & { kind?: never }) | ImportedMemorySource;
+
+export function memorySourceLabel(source: MemorySource | { kind?: never; pullRequestNumber?: number }) {
+  if (source.kind === "markdown_import") return `Markdown 导入 · ${source.documentName} · ${source.documentRuleId}`;
+  if (source.kind === "project_import") return `项目导入 · ${source.repositoryName} · v${source.memoryVersion}`;
+  return source.pullRequestNumber ? `来源 PR #${source.pullRequestNumber}` : "来源未记录";
+}
+
 export interface MemoryRecord {
   activeVersion?: number;
   id: string;
@@ -28,9 +52,9 @@ export interface MemoryRecord {
   content: string;
   rationale: string;
   scope: DecisionProposal["scope"];
-  source: DecisionProposal["source"];
+  source: MemorySource;
   evidence: DecisionProposal["evidence"];
-  confidence: number;
+  confidence: number | null;
   uncertainties: string[];
   status: "CANDIDATE" | "ACTIVE" | "SUPERSEDED" | "DEPRECATED" | "REJECTED";
   exceptionTo?: string;

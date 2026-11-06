@@ -218,3 +218,28 @@ test("父取消中止两个实际 Pi Session，未知 usage 保留预留额度",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("开发图像通过 session 的 images 传给支持视觉的模型，预算包含图像预留", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-vision-test-"));
+  const image = { type: "image" as const, data: Buffer.from("test-image").toString("base64"), mimeType: "image/png" };
+  const requests = fakeProvider(t, async (context) => {
+    const user = context.messages.find((m: any) => m.role === "user");
+    assert(user.content.some((c: any) => c.type === "image" && c.data === image.data && c.mimeType === "image/png"));
+    return { content: [{ type: "text", text: '{"ok":true}' }], usage: { input: 200, output: 10, totalTokens: 210 } };
+  });
+  try {
+    const run = await runAgentSession({
+      ...base,
+      root,
+      provider: "test-vision",
+      modelName: "vision",
+      endpoint: { api: "openai-completions", baseUrl: "http://unused.invalid" },
+      images: [image],
+      budgetTokens: 160000,
+    });
+    assert.equal(run.text, '{"ok":true}');
+    assert.equal(requests(), 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

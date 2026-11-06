@@ -19,7 +19,9 @@ PR Review → PR Merge → Decision Extraction → Maintainer Confirm
 
 M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、预算与取消传播、Discussions 和 Agent runs 详情。
 
-M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
+M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。M3 不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
+
+新增授权范围：企业微信群内开发任务可在隔离快照上提出代码修改，由服务创建独立分支、commit 和 PR；不自动合并，不运行目标仓库脚本。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
 
 ## 文档入口与开工顺序
 
@@ -31,6 +33,7 @@ M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与
 | 内容 | 入口 |
 | --- | --- |
 | 产品与阶段范围 | [PRD-MVP](docs/PRD-MVP.md) |
+| 群内开发当前任务和证据 | [DEV](docs/tasks/DEV.md) |
 | 体验收口当前任务和证据 | [UX](docs/tasks/UX.md) |
 | M3 任务和证据 | [M3](docs/tasks/M3.md) |
 | M2 实现证据与待确认验收 | [M2](docs/tasks/M2.md) |

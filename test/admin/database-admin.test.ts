@@ -175,6 +175,93 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       .split(";", 1)[0]!;
     response = await fetch(`${origin}/api/session`, { headers: { cookie: sessionCookie } });
     const session = (await response.json()) as { csrf: string };
+    const memberEndpoint = `${origin}/api/repositories/${allowedId}/notification-members`;
+    const memberHeaders = { cookie: sessionCookie, origin: "http://127.0.0.1", "x-csrf-token": session.csrf };
+    assert.equal((await fetch(memberEndpoint)).status, 401);
+    assert.equal(
+      (
+        await fetch(memberEndpoint, {
+          method: "PUT",
+          headers: { cookie: sessionCookie },
+          body: JSON.stringify({ githubLogin: "Alice", wecomUserId: "zhangsan" }),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetch(`${origin}/api/repositories/${deniedId}/notification-members`, {
+          headers: memberHeaders,
+        })
+      ).status,
+      403,
+    );
+    for (const method of ["PUT", "DELETE"]) {
+      assert.equal(
+        (
+          await fetch(
+            `${origin}/api/repositories/${deniedId}/notification-members${method === "DELETE" ? "/alice" : ""}`,
+            {
+              method,
+              headers: memberHeaders,
+              ...(method === "PUT" ? { body: JSON.stringify({ githubLogin: "alice", wecomUserId: "wrong" }) } : {}),
+            },
+          )
+        ).status,
+        403,
+      );
+    }
+    assert.equal(
+      (
+        await fetch(memberEndpoint, {
+          method: "PUT",
+          headers: memberHeaders,
+          body: JSON.stringify({ githubLogin: "Alice", wecomUserId: "@all" }),
+        })
+      ).status,
+      422,
+    );
+    assert.equal(
+      (
+        await fetch(memberEndpoint, {
+          method: "PUT",
+          headers: memberHeaders,
+          body: JSON.stringify({ githubLogin: "Alice", wecomUserId: "zhangsan", repositoryId: deniedId }),
+        })
+      ).status,
+      422,
+    );
+    response = await fetch(memberEndpoint, {
+      method: "PUT",
+      headers: memberHeaders,
+      body: JSON.stringify({ githubLogin: "Alice", wecomUserId: "zhangsan" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { githubLogin: "alice", wecomUserId: "zhangsan" });
+    response = await fetch(memberEndpoint, { headers: memberHeaders });
+    assert.deepEqual(await response.json(), {
+      members: [{ githubLogin: "alice", wecomUserId: "zhangsan" }],
+      configured: false,
+    });
+    assert.equal(
+      (
+        await fetch(memberEndpoint, {
+          method: "PUT",
+          headers: memberHeaders,
+          body: JSON.stringify({ githubLogin: "ALICE", wecomUserId: "new-user" }),
+        })
+      ).status,
+      200,
+    );
+    response = await fetch(memberEndpoint, { headers: memberHeaders });
+    assert.deepEqual(((await response.json()) as any).members, [{ githubLogin: "alice", wecomUserId: "new-user" }]);
+    hasAccess = false;
+    assert.equal((await fetch(memberEndpoint, { headers: memberHeaders })).status, 403);
+    assert.equal((await fetch(`${memberEndpoint}/alice`, { method: "DELETE", headers: memberHeaders })).status, 403);
+    hasAccess = true;
+    assert.equal((await fetch(`${memberEndpoint}/alice`, { method: "DELETE", headers: memberHeaders })).status, 200);
+    response = await fetch(memberEndpoint, { headers: memberHeaders });
+    assert.deepEqual(((await response.json()) as any).members, []);
     response = await fetch(`${origin}/api/memories/${allowedMemory}/approve`, {
       method: "POST",
       headers: { cookie: sessionCookie, origin: "http://127.0.0.1", "x-csrf-token": "wrong" },

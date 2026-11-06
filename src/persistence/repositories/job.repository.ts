@@ -14,6 +14,12 @@ export interface JobAcceptor {
   acceptReply?(
     input: import("./reply.repository.js").ReviewReplyInput,
   ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; job?: ReviewJob }>;
+  isDevelopmentPullRequest?(
+    repositoryId: number,
+    prNumber: number,
+    branch: string | undefined,
+    headSha: string,
+  ): Promise<boolean>;
   cancelReview?(repositoryId: number, prNumber: number): Promise<void>;
   restoreRepositories?(repositoryIds: number[]): Promise<void>;
   check?(): Promise<void>;
