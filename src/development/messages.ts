@@ -13,7 +13,7 @@ export function markdownText(value: string) {
 export function parseGroupMessage(
   value: unknown,
   botId: string,
-): Omit<GroupRequest, "images"> & { images: ImageInput[] } {
+): Omit<GroupRequest, "images" | "replyRequestId" | "receivedAt"> & { images: ImageInput[] } {
   if (!value || typeof value !== "object") throw new DevelopmentError("消息格式无效", "refused");
   const v = value as Record<string, any>;
   if (
@@ -67,7 +67,7 @@ export function developmentMessage(task: DevelopmentTask) {
     msgtype: "markdown" as const,
     markdown: {
       content:
-        `<@${task.requester}>\n\n**${status}**\n> 项目：${markdownText(task.repository)}\n` +
+        `**${status}**\n> 项目：${markdownText(task.repository)}\n` +
         (success
           ? `> PR：#${task.pr_number} ${markdownText(task.title!)}\n> [查看 PR](${url})`
           : `> ${markdownText(task.result ?? "请查看管理页任务记录。")}`),

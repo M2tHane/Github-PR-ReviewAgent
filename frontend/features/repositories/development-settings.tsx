@@ -14,6 +14,7 @@ type Task = {
   title: string | null;
   result: string | null;
   notification_status: string;
+  notification_error: string | null;
   created_at: string;
 };
 type EditableSettings = Omit<DevelopmentSettings, "members" | "protections"> & {
@@ -150,7 +151,8 @@ export function DevelopmentSettingsPanel({ repo, onClose }: { repo: Repository; 
                   />
                 </label>
                 <p className="muted">
-                  每个群只能绑定一个仓库及目标分支。AI 从该分支创建新开发分支，完成后提 PR，不自动合并。
+                  每个群只能绑定一个仓库及目标分支。AI 从该分支创建新开发分支，完成后引用原需求回复 PR
+                  链接，不自动合并。PR 审查完成通知也发送到这个群，不再 @成员。
                 </p>
                 <label className="check">
                   <input
@@ -345,6 +347,17 @@ export function DevelopmentSettingsPanel({ repo, onClose }: { repo: Repository; 
                     )[task.notification_status]
                   }
                 </small>
+                {task.notification_error && (
+                  <p className="muted">
+                    {task.notification_error === "reply_window_expired"
+                      ? "原消息已超过 24 小时回复期限，请在这里查看任务结果。"
+                      : task.notification_error === "reply_context_missing"
+                        ? "此任务没有保存原消息回复标识，请在这里查看结果。"
+                        : task.notification_error === "repository_or_binding_changed"
+                          ? "仓库或群绑定已变化，已停止发送旧通知。"
+                          : "群回复未确认成功，请先检查群消息；不会自动重复发送。"}
+                  </p>
+                )}
               </article>
             ))}
           </>

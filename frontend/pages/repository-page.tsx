@@ -2,7 +2,6 @@ import { useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
 import { RepositorySettings } from "../features/repositories/repository-settings.js";
-import { NotificationMembers } from "../features/repositories/notification-members.js";
 import { DevelopmentSettingsPanel } from "../features/repositories/development-settings.js";
 import type { Repository } from "../types.js";
 
@@ -19,7 +18,6 @@ export function RepositoryPage({
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [developmentRepository, setDevelopmentRepository] = useState<Repository>();
-  const [membersRepository, setMembersRepository] = useState<Repository>();
   async function save(repo: Repository, form: HTMLFormElement) {
     const data = new FormData(form),
       lines = (name: string) =>
@@ -86,7 +84,6 @@ export function RepositoryPage({
               advanced={advanced}
               busy={busy}
               save={save}
-              manageMembers={setMembersRepository}
               manageDevelopment={setDevelopmentRepository}
             />
           ))}
@@ -97,13 +94,6 @@ export function RepositoryPage({
           key={developmentRepository.id}
           repo={developmentRepository}
           onClose={() => setDevelopmentRepository(undefined)}
-        />
-      )}
-      {membersRepository && (
-        <NotificationMembers
-          key={membersRepository.id}
-          repo={membersRepository}
-          onClose={() => setMembersRepository(undefined)}
         />
       )}
     </section>

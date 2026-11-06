@@ -190,7 +190,7 @@ SESSION_SECRET
 
 完整配置说明见 [.env.example](.env.example)。
 
-可选配置 `WECOM_WEBHOOK_URL`，并在前端「仓库 → 通知成员」为各项目关联 GitHub 账号与企业微信成员 ID：审查结果成功发布到 GitHub 后，向一个企业微信内部群发送完成通知、PR 链接，并通过成员 ID 指定 @ PR 作者。群消息不包含审查内容；发送失败不会重新执行 AI 审查。配置、迁移、通知状态与真实 @ 验收步骤见 [企业微信通知](docs/wecom-notifications.md)。
+配置智能机器人长连接，并在「仓库 → 群内 AI 开发」启用群绑定：审查结果成功发布到 GitHub 后，机器人直接向该仓库绑定群发送完成状态和 PR 链接，不 @成员，也不需要 GitHub／企微成员映射或 Message Push Webhook。发送失败不会重新执行 AI 审查。配置、迁移和通知状态见 [企业微信通知](docs/wecom-notifications.md)。
 
 ### 4. 初始化数据库
 
@@ -417,6 +417,6 @@ Review → Discussion → Decision → Memory → Future Review
 
 ## 企业微信群内 AI 开发
 
-在管理页「仓库 → 群内 AI 开发」绑定群与目标分支，设置管理员／开发及文件保护规则。群内 @ 智能机器人发送文字，可附图片；服务创建新分支及 PR，并在原群 @ 提出者汇报。开发命中保护范围时整项拒绝；管理员可发起受保护文件修改，规则继续有效。生成 PR 跳过本服务自动审查，不自动合并。
+在管理页「仓库 → 群内 AI 开发」绑定群与目标分支，设置管理员／开发及文件保护规则。群内 @ 智能机器人发送文字，可附图片；服务创建新分支及 PR，并在原群引用发起任务的消息回复结果。开发命中保护范围时整项拒绝；管理员可发起受保护文件修改，规则继续有效。生成 PR 跳过本服务自动审查，不自动合并。
 
-需要智能机器人 API 长连接的 `WECOM_BOT_ID`、`WECOM_BOT_SECRET`，以及 GitHub App 的 Contents／Pull requests 写权限。原通知 Webhook 不具备接收群消息能力。升级需手动应用迁移 005。详细配置、输入限制和发布待核对处理见 [开发接入说明](docs/wecom-development.md)，完成证据与真实验收状态见 [DEV 清单](docs/tasks/DEV.md)。
+需要智能机器人 API 长连接的 `WECOM_BOT_ID`、`WECOM_BOT_SECRET`，以及 GitHub App 的 Contents／Pull requests 写权限。审查通知与开发回复复用同一条智能机器人连接；开发回复需在原消息的 24 小时回复期限内完成。升级需手动应用到迁移 007。详细配置、输入限制和发布待核对处理见 [开发接入说明](docs/wecom-development.md)，完成证据与真实验收状态见 [DEV 清单](docs/tasks/DEV.md)。

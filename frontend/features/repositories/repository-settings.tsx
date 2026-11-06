@@ -6,7 +6,6 @@ export function RepositorySettings({
   advanced,
   busy,
   save,
-  manageMembers,
   manageDevelopment,
 }: {
   repo: Repository;
@@ -14,7 +13,6 @@ export function RepositorySettings({
   busy: number | null;
   save: (repo: Repository, form: HTMLFormElement) => Promise<void>;
   manageDevelopment: (repo: Repository) => void;
-  manageMembers: (repo: Repository) => void;
 }) {
   return (
     <form
@@ -85,11 +83,6 @@ export function RepositorySettings({
       {!advanced && (
         <button type="button" className="secondary" onClick={() => manageDevelopment(repo)}>
           群内 AI 开发
-        </button>
-      )}
-      {!advanced && (
-        <button type="button" className="secondary" onClick={() => manageMembers(repo)}>
-          通知成员
         </button>
       )}
     </form>
