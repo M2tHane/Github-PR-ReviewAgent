@@ -33,7 +33,9 @@ export async function downloadImage(input: ImageInput, signal: AbortSignal, requ
     url.username ||
     url.password ||
     (url.port && url.port !== "443") ||
-    ![".qpic.cn", ".work.weixin.qq.com"].some((domain) => url.hostname.endsWith(domain))
+    // 企微智能机器人图片使用官方专用 COS 存储桶，不能放行所有 myqcloud.com 租户。
+    (url.hostname !== "ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com" &&
+      ![".qpic.cn", ".work.weixin.qq.com"].some((domain) => url.hostname.endsWith(domain)))
   )
     throw new DevelopmentError("图片不是受支持的企微下载地址。", "refused");
   if (!/^[A-Za-z0-9+/]{43}=?$/.test(input.aeskey)) throw new DevelopmentError("图片解密信息无效。", "refused");

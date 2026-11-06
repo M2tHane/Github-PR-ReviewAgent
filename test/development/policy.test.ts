@@ -115,14 +115,30 @@ test("图片下载限制地址、大小、跳转，解密 PNG 并保留真实图
   const image = await downloadImage(input, new AbortController().signal, request);
   assert.equal(image.mimeType, "image/png");
   assert.deepEqual(Buffer.from(image.data, "base64"), png);
+  const officialUrl = "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/test?sign=example-signature";
+  const officialImage = await downloadImage(
+    { ...input, url: officialUrl },
+    new AbortController().signal,
+    async (url, init) => {
+      assert.equal(String(url), officialUrl);
+      return request(url, init);
+    },
+  );
+  assert.deepEqual(Buffer.from(officialImage.data, "base64"), png);
   for (const url of [
     "http://wework.qpic.cn/a",
     "https://localhost/a",
     "https://wework.qpic.cn.evil.test/a",
     "https://user:pass@wework.qpic.cn/a",
+    "http://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/a",
+    "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com.evil.test/a",
+    "https://evil.ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/a",
+    "https://other-bucket.cos.ap-guangzhou.myqcloud.com/a",
+    "https://user:pass@ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com/a",
+    "https://ww-aibot-img-1258476243.cos.ap-guangzhou.myqcloud.com:8443/a",
   ])
     await assert.rejects(downloadImage({ ...input, url }, new AbortController().signal, request));
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   await assert.rejects(
     downloadImage(input, new AbortController().signal, async () => new Response(Buffer.alloc(2 * 1024 * 1024 + 33))),
     /2 MB/,
