@@ -133,7 +133,7 @@ export class DevelopmentWorker {
                   bot.replyStream(
                     frame,
                     request.messageId,
-                    "已收到开发任务，完成后会引用这条需求回复，并附上 PR 链接。",
+                    "已收到开发任务。",
                     true,
                   ),
                 ).catch(() => log("error", "wecom_development_ack_uncertain", {}));
