@@ -6,11 +6,13 @@ export function RepositorySettings({
   advanced,
   busy,
   save,
+  manageMembers,
 }: {
   repo: Repository;
   advanced: boolean;
   busy: number | null;
   save: (repo: Repository, form: HTMLFormElement) => Promise<void>;
+  manageMembers: (repo: Repository) => void;
 }) {
   return (
     <form
@@ -78,6 +80,11 @@ export function RepositorySettings({
       <button type="submit" className="secondary" disabled={busy !== null}>
         {busy === repo.id ? "保存中…" : "保存设置"}
       </button>
+      {!advanced && (
+        <button type="button" className="secondary" onClick={() => manageMembers(repo)}>
+          通知成员
+        </button>
+      )}
     </form>
   );
 }

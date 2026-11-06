@@ -11,6 +11,7 @@ import { MemoryRepository } from "./repositories/memory.repository.js";
 import { RetentionRepository } from "./repositories/retention.repository.js";
 import { migrate } from "./migrations.js";
 import type { ReviewReplyInput } from "./repositories/reply.repository.js";
+import type { ReviewJob } from "../jobs/types.js";
 
 export type { JobAcceptor, ReviewReplyInput };
 
@@ -26,7 +27,11 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly retention = new RetentionRepository(this.pool);
 
   // 每个并发任务会同时占用几条连接（领取、续租、写结果），连接池随并发数放大。
-  constructor(url: string, concurrency = 1) {
+  constructor(
+    url: string,
+    concurrency = 1,
+    private readonly notificationChannel?: string,
+  ) {
     super(new Pool({ connectionString: url, max: 5 + concurrency * 3, connectionTimeoutMillis: 3000 }));
   }
   async close() {
@@ -40,7 +45,8 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly setHealthSchedule = this.repositories.setHealthSchedule.bind(this.repositories);
   readonly getRepositoryConfig = this.repositories.getRepositoryConfig.bind(this.repositories);
   readonly beginPublication = this.publications.beginPublication.bind(this.publications);
-  readonly finishPublication = this.publications.finishPublication.bind(this.publications);
+  readonly finishPublication = (job: ReviewJob, status: "published" | "failed" | "uncertain") =>
+    this.publications.finishPublication(job, status, this.notificationChannel);
   readonly saveReviewResult = this.publications.saveReviewResult.bind(this.publications);
   readonly saveFindings = this.findings.saveFindings.bind(this.findings);
   readonly bindFindings = this.findings.bindFindings.bind(this.findings);

@@ -190,6 +190,8 @@ SESSION_SECRET
 
 完整配置说明见 [.env.example](.env.example)。
 
+可选配置 `WECOM_WEBHOOK_URL`，并在前端「仓库 → 通知成员」为各项目关联 GitHub 账号与企业微信成员 ID：审查结果成功发布到 GitHub 后，向一个企业微信内部群发送完成通知、PR 链接，并通过成员 ID 指定 @ PR 作者。群消息不包含审查内容；发送失败不会重新执行 AI 审查。配置、迁移、通知状态与真实 @ 验收步骤见 [企业微信通知](docs/wecom-notifications.md)。
+
 ### 4. 初始化数据库
 
 首次运行：

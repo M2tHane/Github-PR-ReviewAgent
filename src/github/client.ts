@@ -96,7 +96,7 @@ export class GitHubClient {
     });
   }
 
-  getPullRequest(token: string, repository: string, number: number) {
+  getPullRequest(token: string, repository: string, number: number, signal?: AbortSignal) {
     return this.request<{
       number: number;
       title: string;
@@ -108,7 +108,8 @@ export class GitHubClient {
       merge_commit_sha: string | null;
       base: { sha: string };
       head: { sha: string };
-    }>(token, `/repos/${repository}/pulls/${number}`);
+      user: { id: number; login: string };
+    }>(token, `/repos/${repository}/pulls/${number}`, { signal });
   }
 
   // 公开仓库里的高危安全问题不在 PR 评论里写细节；拿不准时由调用方按公开处理。
