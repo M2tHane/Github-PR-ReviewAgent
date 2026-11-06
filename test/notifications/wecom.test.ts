@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWecomConfig } from "../../src/notifications/config.js";
 import { parseNotificationMember } from "../../src/notifications/members.js";
-import { notificationMessage, WecomClient } from "../../src/notifications/wecom.js";
+import { notificationMessage, deliverBotNotification } from "../../src/notifications/wecom.js";
 
 const env = {
   WECOM_WEBHOOK_URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-secret",
@@ -16,6 +16,8 @@ const notification = {
   headSha: "abcdef012345",
   partial: false,
   attempt: 1,
+  chatId: "group",
+  bindingVersion: 1,
 };
 
 test("企微配置：默认关闭、哈希绑定目标群", () => {
@@ -60,69 +62,41 @@ test("成员输入：规范化登录名、拒绝额外字段、非法成员 ID �
     assert.equal(parseNotificationMember(input), undefined);
 });
 
-test("通知首行 @ 成员，分行展示状态、项目及短链接，不含提交 SHA", () => {
-  const message = notificationMessage(notification, "zhangsan", "修复订单金额计算");
+test("审查通知直接展示状态、项目和链接，不含成员提及或提交 SHA", () => {
+  const message = notificationMessage(notification, "修复订单金额计算");
   assert.equal(message.msgtype, "markdown");
-  assert(message.markdown.content.startsWith("<@zhangsan>\n\n"));
+  assert(message.markdown.content.startsWith("**AI 审查已完成**"));
   assert(!message.markdown.content.includes(notification.headSha.slice(0, 7)));
   assert.match(message.markdown.content, /\n> 项目：owner\/repo\n> PR：#12 修复订单金额计算\n> \[查看审查结果\]/);
   assert.match(message.markdown.content, /AI 审查已完成/);
   assert.match(message.markdown.content, /https:\/\/github.com\/owner\/repo\/pull\/12/);
   assert.match(
-    notificationMessage({ ...notification, partial: true }, "zhangsan", "修复订单金额计算").markdown.content,
+    notificationMessage({ ...notification, partial: true }, "修复订单金额计算").markdown.content,
     /部分检查未完成/,
   );
 });
 
-test("企微发送：使用普通 Markdown 首行 @，不跟随跳转，只有 errcode=0 才标为发送成功", async () => {
-  let requests = 0;
-  const client = new WecomClient(env.WECOM_WEBHOOK_URL, async (url, init) => {
-    requests++;
-    assert.equal(url, env.WECOM_WEBHOOK_URL);
-    assert.equal(init?.method, "POST");
-    assert.equal(init?.redirect, "error");
-    assert(init?.signal);
-    assert(JSON.parse(init?.body as string).markdown.content.startsWith("<@zhangsan>\n"));
-    return Response.json({ errcode: 0, errmsg: "ok" });
-  });
-  assert.deepEqual(
-    await client.send(notificationMessage(notification, "zhangsan", "修复订单金额计算"), new AbortController().signal),
-    {
-      status: "sent",
-    },
-  );
-  assert.equal(requests, 1);
-});
-
-test("企微发送：仅明确限流/繁忙可重试，超时或坏响应保留 uncertain 且不泄露密钥", async () => {
-  const cases: [() => Promise<Response>, string][] = [
-    [async () => Response.json({ errcode: 45009 }), "pending"],
-    [async () => Response.json({ errcode: -1 }), "pending"],
-    [async () => Response.json({ errcode: 93000, errmsg: env.WECOM_WEBHOOK_URL }), "failed"],
-    [async () => Response.json({ errcode: "0" }), "uncertain"],
-    [async () => new Response("bad json"), "uncertain"],
-    [async () => new Response("error", { status: 500 }), "uncertain"],
-    [
-      async () => {
-        throw new Error(env.WECOM_WEBHOOK_URL);
-      },
-      "uncertain",
-    ],
-  ];
-  for (const [request, status] of cases) {
-    const result = await new WecomClient(env.WECOM_WEBHOOK_URL, request).send(
-      notificationMessage(notification, "zhangsan", "修复订单金额计算"),
-      new AbortController().signal,
-    );
+test("智能机器人发送：仅明确拒收可重试，未知结果不重发或记录原始错误", async () => {
+  assert.deepEqual(await deliverBotNotification(async () => {}), { status: "sent" });
+  for (const [error, status] of [
+    [{ errcode: 45009 }, "pending"],
+    [{ errcode: -1 }, "pending"],
+    [{ errcode: 40008, errmsg: "test-secret" }, "failed"],
+    [new Error("test-secret"), "uncertain"],
+    [{ errcode: "0" }, "uncertain"],
+  ] as const) {
+    const result = await deliverBotNotification(async () => {
+      throw error;
+    });
     assert.equal(result.status, status);
     assert(!JSON.stringify(result).includes("test-secret"));
   }
 });
 
 test("PR 标题中的换行、链接和 @ 语法不会改变通知结构", () => {
-  const message = notificationMessage(notification, "zhangsan", "fix\n<@all> [fake](https://example.com)");
-  assert.equal(message.markdown.content.match(/<@/g)?.length, 1);
+  const message = notificationMessage(notification, "fix\n<@all> [fake](https://example.com)");
+  assert(!message.markdown.content.includes("<@"));
   assert(message.markdown.content.includes("PR：#12 fix &lt;@all&gt;"));
   assert(!message.markdown.content.includes("[fake](https://example.com)"));
-  assert.equal(message.markdown.content.split("\n").length, 6);
+  assert.equal(message.markdown.content.split("\n").length, 4);
 });

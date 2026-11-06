@@ -6,8 +6,7 @@ import type {
   NotificationSession,
   ReviewNotification,
 } from "../persistence/repositories/notification.repository.js";
-import type { WecomConfig } from "./config.js";
-import { notificationMessage, WecomClient } from "./wecom.js";
+import { notificationMessage, NotificationBindingChanged, type DeliveryResult } from "./wecom.js";
 
 type NotificationGitHub = Pick<GitHubClient, "installationToken" | "getPullRequest">;
 
@@ -18,10 +17,16 @@ export class NotificationWorker {
 
   constructor(
     private readonly config: Pick<Config, "allowedRepositories">,
-    private readonly wecom: WecomConfig,
+    private readonly channel: string,
     private readonly store: NotificationRepository,
     private readonly github: NotificationGitHub,
-    private readonly client = new WecomClient(wecom.webhookUrl),
+    private readonly send: (
+      chatId: string,
+      message: ReturnType<typeof notificationMessage>,
+      signal: AbortSignal,
+      checkBinding: () => Promise<void>,
+    ) => Promise<DeliveryResult>,
+    private readonly isConnected: () => boolean,
   ) {}
 
   start() {
@@ -45,8 +50,8 @@ export class NotificationWorker {
   }
 
   async tick() {
-    if (this.abort.signal.aborted) return;
-    await this.store.withChannel(this.wecom.channel, async (session) => {
+    if (this.abort.signal.aborted || !this.isConnected()) return;
+    await this.store.withChannel(this.channel, async (session) => {
       const notification = await session.claim();
       if (notification) await this.deliver(session, notification);
     });
@@ -70,7 +75,7 @@ export class NotificationWorker {
       });
     };
     if (!this.config.allowedRepositories.has(repository.toLowerCase()) || !(await session.enabled(notification))) {
-      await finish("cancelled", "repository_disabled");
+      await finish("cancelled", "repository_or_binding_changed");
       return;
     }
     let pr: Awaited<ReturnType<NotificationGitHub["getPullRequest"]>>;
@@ -95,15 +100,12 @@ export class NotificationWorker {
       );
       return;
     }
-    // PR 作者来自 GitHub 的 user，而不是触发 synchronize 的操作者或提交作者。
     if (
       !pr ||
       typeof pr.title !== "string" ||
       typeof pr.state !== "string" ||
       typeof pr.draft !== "boolean" ||
-      typeof pr.head?.sha !== "string" ||
-      !Number.isSafeInteger(pr.user?.id) ||
-      typeof pr.user?.login !== "string"
+      typeof pr.head?.sha !== "string"
     ) {
       await finish("failed", "github_invalid_pull_request");
       return;
@@ -112,21 +114,23 @@ export class NotificationWorker {
       await finish("cancelled", "pull_request_changed");
       return;
     }
-    const userid = await session.member(repositoryId, pr.user.login);
-    if (!userid) {
-      await finish("failed", "author_mapping_missing");
-      return;
-    }
     if (this.abort.signal.aborted) {
       await finish("pending", "service_stopping");
       return;
     }
     if (!(await session.enabled(notification))) {
-      await finish("cancelled", "repository_disabled");
+      await finish("cancelled", "repository_or_binding_changed");
       return;
     }
     if (!(await session.sending(jobId))) return;
-    const result = await this.client.send(notificationMessage(notification, userid, pr.title), this.abort.signal);
+    const result = await this.send(
+      notification.chatId,
+      notificationMessage(notification, pr.title),
+      this.abort.signal,
+      async () => {
+        if (!(await session.enabled(notification))) throw new NotificationBindingChanged();
+      },
+    );
     await finish(result.status, "error" in result ? result.error : undefined);
   }
 }

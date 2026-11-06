@@ -137,7 +137,7 @@ test("图像预算保留视觉 token，不把 base64 当正文；机器人配置
   assert.throws(() => loadDevelopmentConfig({ WECOM_BOT_ID: "bot" }));
   assert.equal(loadDevelopmentConfig({ WECOM_BOT_ID: "bot", WECOM_BOT_SECRET: "secret" })?.budgetTokens, 160_000);
 });
-test("完成与拒绝消息保留顶部 @，转义用户标题，不用 PR 作者代替任务提出者", () => {
+test("完成与拒绝消息去掉成员提及并转义用户标题", () => {
   const task = {
     requester: "alice",
     repository: "o/r",
@@ -146,7 +146,8 @@ test("完成与拒绝消息保留顶部 @，转义用户标题，不用 PR 作�
     status: "succeeded",
   } as DevelopmentTask;
   const text = developmentMessage(task).markdown.content;
-  assert(text.startsWith("<@alice>\n\n**AI 开发任务已完成**"));
+  assert(text.startsWith("**AI 开发任务已完成**"));
+  assert(!text.includes("<@alice>"));
   assert(!text.includes("<@all>"));
   assert(text.includes("查看 PR"));
   const refused = developmentMessage({ ...task, status: "refused", pr_number: null, result: "命中保护规则" }).markdown

@@ -110,7 +110,8 @@ export class DevelopmentStore {
       const id = randomUUID();
       await client.query(
         `INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,
-        settings_version,role,prompt,images,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'queued')`,
+        settings_version,role,prompt,images,reply_req_id,reply_expires_at,status)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'queued')`,
         [
           id,
           botId,
@@ -126,6 +127,8 @@ export class DevelopmentStore {
           member.role,
           input.text,
           JSON.stringify(input.images),
+          input.replyRequestId,
+          new Date(input.receivedAt.getTime() + 24 * 60 * 60 * 1000),
         ],
       );
       await client.query("COMMIT");
@@ -226,7 +229,7 @@ export class DevelopmentStore {
       [botId],
     );
     await this.pool.query(
-      "UPDATE development_tasks SET notification_status='uncertain' WHERE bot_id=$1 AND notification_status='sending'",
+      "UPDATE development_tasks SET notification_status='uncertain',notification_error='delivery_interrupted' WHERE bot_id=$1 AND notification_status='sending'",
       [botId],
     );
   }
@@ -234,7 +237,7 @@ export class DevelopmentStore {
     return (
       await this.pool.query(
         `SELECT id,requester,status,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,duration_ms,
-      notification_status,created_at FROM development_tasks WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,
+      notification_status,notification_error,created_at FROM development_tasks WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [repositoryId],
       )
     ).rows;

@@ -83,7 +83,15 @@ async function setup() {
   const enqueue = async (user = "developer", messageId = randomUUID()) => {
     await store.accept(
       botId,
-      { messageId, chatId: settings.chatId, requester: user, text: "修改代码", images: [] },
+      {
+        messageId,
+        replyRequestId: `request-${messageId}`,
+        receivedAt: new Date(),
+        chatId: settings.chatId,
+        requester: user,
+        text: "修改代码",
+        images: [],
+      },
       config,
     );
     return (await store.claim(botId))!;
@@ -143,7 +151,15 @@ async function setup() {
 test("群绑定唯一、设置版本与审计、消息去重、身份拒绝和跨实例互斥", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
-    const input = { messageId: "once", chatId: s.settings.chatId, requester: "developer", text: "修改", images: [] };
+    const input = {
+      messageId: "once",
+      replyRequestId: "request-once",
+      receivedAt: new Date(),
+      chatId: s.settings.chatId,
+      requester: "developer",
+      text: "修改",
+      images: [],
+    };
     const results = await Promise.all([
       s.store.accept(s.botId, input, s.config),
       s.store.accept(s.botId, input, s.config),
@@ -435,7 +451,7 @@ test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设�
   }
 });
 
-test("智能机器人群消息经接收、持久任务到原群 @提出者通知；重复消息不重复执行", { skip: !fixture.url }, async (t) => {
+test("智能机器人完成结果引用原消息，无成员提及；重复消息不重复执行", { skip: !fixture.url }, async (t) => {
   const { WSClient } = await import("@wecom/aibot-node-sdk");
   const { DevelopmentWorker } = await import("../../src/development/worker.js");
   const { waitFor } = await import("../helpers/database.js");
@@ -481,18 +497,205 @@ test("智能机器人群消息经接收、持久任务到原群 @提出者通知
     bot!.emit("message", frame);
     await waitFor(async () => replies.length === 1);
     bot!.emit("message", frame);
-    await waitFor(async () => messages.length === 1, 10000);
+    await waitFor(async () => replies.length === 2, 10000);
     assert.equal(executions, 1);
-    assert.equal(replies.length, 1);
-    assert.equal(messages[0][0], s.settings.chatId);
-    assert.match(messages[0][1].markdown.content, /^<@developer>\n\n\*\*AI 开发任务已完成/);
-    assert.match(messages[0][1].markdown.content, /pull\/55/);
+    assert.equal(messages.length, 0);
+    assert.equal(replies[0][0].headers.req_id, "request");
+    assert.equal(replies[1][0].headers.req_id, "request");
+    assert.notEqual(replies[0][1], replies[1][1]);
+    assert.equal(replies[1][3], true);
+    assert.match(replies[1][2], /^\*\*AI 开发任务已完成/);
+    assert.match(replies[1][2], /pull\/55/);
+    assert(!replies[1][2].includes("<@"));
     await waitFor(
       async () =>
         (await s.database.pool.query("SELECT notification_status FROM development_tasks WHERE bot_id=$1", [s.botId]))
           .rows[0]?.notification_status === "sent",
     );
   } finally {
+    await worker.stop();
+    await s.cleanup();
+  }
+});
+
+test("重启后使用持久化回调引用结果；超期、缺少上下文或改绑不发送，未知回执不重发", {
+  skip: !fixture.url,
+}, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  const replies: any[] = [];
+  let loseAck = false;
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    if (loseAck) throw new Error("connection lost after send");
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  t.mock.method(WSClient.prototype, "sendMessage", async () => {
+    throw new Error("must not fall back to unquoted message");
+  });
+  for (const mode of ["saved", "expired", "missing", "rebound", "unknown"]) {
+    const s = await setup();
+    const task = await s.enqueue();
+    await s.store.checkpoint(task, { title: "完成", prNumber: 99 });
+    await s.store.finish(task, "succeeded", "完成");
+    if (mode === "expired")
+      await s.database.pool.query(
+        "UPDATE development_tasks SET reply_expires_at=now()-interval '1 second' WHERE id=$1",
+        [task.id],
+      );
+    if (mode === "missing")
+      await s.database.pool.query("UPDATE development_tasks SET reply_req_id=NULL WHERE id=$1", [task.id]);
+    if (mode === "rebound")
+      await s.store.saveSettings(s.repoId, { ...s.settings, chatId: `moved-${s.repoId}`, version: 1 }, "maintainer");
+    loseAck = mode === "unknown";
+    const before = replies.length;
+    let worker = new DevelopmentWorker(s.config, s.store, s.github as any);
+    try {
+      worker.start();
+      await waitFor(async () =>
+        ["sent", "failed", "uncertain"].includes((await s.getTask(task.id)).notification_status),
+      );
+      await worker.stop();
+      const row = await s.getTask(task.id);
+      if (mode === "saved") {
+        assert.equal(row.notification_status, "sent");
+        assert.equal(replies.at(-1)[0].headers.req_id, `request-${task.message_id}`);
+        assert.match(replies.at(-1)[2], /pull\/99/);
+        assert.equal(replies.length, before + 1);
+      } else if (mode === "unknown") {
+        assert.equal(row.notification_status, "uncertain");
+        assert.equal(replies.length, before + 1);
+        worker = new DevelopmentWorker(s.config, s.store, s.github as any);
+        worker.start();
+        await waitFor(
+          async () =>
+            (
+              await s.database.pool.query(
+                "SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=4897041 AND objid=hashtext($1)::oid",
+                [s.botId],
+              )
+            ).rowCount === 1,
+        );
+        await worker.stop();
+        assert.equal(replies.length, before + 1);
+      } else {
+        assert.equal(row.notification_status, "failed");
+        assert.equal(replies.length, before);
+        assert.equal(
+          row.notification_error,
+          {
+            expired: "reply_window_expired",
+            missing: "reply_context_missing",
+            rebound: "repository_or_binding_changed",
+          }[mode],
+        );
+      }
+    } finally {
+      await worker.stop();
+      await s.cleanup();
+    }
+  }
+});
+
+test("开发进行中审查通知仍从同一智能机器人连接直接发绑定群", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { ReviewPublicationRepository } = await import(
+    "../../src/persistence/repositories/review-publication.repository.js"
+  );
+  const { reviewNotificationChannel } = await import("../../src/notifications/wecom.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  let bot: InstanceType<typeof WSClient> | undefined;
+  let connections = 0,
+    processing = false;
+  let complete!: () => void;
+  const blocked = new Promise<void>((r) => {
+    complete = r;
+  });
+  const messages: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    connections++;
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async () => ({ headers: { req_id: "ack" }, errcode: 0 }));
+  t.mock.method(WSClient.prototype, "sendMessage", async (...args: any[]) => {
+    assert(processing);
+    messages.push(args);
+    return { headers: { req_id: "sent" }, errcode: 0 };
+  });
+  const github = {
+    ...s.github,
+    getPullRequest: async () => ({ title: "人工 PR", state: "open", draft: false, head: { sha: "review-head" } }),
+  };
+  const worker = new DevelopmentWorker(s.config, s.store, github as any, async (task) => {
+    processing = true;
+    await blocked;
+    processing = false;
+    await s.store.finish(task, "refused", "测试结束");
+  });
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    bot!.emit("message", {
+      headers: { req_id: "dev-request" },
+      body: {
+        aibotid: s.botId,
+        msgid: "dev-message",
+        chatid: s.settings.chatId,
+        chattype: "group",
+        from: { userid: "developer" },
+        msgtype: "text",
+        text: { content: "开发任务" },
+      },
+    });
+    await waitFor(async () => processing);
+    const { job } = await s.database.accept(
+      {
+        deliveryId: randomUUID(),
+        installationId: 1,
+        repositoryId: s.repoId,
+        repository: s.repository,
+        cloneUrl: `https://github.com/${s.repository}.git`,
+        prNumber: 101,
+        title: "人工 PR",
+        body: "",
+        baseSha: s.sha,
+        headSha: "review-head",
+      },
+      { event: "pull_request", action: "opened" },
+    );
+    assert(job);
+    job.reviewId = 55;
+    job.reviewUrl = `https://github.com/${s.repository}/pull/101#pullrequestreview-55`;
+    await s.database.beginPublication(job, randomUUID());
+    await new ReviewPublicationRepository(s.database.pool).finishPublication(
+      job,
+      "published",
+      reviewNotificationChannel(s.botId),
+    );
+    await waitFor(async () => messages.length === 1, 10000);
+    assert.equal(connections, 1);
+    assert.equal(messages[0][0], s.settings.chatId);
+    assert.equal(messages[0][1].chat_type, 2);
+    assert.match(messages[0][1].markdown.content, /AI 审查已完成/);
+    assert(!messages[0][1].markdown.content.includes("<@"));
+    await waitFor(
+      async () =>
+        (await s.database.pool.query("SELECT status FROM review_notifications WHERE job_id=$1", [job.id])).rows[0]
+          ?.status === "sent",
+    );
+  } finally {
+    complete();
     await worker.stop();
     await s.cleanup();
   }

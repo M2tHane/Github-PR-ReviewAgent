@@ -9,6 +9,8 @@ export interface ReviewNotification {
   headSha: string;
   partial: boolean;
   attempt: number;
+  chatId: string;
+  bindingVersion: number;
 }
 
 export type NotificationStatus = "pending" | "sent" | "failed" | "uncertain" | "cancelled";
@@ -74,7 +76,7 @@ export class NotificationSession {
          UPDATE review_notifications n SET attempt=attempt+1,next_run_at=now()+interval '60 seconds',updated_at=now()
          FROM candidate c WHERE n.job_id=c.job_id RETURNING n.*
        )
-       SELECT n.job_id,n.partial,n.attempt,j.repository_id,j.installation_id,j.repository,j.pr_number,j.target_sha
+       SELECT n.job_id,n.partial,n.attempt,n.chat_id,n.binding_version,j.repository_id,j.installation_id,j.repository,j.pr_number,j.target_sha
        FROM claimed n JOIN jobs j ON j.id=n.job_id`,
       [this.channel],
     );
@@ -84,6 +86,8 @@ export class NotificationSession {
       jobId: row.job_id,
       partial: row.partial,
       attempt: row.attempt,
+      chatId: row.chat_id,
+      bindingVersion: row.binding_version,
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
       repository: row.repository,
@@ -94,18 +98,12 @@ export class NotificationSession {
 
   async enabled(notification: ReviewNotification): Promise<boolean> {
     const result = await this.client.query(
-      "SELECT 1 FROM repositories WHERE id=$1 AND installation_id=$2 AND enabled=true AND revoked_at IS NULL",
-      [notification.repositoryId, notification.installationId],
+      `SELECT 1 FROM repositories r JOIN development_settings s ON s.repository_id=r.id
+       WHERE r.id=$1 AND r.installation_id=$2 AND r.enabled AND r.revoked_at IS NULL
+       AND s.enabled AND s.chat_id=$3 AND s.version=$4`,
+      [notification.repositoryId, notification.installationId, notification.chatId, notification.bindingVersion],
     );
     return result.rowCount === 1;
-  }
-
-  async member(repositoryId: number, githubLogin: string): Promise<string | undefined> {
-    const result = await this.client.query(
-      "SELECT wecom_userid FROM repository_notification_members WHERE repository_id=$1 AND github_login=$2",
-      [repositoryId, githubLogin.toLowerCase()],
-    );
-    return result.rows[0]?.wecom_userid;
   }
 
   async sending(jobId: string): Promise<boolean> {

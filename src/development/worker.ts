@@ -8,6 +8,9 @@ import { createDevelopmentProcessor } from "./processor.js";
 import { downloadImage } from "./images.js";
 import { developmentMessage, markdownText, parseGroupMessage } from "./messages.js";
 import { DevelopmentError, type DevelopmentSettings, type DevelopmentTask } from "./types.js";
+import { NotificationRepository } from "../persistence/repositories/notification.repository.js";
+import { NotificationWorker } from "../notifications/worker.js";
+import { deliverBotNotification, reviewNotificationChannel } from "../notifications/wecom.js";
 
 export class DevelopmentWorker {
   private readonly stopSignal = new AbortController();
@@ -15,7 +18,7 @@ export class DevelopmentWorker {
   constructor(
     private config: Config,
     private store: DevelopmentStore,
-    github: GitHubClient,
+    private github: GitHubClient,
     private process = createDevelopmentProcessor(config, store, github),
   ) {}
   start() {
@@ -62,7 +65,7 @@ export class DevelopmentWorker {
               signal.throwIfAborted();
               lastSent = Date.now();
               const ack = (await operation()) as { errcode?: number };
-              if (ack?.errcode !== 0) throw new Error("企微未确认消息发送成功");
+              if (ack?.errcode !== 0) throw ack;
             });
             sending = result.catch(() => undefined); // 调用方记录每次发送失败，不影响下一条明确未发送的消息。
             return result;
@@ -78,10 +81,17 @@ export class DevelopmentWorker {
           });
           const receive = async (frame: WsFrame) => {
             if (frame.body?.chattype !== "group" || frame.body?.aibotid !== config.botId) return;
-            let requester: string | undefined;
+            const receivedAt = new Date();
             try {
+              if (
+                typeof frame.headers?.req_id !== "string" ||
+                !frame.headers.req_id ||
+                frame.headers.req_id.length > 256
+              ) {
+                log("error", "wecom_development_invalid_reply_context", {});
+                return;
+              }
               const request = parseGroupMessage(frame.body, config.botId);
-              requester = request.requester;
               if (
                 (
                   await this.store.pool.query("SELECT id FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
@@ -108,13 +118,22 @@ export class DevelopmentWorker {
               const images = [];
               for (const image of request.images) images.push(await downloadImage(image, signal));
               signal.throwIfAborted();
-              const result = await this.store.accept(config.botId, { ...request, images }, this.config);
+              const result = await this.store.accept(
+                config.botId,
+                {
+                  ...request,
+                  images,
+                  replyRequestId: frame.headers.req_id,
+                  receivedAt,
+                },
+                this.config,
+              );
               if (result === "accepted") {
                 await send(() =>
                   bot.replyStream(
                     frame,
                     request.messageId,
-                    `<@${request.requester}>\n\n已收到开发任务，完成后会在本群通知你。`,
+                    "已收到开发任务，完成后会引用这条需求回复，并附上 PR 链接。",
                     true,
                   ),
                 ).catch(() => log("error", "wecom_development_ack_uncertain", {}));
@@ -123,15 +142,7 @@ export class DevelopmentWorker {
               if (signal.aborted) return;
               const message =
                 error instanceof DevelopmentError ? error.message : "接收开发任务失败，请检查接入配置后重新发送。";
-              // 身份格式无效时不回显 userid，不允许伪造 @all 或其他成员。
-              await send(() =>
-                bot.replyStream(
-                  frame,
-                  `error-${Date.now()}`,
-                  `${requester ? `<@${requester}>\n\n` : ""}${markdownText(message)}`,
-                  true,
-                ),
-              );
+              await send(() => bot.replyStream(frame, `error-${Date.now()}`, markdownText(message), true));
             }
           };
           bot.on("message", (frame: WsFrame) => {
@@ -139,7 +150,14 @@ export class DevelopmentWorker {
             // 两条图文正在下载或确认时，明确告知新请求稍后重发，不能静默丢弃。
             const operation =
               incoming.size >= 2
-                ? bot.replyStream(frame, `busy-${Date.now()}`, "当前正在接收其他开发任务，请稍后重新 @Bot 发送。", true)
+                ? send(() =>
+                    bot.replyStream(
+                      frame,
+                      `busy-${Date.now()}`,
+                      "当前正在接收其他开发任务，请稍后重新 @Bot 发送。",
+                      true,
+                    ),
+                  )
                 : receive(frame);
             const work = operation
               .then(() => undefined)
@@ -148,11 +166,32 @@ export class DevelopmentWorker {
             incoming.add(work);
           });
           const process = this.process;
+          const reviews = new NotificationWorker(
+            this.config,
+            reviewNotificationChannel(config.botId),
+            new NotificationRepository(this.store.pool),
+            this.github,
+            (chatId, message, reviewSignal, checkBinding) =>
+              deliverBotNotification(() =>
+                send(async () => {
+                  reviewSignal.throwIfAborted();
+                  if (!authenticated) throw new Error("智能机器人连接已断开");
+                  await checkBinding();
+                  return bot.sendMessage(chatId, { ...message, chat_type: 2 } as typeof message);
+                }),
+              ),
+            () => authenticated,
+          );
+          const stopReviews = () => {
+            void reviews.stop();
+          };
+          signal.addEventListener("abort", stopReviews, { once: true });
           const disconnect = () => bot.disconnect();
           signal.addEventListener("abort", disconnect, { once: true });
           try {
             await this.store.recover(config.botId);
             bot.connect();
+            reviews.start();
             while (!signal.aborted) {
               // 用持锁连接探活；连接失败会终止这一实例，不能继续领取或发布任务。
               await connection.query("SELECT 1");
@@ -168,14 +207,42 @@ export class DevelopmentWorker {
                 const notification = result.rows[0] as DevelopmentTask | undefined;
                 if (notification) {
                   try {
-                    await send(() => bot.sendMessage(notification.chat_id, developmentMessage(notification)));
+                    await send(async () => {
+                      if (!notification.reply_req_id || !notification.reply_expires_at)
+                        throw new DevelopmentError("reply_context_missing");
+                      if (notification.reply_expires_at.getTime() <= Date.now())
+                        throw new DevelopmentError("reply_window_expired");
+                      const binding = await this.store.pool.query(
+                        `SELECT 1 FROM development_settings s JOIN repositories r ON r.id=s.repository_id
+                         WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.version=$3 AND s.enabled
+                         AND r.enabled AND r.revoked_at IS NULL AND r.installation_id=$4`,
+                        [
+                          notification.repository_id,
+                          notification.chat_id,
+                          notification.settings_version,
+                          notification.installation_id,
+                        ],
+                      );
+                      if (
+                        !binding.rowCount ||
+                        !this.config.allowedRepositories.has(notification.repository.toLowerCase())
+                      )
+                        throw new DevelopmentError("repository_or_binding_changed");
+                      return bot.replyStream(
+                        { headers: { req_id: notification.reply_req_id } },
+                        `result-${notification.id}`,
+                        developmentMessage(notification).markdown.content,
+                        true,
+                      );
+                    });
                     await this.store.pool.query("UPDATE development_tasks SET notification_status='sent' WHERE id=$1", [
                       notification.id,
                     ]);
-                  } catch {
+                  } catch (error) {
+                    const status = error instanceof DevelopmentError ? "failed" : "uncertain";
                     await this.store.pool.query(
-                      "UPDATE development_tasks SET notification_status='uncertain' WHERE id=$1",
-                      [notification.id],
+                      "UPDATE development_tasks SET notification_status=$2,notification_error=$3 WHERE id=$1",
+                      [notification.id, status, error instanceof DevelopmentError ? error.message : "delivery_unknown"],
                     );
                     log("error", "wecom_development_notification_uncertain", { taskId: notification.id });
                   }
@@ -185,6 +252,8 @@ export class DevelopmentWorker {
             }
           } finally {
             disconnected.abort();
+            await reviews.stop();
+            signal.removeEventListener("abort", stopReviews);
             bot.disconnect();
             await Promise.allSettled([...incoming]);
             await sending;

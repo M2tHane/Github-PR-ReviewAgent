@@ -23,6 +23,8 @@ export interface PromptImage {
 }
 export interface GroupRequest {
   messageId: string;
+  replyRequestId: string;
+  receivedAt: Date;
   chatId: string;
   requester: string;
   text: string;
@@ -42,6 +44,8 @@ export interface DevelopmentTask {
   owner_token: string;
   bot_id: string;
   message_id: string;
+  reply_req_id: string | null;
+  reply_expires_at: Date | null;
   chat_id: string;
   requester: string;
   repository_id: number;

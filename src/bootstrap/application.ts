@@ -12,8 +12,7 @@ import { enqueueDueHealthJobs } from "../health/health.scheduler.js";
 import { GitHubClient } from "../github/client.js";
 import { createJobDispatcher } from "../jobs/dispatcher.js";
 import { log } from "../logging.js";
-import { NotificationRepository } from "../persistence/repositories/notification.repository.js";
-import { NotificationWorker } from "../notifications/worker.js";
+import { reviewNotificationChannel } from "../notifications/wecom.js";
 
 import { DevelopmentStore } from "../development/store.js";
 import { DevelopmentWorker } from "../development/worker.js";
@@ -21,7 +20,11 @@ import { DevelopmentWorker } from "../development/worker.js";
 // 单进程模块边界的理由见 .agents/decisions/repository-architecture.md。
 export function createApplication() {
   const config = loadConfig();
-  const database = new Database(config.databaseUrl, config.workerConcurrency, config.wecom?.channel);
+  const database = new Database(
+    config.databaseUrl,
+    config.workerConcurrency,
+    config.development ? reviewNotificationChannel(config.development.botId) : undefined,
+  );
   const memories = new MemoryService(database);
   const review = createReviewProcessor(config, undefined, database, memories);
   const extract = createDecisionProcessor(config, database);
@@ -36,9 +39,6 @@ export function createApplication() {
   const { server } = createApp(config, database, createAdminHandler(config, database));
   const scheduleAbort = new AbortController();
   const github = new GitHubClient(config.appId, config.privateKey);
-  const notifications = config.wecom
-    ? new NotificationWorker(config, config.wecom, new NotificationRepository(database.pool), github)
-    : undefined;
   const development = config.development
     ? new DevelopmentWorker(config, new DevelopmentStore(database.pool), github)
     : undefined;
@@ -76,7 +76,6 @@ export function createApplication() {
   return {
     async start() {
       await runner.start();
-      notifications?.start();
       development?.start();
       scheduleTimer = setInterval(pollSchedules, 30_000);
       pollSchedules();
@@ -89,7 +88,7 @@ export function createApplication() {
       if (purgeTimer) clearInterval(purgeTimer);
       scheduleAbort.abort();
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      await Promise.all([closed, runner.stop(), notifications?.stop(), development?.stop(), scheduling, purging]);
+      await Promise.all([closed, runner.stop(), development?.stop(), scheduling, purging]);
       await database.close();
     },
   };
