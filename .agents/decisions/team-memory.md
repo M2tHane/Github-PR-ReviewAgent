@@ -8,6 +8,8 @@ PR 合并后的代码和讨论可能包含可复用的团队决定，但模型�
 
 仅合并的 PR 触发 Decision Extraction。提取器依据合并快照、代码变化和人类讨论形成带来源的 `CANDIDATE`；具有该仓库维护权限的人通过管理界面确认后，规则才成为 `ACTIVE`。
 
+维护者也可以从 Markdown 或有权限的其他项目预览规则，再明确确认导入为 `ACTIVE`。这条人工来源记录文件摘要或原项目规则版本、确认人和时间，不伪造 PR 证据或模型置信分数。跨项目复制为独立规则，例外关联必须在目标项目内重新建立；原有 PR 提取校验保持不变。
+
 [MemoryService](../../src/memory/memory.service.ts) 按 repository、状态和 Scope 检索当前有效版本；[Review 校验](../../src/review/review.processor.ts) 再核对模型引用的 ID、version、仓库和实际召回集合。候选修改生成新版本，待确认版本不自动撤销旧的有效版本。Reply 的解释只形成 clue，仍须经过提取与维护者确认。
 
 ## Why

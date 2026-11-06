@@ -30,6 +30,8 @@ Agent 负责理解和提出候选；服务端负责候选是否允许生效。
 
 正式候选默认由已合并 PR 触发的 Decision Extractor 产生。
 
+维护者还可通过 [规则导入](rule-import.md) 预览 Markdown 或其他项目的生效规则，再明确确认生效。规则仍按目标仓库隔离，人工导入不经过模型提取。
+
 触发条件：
 
 ```text
@@ -85,9 +87,9 @@ PR 合并或线程 resolved 只能作为上下文证据，不能单独证明形�
 | team_id、repository_id | 团队归属与仓库边界 |
 | type、title、content、rationale | 类型、标题、规则正文、决策理由 |
 | scope | 仓库、路径、语言、模块、适用条件 |
-| source | 来源 PR、评论 ID / URL、提交 SHA、提取时间 |
+| source | PR 来源（评论、提交 SHA），或导入来源（文件摘要／原项目规则版本、导入人和时间） |
 | evidence | 人类讨论与代码依据，注明明确证据或推断 |
-| confidence、uncertainties | 模型自评和不确定因素，不代表校准正确率 |
+| confidence、uncertainties | 模型自评和不确定因素；人工导入的 confidence 为 null，不伪造模型评分 |
 | status | CANDIDATE / ACTIVE / SUPERSEDED / DEPRECATED / REJECTED |
 | exception_to、expires_at | 例外对应原规则和可选到期时间 |
 | supersedes、superseded_by | 替代关系 |
@@ -131,6 +133,7 @@ approved_at: null
 ```mermaid
 stateDiagram-v2
     [*] --> CANDIDATE: 合并后提取
+    [*] --> ACTIVE: 维护者预览并确认导入
     CANDIDATE --> ACTIVE: 有权限维护者确认
     CANDIDATE --> REJECTED: 拒绝或证据不足
     ACTIVE --> SUPERSEDED: 新规则确认并取代
@@ -140,6 +143,7 @@ stateDiagram-v2
 规则：
 
 - 模型 confidence 再高也不能绕过 CANDIDATE → ACTIVE 的人工确认。
+- 人工导入经独立预览确认后直接生效，并在同一事务记录审计；导入副本后续编辑仍需确认新版本。
 - SUPERSEDED 和 DEPRECATED 记录保留用于追溯。
 - 新规则激活和旧规则替代应作为一致状态更新，避免同时检索出两条互相冲突的 ACTIVE 规则。
 - REJECTED 保留来源和拒绝结果，但不能作为现行团队要求。

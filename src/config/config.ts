@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
+import { loadWecomConfig, type WecomConfig } from "../notifications/config.js";
+
+import { loadDevelopmentConfig, type DevelopmentConfig } from "../development/config.js";
 
 export interface Config {
+  development?: DevelopmentConfig;
+  wecom?: WecomConfig;
   appId: string;
   privateKey: string;
   webhookSecret: string;
@@ -93,6 +98,8 @@ export function loadConfig(env = process.env): Config {
     throw new Error("无法读取 GITHUB_PRIVATE_KEY_PATH");
   }
   return {
+    wecom: loadWecomConfig(env),
+    development: loadDevelopmentConfig(env),
     appId: required(env, "GITHUB_APP_ID"),
     privateKey,
     webhookSecret: required(env, "GITHUB_WEBHOOK_SECRET"),

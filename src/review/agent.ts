@@ -217,8 +217,11 @@ export class BudgetError extends Error {
 }
 
 // ponytail: 用 UTF-8 字节数加协议余量保守预留输入；接入 provider tokenizer 后可减少过度拒绝。
-export function requestTokenBudget(context: unknown, remaining: number) {
-  const inputUpperBound = Buffer.byteLength(JSON.stringify(context), "utf8") + 1024;
+export function requestTokenBudget(context: unknown, remaining: number, images: Array<{ data: string }> = []) {
+  let payload = JSON.stringify(context);
+  for (const image of images) payload = payload.replaceAll(image.data, "[image]");
+  // 开发入口只接收最大 2048px 的截图；每图保守预留 32768 tokens，避免把 base64 当正文逐字计费。
+  const inputUpperBound = Buffer.byteLength(payload, "utf8") + 1024 + images.length * 32768;
   if (remaining < inputUpperBound + 128)
     throw new BudgetError(
       `Agent Token 预算不足：输入与输出至少需预留 ${inputUpperBound + 128}，剩余 ${remaining}；未发送请求`,
@@ -234,6 +237,7 @@ function registerEndpoint(
   modelName: string,
   apiKey: string,
   endpoint: ModelEndpoint,
+  vision = false,
 ) {
   runtime.registerProvider(provider, {
     baseUrl: endpoint.baseUrl,
@@ -244,7 +248,7 @@ function registerEndpoint(
         id: modelName,
         name: modelName,
         reasoning: Boolean(endpoint.thinkingLevel && endpoint.thinkingLevel !== "off"),
-        input: ["text"],
+        input: vision ? ["text", "image"] : ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 400_000,
         maxTokens: 128_000,
@@ -260,6 +264,7 @@ export async function runAgentSession(
   > & {
     systemPrompt: string;
     prompt: object;
+    images?: Array<{ type: "image"; data: string; mimeType: string }>;
     tools?: ToolDefinition[];
     parallelTools?: boolean;
     onUsage?: (usage: AgentUsage) => Promise<void>;
@@ -270,10 +275,20 @@ export async function runAgentSession(
     usage = emptyUsage(),
     budget = input.budgetTokens ?? 20_000;
   const runtime = await ModelRuntime.create({ refreshOnCreate: false });
-  if (input.endpoint?.baseUrl) registerEndpoint(runtime, input.provider, input.modelName, input.apiKey, input.endpoint);
+  if (input.endpoint?.baseUrl)
+    registerEndpoint(
+      runtime,
+      input.provider,
+      input.modelName,
+      input.apiKey,
+      input.endpoint,
+      Boolean(input.images?.length),
+    );
   await runtime.setRuntimeApiKey(input.provider, input.apiKey);
   const model = runtime.getModel(input.provider, input.modelName);
   if (!model) throw new Error(`未知模型 ${input.provider}/${input.modelName}`);
+  if (input.images?.length && !model.input.includes("image"))
+    throw new Error("当前模型不支持图片，请配置支持图片的开发模型");
   const loader = controlledLoader(input.root, input.systemPrompt);
   await loader.reload();
   const customTools = input.tools ?? workspaceTools(input.root);
@@ -320,7 +335,7 @@ export async function runAgentSession(
         const prepared = (await options?.onPayload?.(payload, selected)) ?? payload;
         try {
           // 计算 provider 实际发送的 body，避免把 SDK 内保留但未发送的 reasoning 重复预留。
-          const reservation = requestTokenBudget(prepared, remaining());
+          const reservation = requestTokenBudget(prepared, remaining(), input.images);
           const body = prepared as Record<string, unknown>;
           const field = ["max_tokens", "max_completion_tokens", "max_output_tokens"].find(
             (key) => typeof body?.[key] === "number",
@@ -366,7 +381,7 @@ export async function runAgentSession(
   try {
     input.signal?.throwIfAborted();
     if (Date.now() - started >= input.timeoutMs) throw new TimeoutError();
-    await session.prompt(JSON.stringify(input.prompt));
+    await session.prompt(JSON.stringify(input.prompt), { images: input.images });
     await checkpoint;
     input.signal?.throwIfAborted();
     if (timedOut) throw new TimeoutError();

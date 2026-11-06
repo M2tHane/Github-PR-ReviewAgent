@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
+    "@wecom/aibot-node-sdk": "1.0.7",
     "pg": "8.23.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

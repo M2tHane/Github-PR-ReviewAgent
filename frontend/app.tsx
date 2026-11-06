@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, messageOf, setCsrf } from "./api/client.js";
 import { AppLayout } from "./components/layout/app-layout.js";
+import { ThemeSwitch } from "./components/common/theme-switch.js";
 import { HealthPanel } from "./features/health/health-panel.js";
 import { DiscussionPage } from "./features/reviews/discussions.js";
 import { ReviewDetails } from "./features/reviews/review-detail.js";
@@ -67,6 +68,9 @@ function App() {
   if (!session)
     return (
       <main className="login">
+        <div className="login-theme">
+          <ThemeSwitch />
+        </div>
         <div className="login-card">
           <p className="eyebrow">Pi · 代码审查与团队规则</p>
           <h1>把团队决定，带进下一次 Review。</h1>

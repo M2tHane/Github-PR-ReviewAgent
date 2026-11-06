@@ -190,6 +190,8 @@ SESSION_SECRET
 
 完整配置说明见 [.env.example](.env.example)。
 
+可选配置 `WECOM_WEBHOOK_URL`，并在前端「仓库 → 通知成员」为各项目关联 GitHub 账号与企业微信成员 ID：审查结果成功发布到 GitHub 后，向一个企业微信内部群发送完成通知、PR 链接，并通过成员 ID 指定 @ PR 作者。群消息不包含审查内容；发送失败不会重新执行 AI 审查。配置、迁移、通知状态与真实 @ 验收步骤见 [企业微信通知](docs/wecom-notifications.md)。
+
 ### 4. 初始化数据库
 
 首次运行：
@@ -309,6 +311,8 @@ Maintainer Review
 
 系统不会把“代码碰巧这样写”直接提升为团队规则，也不会自动把 AI 自己的意见写入 ACTIVE Memory。
 
+管理页还支持 [Markdown 与跨项目规则导入](docs/rule-import.md)：先看格式示例或选择来源项目，预览并勾选规则，点击「确认导入并生效」。副本归属目标项目、独立维护，保留真实导入来源；重复项跳过，同名不同内容提示。
+
 ## 测试与验证
 
 运行基础测试：
@@ -410,3 +414,9 @@ Review → Discussion → Decision → Memory → Future Review
 ```
 
 让一次 PR 中已经确认的工程经验，不再随着 PR 合并而消失。
+
+## 企业微信群内 AI 开发
+
+在管理页「仓库 → 群内 AI 开发」绑定群与目标分支，设置管理员／开发及文件保护规则。群内 @ 智能机器人发送文字，可附图片；服务创建新分支及 PR，并在原群 @ 提出者汇报。开发命中保护范围时整项拒绝；管理员可发起受保护文件修改，规则继续有效。生成 PR 跳过本服务自动审查，不自动合并。
+
+需要智能机器人 API 长连接的 `WECOM_BOT_ID`、`WECOM_BOT_SECRET`，以及 GitHub App 的 Contents／Pull requests 写权限。原通知 Webhook 不具备接收群消息能力。升级需手动应用迁移 005。详细配置、输入限制和发布待核对处理见 [开发接入说明](docs/wecom-development.md)，完成证据与真实验收状态见 [DEV 清单](docs/tasks/DEV.md)。

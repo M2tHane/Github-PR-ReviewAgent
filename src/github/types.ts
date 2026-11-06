@@ -11,6 +11,6 @@ export interface PullRequestEvent {
     merged?: boolean;
     merge_commit_sha?: string | null;
     base: { sha: string };
-    head: { sha: string; repo: { full_name: string } | null };
+    head: { sha: string; ref?: string; repo: { full_name: string } | null };
   };
 }

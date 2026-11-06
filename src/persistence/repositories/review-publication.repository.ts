@@ -18,10 +18,16 @@ export class ReviewPublicationRepository {
     };
   }
 
-  async finishPublication(job: ReviewJob, status: "published" | "failed" | "uncertain") {
+  async finishPublication(job: ReviewJob, status: "published" | "failed" | "uncertain", channel?: string) {
     await this.pool.query(
-      "UPDATE review_publications SET status=$2,github_review_id=$3,github_review_url=$4,updated_at=now() WHERE job_id=$1",
-      [job.id, status, job.reviewId ?? null, job.reviewUrl ?? null],
+      `WITH published AS (
+        UPDATE review_publications SET status=$2,github_review_id=$3,github_review_url=$4,updated_at=now()
+        WHERE job_id=$1 RETURNING job_id,status
+      )
+      INSERT INTO review_notifications(job_id,channel,partial)
+      SELECT job_id,$5,$6 FROM published WHERE status='published' AND $5::text IS NOT NULL
+      ON CONFLICT(job_id) DO NOTHING`,
+      [job.id, status, job.reviewId ?? null, job.reviewUrl ?? null, channel ?? null, job.status === "partial"],
     );
   }
 

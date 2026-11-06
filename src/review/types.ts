@@ -39,7 +39,9 @@ export interface Finding {
     id: string;
     version: number;
     title?: string;
-    source: { pullRequestNumber?: number; commentIds?: number[] };
+    source:
+      | { kind?: never; pullRequestNumber?: number; commentIds?: number[] }
+      | import("../memory/types.js").ImportedMemorySource;
   };
 }
 

@@ -42,6 +42,13 @@ export async function handlePullRequest(
     return send(response, 200, { ignored: true });
   let result;
   try {
+    if (
+      !closed &&
+      typeof target !== "function" &&
+      pr.head.repo?.full_name === event.repository.full_name &&
+      (await target.isDevelopmentPullRequest?.(event.repository.id, pr.number, pr.head.ref, pr.head.sha))
+    )
+      return send(response, 200, { ignored: true, reason: "development_pull_request" });
     result = await accept(
       {
         deliveryId,

@@ -1,34 +1,34 @@
 /* ===== 设计变量：浅色为主，跟随系统切换深色 ===== */
 :root {
   color-scheme: light dark;
-  --bg: #f7f8fa;
-  --surface: #ffffff;
-  --surface-2: #f2f4f7;
-  --line: #e4e7ec;
-  --line-strong: #d0d5dd;
-  --text: #111827;
-  --muted: #6b7280;
-  --subtle: #9ca3af;
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-soft: #eef2ff;
-  --accent-text: #3730a3;
-  --on-accent: #ffffff;
+  --bg: light-dark(#f7f8fa, #0b0d12);
+  --surface: light-dark(#ffffff, #12151c);
+  --surface-2: light-dark(#f2f4f7, #181c25);
+  --line: light-dark(#e4e7ec, #232836);
+  --line-strong: light-dark(#d0d5dd, #2f3545);
+  --text: light-dark(#111827, #e6e8ee);
+  --muted: light-dark(#6b7280, #9aa3b2);
+  --subtle: light-dark(#9ca3af, #6b7385);
+  --accent: light-dark(#4f46e5, #818cf8);
+  --accent-hover: light-dark(#4338ca, #a5b4fc);
+  --accent-soft: light-dark(#eef2ff, #1e1b4b);
+  --accent-text: light-dark(#3730a3, #c7d2fe);
+  --on-accent: light-dark(#ffffff, #0b0d12);
   /* 严重度三档与 GitHub 评论一致；*-text 用于正文，保证对比度 */
-  --must: #dc2626;
-  --must-text: #b91c1c;
-  --must-soft: #fef2f2;
-  --should: #ea580c;
-  --should-text: #c2410c;
-  --should-soft: #fff7ed;
-  --may: #ca8a04;
-  --may-text: #a16207;
-  --may-soft: #fefce8;
-  --ok: #16a34a;
-  --ok-text: #15803d;
-  --ok-soft: #f0fdf4;
-  --shadow-sm: 0 1px 2px rgb(16 24 40 / 6%);
-  --shadow-lg: 0 12px 40px rgb(16 24 40 / 16%);
+  --must: light-dark(#dc2626, #f87171);
+  --must-text: light-dark(#b91c1c, #fca5a5);
+  --must-soft: light-dark(#fef2f2, #2a1215);
+  --should: light-dark(#ea580c, #fb923c);
+  --should-text: light-dark(#c2410c, #fdba74);
+  --should-soft: light-dark(#fff7ed, #2a1708);
+  --may: light-dark(#ca8a04, #facc15);
+  --may-text: light-dark(#a16207, #fde047);
+  --may-soft: light-dark(#fefce8, #262008);
+  --ok: light-dark(#16a34a, #4ade80);
+  --ok-text: light-dark(#15803d, #86efac);
+  --ok-soft: light-dark(#f0fdf4, #0f2417);
+  --shadow-sm: light-dark(0 1px 2px rgb(16 24 40 / 6%), 0 1px 2px rgb(0 0 0 / 40%));
+  --shadow-lg: light-dark(0 12px 40px rgb(16 24 40 / 16%), 0 16px 48px rgb(0 0 0 / 55%));
   --radius: 10px;
   --radius-sm: 6px;
   --gutter: clamp(1rem, 4vw, 2rem);
@@ -47,37 +47,11 @@
   -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b0d12;
-    --surface: #12151c;
-    --surface-2: #181c25;
-    --line: #232836;
-    --line-strong: #2f3545;
-    --text: #e6e8ee;
-    --muted: #9aa3b2;
-    --subtle: #6b7385;
-    --accent: #818cf8;
-    --accent-hover: #a5b4fc;
-    --accent-soft: #1e1b4b;
-    --accent-text: #c7d2fe;
-    --on-accent: #0b0d12;
-    --must: #f87171;
-    --must-text: #fca5a5;
-    --must-soft: #2a1215;
-    --should: #fb923c;
-    --should-text: #fdba74;
-    --should-soft: #2a1708;
-    --may: #facc15;
-    --may-text: #fde047;
-    --may-soft: #262008;
-    --ok: #4ade80;
-    --ok-text: #86efac;
-    --ok-soft: #0f2417;
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-lg: 0 16px 48px rgb(0 0 0 / 55%);
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+.theme-switch { width: auto; min-height: 36px; font-size: 0.8rem; }
+.login-theme { position: absolute; top: 1rem; right: var(--gutter); }
 
 /* ===== 基础 ===== */
 * {
@@ -487,6 +461,9 @@ legend {
 }
 .repository-card > button {
   margin-top: 1rem;
+}
+.repository-card > .check {
+  width: fit-content;
 }
 /* 行式列表：卡片容器 + 分隔线 */
 .review-list,
@@ -1658,6 +1635,45 @@ a.stat:hover {
   font-size: 0.875rem;
 }
 
+.notification-repository {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.notification-member-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.notification-member-table {
+  table-layout: fixed;
+}
+.notification-member-table th,
+.notification-member-table td {
+  padding: 0.75rem 0.5rem;
+  overflow-wrap: anywhere;
+}
+.notification-member-table th:nth-child(1) { width: 29%; }
+.notification-member-table th:nth-child(2) { width: 36%; }
+.notification-member-table th:last-child { width: 35%; }
+.notification-member-table th:last-child,
+.notification-member-table td:last-child { text-align: right; }
+.notification-member-table .actions {
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.notification-member-table .text-button {
+  border: 0;
+  background: transparent;
+  padding: 0.4rem 0.55rem;
+}
+.notification-member-table .text-button:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+.notification-member-form .muted { font-size: 0.85rem; }
+
 /* ===== 响应式 ===== */
 @media (max-width: 900px) {
   .top {
@@ -1799,4 +1815,36 @@ a.stat:hover {
     animation: none !important;
     transition: none !important;
   }
+}
+
+.development-form fieldset {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 18px 0;
+  padding: 16px;
+  min-width: 0;
+}
+.development-form legend { padding: 0 6px; font-weight: 650; }
+.development-member { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+.development-member label:first-child { flex: 1; min-width: 140px; }
+.development-rule, .development-task { margin: 12px 0; overflow-wrap: anywhere; }
+
+.rule-import .import-example {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.rule-import .import-rule {
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+}
+.rule-import .import-rule > .check {
+  width: fit-content;
+}
+.rule-import .import-rule > .scope-chips {
+  display: flex;
+  margin: 12px 0;
 }

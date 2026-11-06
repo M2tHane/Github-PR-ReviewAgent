@@ -13,6 +13,10 @@ import { DatabaseSessionStore, type SessionStore } from "./session-store.js";
 import { createRepositoryService } from "./repository.service.js";
 import { createHealthRoutes, isHealthRoute } from "./health.routes.js";
 import { createFindingsRoute } from "./findings.routes.js";
+import { createNotificationMembersRoute } from "./notification-members.routes.js";
+
+import { createRuleImportRoute } from "./rule-import.routes.js";
+import { createDevelopmentRoute } from "./development.routes.js";
 
 export interface AdminStores {
   sessions: SessionStore<Session>;
@@ -32,6 +36,9 @@ export function createAdminHandler(
   const memories = new MemoryService(database);
   const { allowedRepositories, listJobs } = createRepositoryService(database, github);
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
+  const ruleImportRoute = createRuleImportRoute(database, authorize);
+  const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
+  const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
   const configured = Boolean(
     config.githubClientId &&
       config.githubClientSecret &&
@@ -162,6 +169,12 @@ export function createAdminHandler(
         const user = await session(request);
         if (!user) return json(response, 401, { error: "请先登录" });
         if (request.method !== "GET" && !requireCsrf(request, response, user)) return;
+        const importMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/rule-import\/(source|preview|confirm)$/);
+        if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
+        const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development$/);
+        if (developmentMatch) return await developmentRoute(request, response, Number(developmentMatch[1]));
+        const membersMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/notification-members(?:\/([^/]+))?$/);
+        if (membersMatch) return notificationMembersRoute(request, response, Number(membersMatch[1]), membersMatch[2]);
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
           const repositories = await allowedRepositories(user);
           const [jobs, memoryLists] = await Promise.all([

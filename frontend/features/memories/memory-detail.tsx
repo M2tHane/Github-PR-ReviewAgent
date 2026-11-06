@@ -1,3 +1,4 @@
+import { memorySourceLabel } from "../../../src/memory/types.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
@@ -89,7 +90,7 @@ export function RulePanel({
             <p className="pending-note">
               {item.activeVersion
                 ? `当前 v${item.activeVersion} 继续用于审查；确认后才采用这次更新。`
-                : "从 PR 讨论中识别的团队约定，确认后用于后续审查。"}
+                : "待确认的团队约定，确认后用于后续审查。"}
               {item.activeVersion && (
                 <>
                   {" "}
@@ -120,10 +121,19 @@ export function RulePanel({
                 <p>
                   {repository?.fullName}
                   <br />
-                  <a href={pr} target="_blank" rel="noreferrer">
-                    PR #{item.source.pullRequestNumber} ↗
-                  </a>{" "}
-                  · {item.source.commentIds?.length ?? 0} 条讨论
+                  {item.source.kind ? (
+                    <>
+                      {memorySourceLabel(item.source)}
+                      <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
+                    </>
+                  ) : (
+                    <>
+                      <a href={pr} target="_blank" rel="noreferrer">
+                        PR #{item.source.pullRequestNumber} ↗
+                      </a>{" "}
+                      · {item.source.commentIds.length} 条讨论
+                    </>
+                  )}
                 </p>
                 <button className="text-button" onClick={() => setTab("sources")}>
                   查看依据 →
@@ -131,7 +141,13 @@ export function RulePanel({
               </section>
               <div className="rule-secondary">
                 <span className="muted">
-                  {item.confidence >= 0.8 ? "高可信" : item.confidence >= 0.5 ? "有待核实" : "证据较弱"}
+                  {item.confidence === null
+                    ? "人工确认导入"
+                    : item.confidence >= 0.8
+                      ? "高可信"
+                      : item.confidence >= 0.5
+                        ? "有待核实"
+                        : "证据较弱"}
                 </span>
                 <button className="text-button" onClick={() => setTab("sources")}>
                   为什么？
@@ -146,9 +162,21 @@ export function RulePanel({
             <section className="rule-section">
               <h3>这条规则为什么存在</h3>
               <p className="rule-content">{item.rationale}</p>
-              <a href={pr} target="_blank" rel="noreferrer">
-                查看 PR #{item.source.pullRequestNumber} 的原始讨论 ↗
-              </a>
+              {item.source.kind ? (
+                <p>
+                  {memorySourceLabel(item.source)}
+                  {item.source.memoryId && (
+                    <>
+                      {" "}
+                      · 原规则编号 <code>{item.source.memoryId}</code>
+                    </>
+                  )}
+                </p>
+              ) : (
+                <a href={pr} target="_blank" rel="noreferrer">
+                  查看 PR #{item.source.pullRequestNumber} 的原始讨论 ↗
+                </a>
+              )}
               <ul className="evidence-list">
                 {item.evidence.map((entry, i) => (
                   <li key={i}>
@@ -168,7 +196,11 @@ export function RulePanel({
               </ul>
               <details>
                 <summary>可信度与不确定因素</summary>
-                <p>模型自评 {Math.round(item.confidence * 100)}%，不代表校准后的正确率。</p>
+                <p>
+                  {item.confidence === null
+                    ? "由维护者人工确认导入，未生成模型置信分数。"
+                    : `模型自评 ${Math.round(item.confidence * 100)}%，不代表校准后的正确率。`}
+                </p>
                 {item.uncertainties.length ? (
                   <ul>
                     {item.uncertainties.map((text, i) => (
@@ -227,7 +259,7 @@ export function RulePanel({
                 <dd>{item.version}</dd>
                 <dt>Source commit</dt>
                 <dd>
-                  <code>{item.source.commitSha}</code>
+                  <code>{item.source.commitSha ?? "不适用（导入来源）"}</code>
                 </dd>
               </dl>
               <details>

@@ -1,3 +1,5 @@
+import { RuleImport } from "../features/memories/rule-import.js";
+import { memorySourceLabel } from "../../src/memory/types.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
@@ -21,6 +23,7 @@ export function MemoriesPage({
   const [filter, setFilter] = useState(route === "rules/pending" ? "CANDIDATE" : "ALL"),
     [repositoryId, setRepositoryId] = useState("ALL"),
     [search, setSearch] = useState("");
+  const [importMode, setImportMode] = useState<"markdown" | "project" | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -194,9 +197,31 @@ export function MemoriesPage({
           <h2 id="rules-title" tabIndex={-1}>
             团队规则
           </h2>
-          <p className="muted">从 PR 讨论中提炼、经维护者确认的工程决定，后续审查会据此提醒。</p>
+          <p className="muted">来自 PR 讨论或维护者确认导入的工程决定，按项目用于后续审查和开发任务。</p>
+        </div>
+        <div className="actions">
+          <button className="secondary" onClick={() => setImportMode("markdown")}>
+            导入 Markdown
+          </button>
+          <button className="secondary" onClick={() => setImportMode("project")}>
+            从其他项目导入
+          </button>
         </div>
       </div>
+      {importMode && (
+        <RuleImport
+          mode={importMode}
+          repositories={repositories}
+          initialTarget={repositoryId}
+          close={() => setImportMode(null)}
+          imported={async (result, target) => {
+            setRepositoryId(String(target));
+            setFilter("ACTIVE");
+            setNotice(`已导入并生效 ${result.imported.length} 条，跳过 ${result.skipped.length} 条重复规则。`);
+            await reload();
+          }}
+        />
+      )}
       {error && !selected && (
         <p className="alert" role="alert">
           {error}
@@ -277,8 +302,8 @@ export function MemoriesPage({
               <ScopeChips scope={item.scope} />
               <div className="rule-meta">
                 <span>
-                  {repositories.find((repo) => repo.id === item.repositoryId)?.fullName} · 来源 PR #
-                  {item.source.pullRequestNumber}
+                  {repositories.find((repo) => repo.id === item.repositoryId)?.fullName} ·{" "}
+                  {memorySourceLabel(item.source)}
                 </span>
                 <span>更新于 {dateText(item.updatedAt)}</span>
               </div>

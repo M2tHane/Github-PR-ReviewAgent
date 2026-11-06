@@ -16,12 +16,12 @@ export function cookies(request: IncomingMessage) {
   );
 }
 
-export async function body(request: IncomingMessage) {
+export async function body(request: IncomingMessage, maxBytes = 65_536) {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 65_536) throw new Error("请求体过大");
+    if (size > maxBytes) throw new Error("请求体过大");
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");

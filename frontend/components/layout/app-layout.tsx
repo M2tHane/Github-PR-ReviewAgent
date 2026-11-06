@@ -1,4 +1,5 @@
 import type React from "react";
+import { ThemeSwitch } from "../common/theme-switch.js";
 
 type Navigation = { overview: boolean; rules: boolean; repositories: boolean; settings: boolean };
 
@@ -51,6 +52,7 @@ export function AppLayout({
           ))}
         </nav>
         <div className="account">
+          <ThemeSwitch />
           <a href="#settings" className={navigation.settings ? "active" : ""}>
             设置
           </a>
