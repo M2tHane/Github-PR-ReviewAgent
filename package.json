@@ -20,7 +20,7 @@
     "lint": "biome lint ."
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@wecom/aibot-node-sdk": "1.0.7",
     "pg": "8.23.0",
     "react": "^19.3.0",
