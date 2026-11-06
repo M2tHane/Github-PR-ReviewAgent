@@ -1,6 +1,6 @@
 # Pi SDK 安全升级
 
-状态：实现与隔离验证完成，待本地服务切换｜2026-11-06
+状态：升级及验证完成，日常本地服务已切换至 1.5.0｜2026-11-06
 
 基线：`edee1fd34dd7de7ea9d77a4a0f1431f7ccbafb43`。用户确认升级官方 Pi SDK 至 1.5.0、完成兼容性验证后升级本地服务并提交合并。使用独立 `fix/pi-sdk-security` 分支及 worktree 安装和测试，验证期间日常服务继续使用原依赖。
 
@@ -27,4 +27,12 @@
 
 会话验证涵盖：服务系统指令与工具定义进入 HTTP 请求、输出上限、预算不足时不发送请求、usage 记账、失败时未知消耗保留、并发取消、会话消息隔离、视觉输入、参数拒绝及禁用 shell。HTTP 服务为本机替身，未连接真实模型供应商；没有真实模型 usage、业务 delivery／Job／finding／Review／reply URL。图片完整性检查的业务逻辑不涉及数据库迁移。
 
-本地运行和提交证据在切换完成后补充。未升级远程生产环境，企微开发机器人未配置的限制继续有效。
+## 本地升级与性能
+
+- 实现提交 `ec25222`，包含依赖、图片完整性检查、回归及本清单。升级前确认真实任务队列、开发任务及通知均没有待处理项；原服务正常停止。
+- 日常 checkout 快进到已验证提交，执行 `npm ci`（182 packages，0 vulnerabilities）和 `npm run build` 均通过；随后启动 `node --env-file-if-exists=.env dist/src/main.js`。日志为 `work/pi-sdk-local-install.log`、`work/pi-sdk-local-build.log` 及 `work/local-service.log`。
+- 当前安装 Pi SDK 为 1.5.0；首页、JS、CSS、healthz、readyz HTTP 200，未登录管理 API 为 401。原配置模型为自定义端点，名称和地址未修改。重启后再次执行 `npm audit --audit-level=high`：0 漏洞。
+- 本机就绪检查各取 10 次样本，中位数升级前约 2.89 ms、升级后约 3.01 ms；进程 RSS 快照分别约 74.8 MiB 和 66.5 MiB。进程运行时长不同，不据此宣称内存降低或生产性能变化。前端 JS 仍为 343627 bytes、gzip 100232 bytes；没有新增查询、轮询或模型调用。证据 `work/pi-sdk-before.json`、`work/pi-sdk-after.json`。
+- 图片检查只在含图片的任务、模型请求前扫描当前消息内容，不解析或复制图片字节；开销随消息内容项数线性增长。未进行大规模并发或真实模型延迟测试。
+
+本次无数据库迁移，也没有发送真实群消息、调用真实模型供应商或创建业务测试 PR。未升级远程生产环境，企微开发机器人未配置的限制继续有效。代码 PR 的推送合并结果以 Git 历史为准。
