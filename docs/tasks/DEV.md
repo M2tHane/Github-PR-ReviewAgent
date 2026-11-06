@@ -139,7 +139,8 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 - Job：`902bc74c-9367-48be-ad05-fec8a113e6d6`；head：`c9c5f1dfedb17ed66ece66ec98669fd3b05e2099`。
 - [实际审查链接](https://github.com/M2tHane/pi-review-sandbox/pull/2#pullrequestreview-5780737477)。绑定版本 1，使用当前确认的新群与智能机器人，不使用旧 Webhook。
 - 入队时间 `2026-11-06T10:12:23.458Z`；`sent` 时间 `2026-11-06T10:12:26.334Z`，attempt 1，无错误；约 2.9 秒，包含轮询等待和 GitHub 核对，不是压力测试指标。证据 `work/wecom-acceptance/bound-review-evidence.json`。
-- 没有重新运行模型、发布 Review 或创建 PR；本次模型角色、耗时和 usage 不适用，不冒充新 Webhook 驱动的完整审查验收。新通知客户端排版仍待用户确认。
+- 没有重新运行模型、发布 Review 或创建 PR；本次模型角色、耗时和 usage 不适用，不冒充新 Webhook 驱动的完整审查验收。
+- 用户随后明确回复“我已收到”，并提供客户端截图 `image-1793960473071.png`：当前智能机器人在正确群中显示“AI 审查已完成”、仓库 `M2tHane/pi-review-sandbox`、PR #2 标题及“查看审查结果”链接，没有成员 @。绑定群送达及客户端排版验收通过；截图不证明链接已点击，也不替代真实图文开发与最终引用回复验收。实现提交 `03dcb94`，合并后的服务基线 `e96fa1d`。
 
 ### 性能与未验证项
 
@@ -148,3 +149,7 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 复用现有 WebSocket；空闲主实例每 4 秒约增加一次审查通知待发查询，实际发送通过原有 3.1 秒串行队列。未测生产负载、峰值内存或端到端模型延迟。此轮未重新进行浏览器交互验收：先前的 GitHub App 权限页仍停在交给用户的二次验证步骤，未绕过控制权。
 
 真实开发完成后的原生引用仍需新群消息验证；历史消息未保存 req_id，不能伪造其回调。GitHub App 实际权限仍为 `contents: read`、`pull_requests: write`，因此完整图文开发、真实创建分支／PR 仍待用户完成写权限更新后测试。此前发现的明文 UserID 大小写比较问题未在本轮改动，当前绑定仍保留与已观察回调一致的 `JiZhaoQi`。
+
+### 客户端确认后的继续检查
+
+2026-11-06，用户要求继续验收。通过 App 身份只读查询安装 `160592861`，实际权限仍为 `contents: read`、`pull_requests: write`；本地 `http://127.0.0.1:3000/` 返回 200。原 GitHub 二次验证 TaskSpace 2 已不在浏览器任务空间列表，未另建空间绕过验证，也未变更 App 权限。需用户完成 GitHub 身份验证、将 Contents 调整为 Read and write 并批准安装权限更新，再发送已准备的同条图文消息。此次只更新验收记录，没有调用开发模型或新建分支／业务 PR，无新增运行时性能开销。
