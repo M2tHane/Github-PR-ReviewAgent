@@ -200,3 +200,37 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 本次无数据库结构或配置变化，无需迁移；无新增模型调用、查询或前端包体积。后续开发请求的提示词增加格式要求，尚未测量实际 token 和延迟差异。新格式的真实模型生成效果待下一条开发任务验证，不将手工整理既有 PR 描述当作自动生成验收。
 
 实际验证：`npm test` 173 项，121 通过、52 个数据库用例跳过、0 失败，12.92 秒；`npm run test:db` 53 项全部通过、0 skip、0 失败，15.68 秒。日志 `work/wecom-pr-description-tests.log`、`work/wecom-pr-description-db.log`。`npm run check:docs`（28 篇文档、248 个链接）与 `git diff --check` 通过。确认无活动任务及待发通知后重启新构建，HTTP 200，一个机器人主锁，认证后的开发轮询正常。
+
+## 2026-11-07：Docker 打包与测试服务器部署准备
+
+用户授权为项目提供镜像打包脚本，将服务与数据库容器部署到 `192.168.50.207`，允许安装 Docker 及传输 `.env`。基线 `3d1f5370a95f1f9c005924e9a8ded8c220bf4755`；当前完成的是本地镜像与隔离容器验证，目标服务器尚未部署成功。
+
+新增 Dockerfile、多阶段构建、构建上下文白名单、[打包脚本](../../scripts/build-image.sh) 和独立的 [部署 Compose](../../compose.deploy.yaml)。保留原开发 Compose；服务和数据库分容器，数据库不发布端口并使用持久卷，迁移容器成功后才启动应用。沿用现有 Semgrep 1.136.0，镜像包含 Git、扫描规则和管理页。`.env` 与私钥仅在运行时只读挂载，不进入镜像。操作步骤见 [Docker 测试部署](../docker-deployment.md)。
+
+| 实际操作 | 结果与限制 |
+| --- | --- |
+| `ssh -o ConnectTimeout=8 root@192.168.50.207`，随后 TCP 22 检查 | 均超时，尚未到认证步骤。路由走本机 en0、网关 192.168.1.1；SSH 用户名和端口仍需确认。没有提交服务器密码或传输真实凭据。 |
+| `bash -n scripts/build-image.sh`、`scripts/build-image.sh --help` | 通过。 |
+| `scripts/build-image.sh pr-review-agent:test-deploy work/docker/pr-review-agent-test-deploy.tar.gz` | 成功构建、加载并导出 Linux amd64 镜像；包含 `npm ci`、服务和前端构建。压缩包约 214 MiB，`gzip -t` 通过。日志 `work/docker-build.log`。 |
+| 独立 Compose 配置校验和 `up -d --wait` | 使用 `work/docker-smoke/` 中的假凭据、临时私钥及独立 PostgreSQL 卷，迁移 7 项成功，应用和数据库健康，jobs 和 development_tasks 均为 0。无真实机器人连接和外部业务发布。 |
+| 再次运行迁移容器 | 成功退出，无重复迁移错误。 |
+| HTTP 探针与管理页 | `/healthz`、`/readyz`、`/`、JS 和 CSS 均 200；单次耗时 3–19 ms，JS 337140 bytes、CSS 35490 bytes。结果 `work/docker-smoke/http.json`。 |
+| 容器工具与文件检查 | 非 root（UID 1000）；Node 24.22.2、Git 2.39.5、Semgrep 1.136.0。无 `/app/.env`、work、Git 历史或测试目录。使用合成 JS 文件调用服务 Semgrep 扫描，complete、无 missingData，未执行目标仓库代码。 |
+| `docker stats --no-stream` | 空闲应用 158.8 MiB、CPU 0.52%；数据库 43.44 MiB、CPU 0.37%。本机 ARM Docker 执行 amd64 应用，单次采样不是目标服务器容量或性能承诺。 |
+| 清理隔离测试 | 停止并删除 `prreview-deploy-smoke` 的临时容器与专用卷；保留镜像包及日志，未停止真实本地应用或修改业务库。 |
+
+新增运行开销：应用 readiness 每 30 秒约一次数据库 SELECT 1，数据库每 5 秒一次 pg_isready，单服务日志约 30 MB 轮转上限。无应用依赖或业务逻辑修改；未重跑业务单元和数据库套件，已在镜像内完成构建、真实空库迁移及容器启动验证。未运行真实 GitHub／模型／企微任务，因此本轮模型角色、usage 与业务 PR URL 不适用。
+
+待继续：恢复到服务器的 SSH 访问并确认登录用户／端口；确认迁移当前业务库还是新空库；确认 OAuth 和 GitHub Webhook 对外入口。迁移既有机器人时需停止旧连接，不能把新空库上的实例与本机机器人同时启动。不能将镜像构建成功表述为服务器部署完成。
+
+新增的拒绝路径：无业务请求校验或报错规则；构建／迁移失败沿用工具退出状态，Compose 等迁移成功再启动应用。部署凭据未进入 Git，服务器登录密码未写入项目文件。
+
+## 2026-11-07：GitHub Actions 镜像发布
+
+用户确认先实现 main 自动构建并发布 GHCR，测试机暂时手工更新。将已验证的 Docker 打包文件一并提交，新增 [Docker image 工作流](../../.github/workflows/docker-image.yml)：PR 构建仅有 contents:read，不发布；main push 的独立任务使用 packages:write 和内置 GITHUB_TOKEN 发布 Linux amd64 镜像。镜像为 `ghcr.io/m2thane/github-pr-reviewagent`，带 latest、sha-完整提交号和发布摘要 digest。业务凭据不进入 Actions 或镜像，未设置个人 PAT，也不改变 GHCR 包可见性。
+
+本地 actionlint 1.7.12、文档链接（29 篇、259 个链接）、差异格式和打包脚本语法检查通过；8 个提交文件未匹配到当前配置敏感值。Dockerfile 沿用上一节实际构建与隔离数据库验证的版本；本轮没有修改业务代码、依赖、数据库结构或请求校验。
+
+[PR #8](https://github.com/M2tHane/Github-PR-ReviewAgent/pull/8) 的首次真实 [Actions 构建](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42365760703) 已通过，源提交 `5cf1066cf726023bec1df075c5eb64e720d68eb9`；2026-11-07T10:52:14Z 开始，10:53:46Z 完成，约 92 秒（含排队与清理）。PR 发布任务按预期 skipped，没有登录或推送 GHCR。main 的发布记录及镜像 digest 由后续 [Docker image 运行摘要](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/workflows/docker-image.yml) 保存；不能用 PR 构建成功代替 main 发布成功。
+
+新增的拒绝路径：无。运行时性能没有新增开销；CI 消耗一次镜像构建及推送，通过 GitHub Actions 缓存复用层，具体耗时以真实运行记录为准。原测试机网络和数据迁移的阻塞仍保留，镜像发布不代表已部署到测试机。
