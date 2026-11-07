@@ -219,6 +219,14 @@ npm run dev
 
 > `npm start` 不会自动执行数据库迁移。数据库结构发生变化时，应先显式运行 `npm run migrate`。
 
+## Docker 部署
+
+运行 `scripts/build-image.sh` 可构建应用镜像并导出到 `work/docker/`。服务器使用 `compose.deploy.yaml` 启动应用、一次性迁移任务和 PostgreSQL；`.env` 与 GitHub 私钥通过只读文件挂载，不进入镜像。
+
+PR 自动验证镜像构建；推送或合并到 main 后，GitHub Actions 自动发布 `ghcr.io/m2thane/github-pr-reviewagent:latest` 和 `sha-完整提交号` 标签。测试服务器仍需主动拉取并更新，工作流不自动部署到内网。
+
+架构选择、私密配置、已有数据库迁移和机器人连接切换见 [Docker 测试部署](docs/docker-deployment.md)。
+
 ## GitHub App 配置
 
 建议权限：

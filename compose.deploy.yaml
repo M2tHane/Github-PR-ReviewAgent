@@ -1,0 +1,65 @@
+x-app: &app
+  image: ${APP_IMAGE:-pr-review-agent:local}
+  init: true
+  environment:
+    DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/pi_governance
+    GITHUB_PRIVATE_KEY_PATH: /run/secrets/github-app.pem
+    SEMGREP_PATH: /opt/semgrep/bin/semgrep
+    PORT: "3000"
+  volumes:
+    - ./secrets/app.env:/run/secrets/app.env:ro
+    - ./secrets/github-app.pem:/run/secrets/github-app.pem:ro
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pi_governance
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pi_governance"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    <<: *app
+    command: ["node", "--env-file=/run/secrets/app.env", "dist/src/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    restart: unless-stopped
+    command: ["node", "--env-file=/run/secrets/app.env", "dist/src/main.js"]
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz',{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  postgres-data:
