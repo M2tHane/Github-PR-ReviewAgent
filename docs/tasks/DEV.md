@@ -229,6 +229,8 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 
 用户确认先实现 main 自动构建并发布 GHCR，测试机暂时手工更新。将已验证的 Docker 打包文件一并提交，新增 [Docker image 工作流](../../.github/workflows/docker-image.yml)：PR 构建仅有 contents:read，不发布；main push 的独立任务使用 packages:write 和内置 GITHUB_TOKEN 发布 Linux amd64 镜像。镜像为 `ghcr.io/m2thane/github-pr-reviewagent`，带 latest、sha-完整提交号和发布摘要 digest。业务凭据不进入 Actions 或镜像，未设置个人 PAT，也不改变 GHCR 包可见性。
 
-本地文档链接、差异格式和打包脚本语法检查通过。Dockerfile 沿用上一节实际构建与隔离数据库验证的版本；本轮没有修改业务代码、依赖、数据库结构或请求校验。真实 Actions 构建与 GHCR 发布结果待首次运行后核对。
+本地 actionlint 1.7.12、文档链接（29 篇、259 个链接）、差异格式和打包脚本语法检查通过；8 个提交文件未匹配到当前配置敏感值。Dockerfile 沿用上一节实际构建与隔离数据库验证的版本；本轮没有修改业务代码、依赖、数据库结构或请求校验。
+
+[PR #8](https://github.com/M2tHane/Github-PR-ReviewAgent/pull/8) 的首次真实 [Actions 构建](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42365760703) 已通过，源提交 `5cf1066cf726023bec1df075c5eb64e720d68eb9`；2026-11-07T10:52:14Z 开始，10:53:46Z 完成，约 92 秒（含排队与清理）。PR 发布任务按预期 skipped，没有登录或推送 GHCR。main 的发布记录及镜像 digest 由后续 [Docker image 运行摘要](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/workflows/docker-image.yml) 保存；不能用 PR 构建成功代替 main 发布成功。
 
 新增的拒绝路径：无。运行时性能没有新增开销；CI 消耗一次镜像构建及推送，通过 GitHub Actions 缓存复用层，具体耗时以真实运行记录为准。原测试机网络和数据迁移的阻塞仍保留，镜像发布不代表已部署到测试机。
