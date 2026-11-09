@@ -11,6 +11,7 @@ test("能否重试先看错误类型：模型限流 / 过载可以重试，额�
   assert.equal(transient(new ProviderError("429 Too Many Requests: rate limit exceeded")), true);
   assert.equal(transient(new ProviderError('{"type":"overloaded_error"}')), true);
   assert.equal(transient(new ProviderError("fetch failed")), true);
+  assert.equal(transient(new ProviderError("Upstream request failed")), true, "模型网关间歇返回的上游故障");
   assert.equal(transient(new ProviderError("429 insufficient_quota: You exceeded your current quota")), false);
   assert.equal(transient(new ProviderError("400 invalid request: max_tokens too large")), false);
   assert.equal(transient(new ProviderError()), false, "没有说明的错误不盲目重试");

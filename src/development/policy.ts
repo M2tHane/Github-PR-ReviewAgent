@@ -1,5 +1,5 @@
 import { requiredText, strictObject } from "../shared/model-json.js";
-import { DevelopmentError, type DevelopmentSettings, type FileChange, type Protection } from "./types.js";
+import { DevelopmentError, type DevelopmentSettings, type Protection } from "./types.js";
 
 export function safePath(value: unknown): string {
   const path = requiredText(value, "文件路径", 500);
@@ -102,22 +102,10 @@ export function enforceProtections(paths: string[], role: string, protections: P
         );
     }
 }
-export function parseChanges(value: unknown): { title: string; summary: string; changes: FileChange[] } {
-  const v = strictObject(value, ["title", "summary", "changes", "refusal"], "开发结果");
+// 改动由服务从工作区收集，模型只交 PR 标题和说明；refusal 非空时拒绝整个任务。
+export function parseDevelopmentResult(value: unknown): { title: string; summary: string } {
+  const v = strictObject(value, ["title", "summary", "refusal"], "开发结果");
   if (typeof v.refusal === "string" && v.refusal.trim())
     throw new DevelopmentError(requiredText(v.refusal, "拒绝原因", 1500), "refused");
-  if (!Array.isArray(v.changes) || !v.changes.length || v.changes.length > 30)
-    throw new DevelopmentError("开发结果需包含 1–30 个文件改动");
-  const changes = v.changes.map((item: unknown) => {
-    const c = strictObject(item, ["path", "content"], "文件改动");
-    if (
-      c.content !== null &&
-      (typeof c.content !== "string" || Buffer.byteLength(c.content) > 200_000 || c.content.includes("\0"))
-    )
-      throw new DevelopmentError("文件内容过大或不是文本");
-    return { path: safePath(c.path), content: c.content as string | null };
-  });
-  if (new Set(changes.map((c) => c.path.toLowerCase())).size !== changes.length)
-    throw new DevelopmentError("开发结果含重复文件路径");
-  return { title: requiredText(v.title, "PR 标题", 150), summary: requiredText(v.summary, "修改说明", 4000), changes };
+  return { title: requiredText(v.title, "PR 标题", 150), summary: requiredText(v.summary, "修改说明", 4000) };
 }

@@ -1,51 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { touchesSecurity } from "../../src/review/orchestration.js";
 import { matchWords, rankMemories, scopeMatches } from "../../src/memory/memory.service.js";
 import { languageOf } from "../../src/config/languages.js";
 import type { MemoryRecord } from "../../src/memory/types.js";
-
-const patch = (...added: string[]) =>
-  "@@ -1 +1,2 @@\n-const removed = secret;\n" + added.map((line) => "+" + line).join("\n");
-
-test("Security 专项只由路径和新增行里的敏感词触发", () => {
-  assert.equal(
-    touchesSecurity({
-      filename: "src/review/agent.ts",
-      patch: patch("const maxTokens = budgetTokens - usage.totalTokens;"),
-    }),
-    false,
-  );
-  assert.equal(
-    touchesSecurity({ filename: "src/a.ts", patch: "@@ -1 +1 @@\n-const password = x;\n+const value = x;" }),
-    false,
-    "删除行不算",
-  );
-  assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch("const keyboard = tokenizer.next();") }), false);
-  for (const line of [
-    "const token = getAccessToken();",
-    "headers.Authorization = `Bearer ${bearerToken}`;",
-    "if (user.password === input) {}",
-    "const API_KEY = env.API_KEY;",
-    "const privateKey = load();",
-    "jwt.verify(raw)",
-  ]) {
-    assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch(line) }), true, line);
-  }
-  assert.equal(touchesSecurity({ filename: "backend/auth/Session.java" }), true);
-  assert.equal(touchesSecurity({ filename: "backend/api/AuthController.java" }), true);
-  assert.equal(touchesSecurity({ filename: "backend/api/AuthorController.java" }), false);
-  for (const line of [
-    'db.query("SELECT * FROM t WHERE id = " + id);',
-    'router.post("/webhook", handle);',
-    "const order = await Order.findById(req.params.id);",
-    "await fs.promises.readFile(path);",
-    "exec(`git log ${ref}`);",
-  ])
-    assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch(line) }), true, `碰到入口或危险操作：${line}`);
-  for (const line of ["const match = /a+/.exec(text);", "// db.query(old)", "const total = items.length;"])
-    assert.equal(touchesSecurity({ filename: "src/a.ts", patch: patch(line) }), false, line);
-});
 
 test("语言识别与规则 Scope 共用一份映射，覆盖常见扩展名和写法", () => {
   assert.equal(languageOf("web/App.tsx"), "typescript");

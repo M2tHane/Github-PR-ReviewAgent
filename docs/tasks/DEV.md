@@ -234,3 +234,82 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 [PR #8](https://github.com/M2tHane/Github-PR-ReviewAgent/pull/8) 的首次真实 [Actions 构建](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42365760703) 已通过，源提交 `5cf1066cf726023bec1df075c5eb64e720d68eb9`；2026-11-07T10:52:14Z 开始，10:53:46Z 完成，约 92 秒（含排队与清理）。PR 发布任务按预期 skipped，没有登录或推送 GHCR。main 的发布记录及镜像 digest 由后续 [Docker image 运行摘要](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/workflows/docker-image.yml) 保存；不能用 PR 构建成功代替 main 发布成功。
 
 新增的拒绝路径：无。运行时性能没有新增开销；CI 消耗一次镜像构建及推送，通过 GitHub Actions 缓存复用层，具体耗时以真实运行记录为准。原测试机网络和数据迁移的阻塞仍保留，镜像发布不代表已部署到测试机。
+
+## 2026-11-09：开发任务按路径附加团队规则
+
+用户确认：开发任务不再一次性给出全部规则。没有路径、语言或模块范围的全局规则在开头给全文；限定范围的规则开头只给目录，`read_file` 读到匹配文件时附全文；新建文件命中尚未给出的规则时，提交后在同一会话补发一次，补发后仍有遗漏则不发布。不按描述做语义召回。行为说明见 [企业微信群内 AI 开发](../wecom-development.md#规则和代码修改)。
+
+基线 `75b04f1`，分支 `feat/development-path-rules`，未提交或推送。改动：新增规则分配模块 `src/development/rules.ts`；开发处理器改提示词、附加规则、提交后补查；`runAgentSession` 增加可选的提交后复核轮（Review、Reply、健康检查不传，行为不变）；记忆模块的范围匹配函数放宽为只需 `scope` 字段。数据库结构、管理页和保护规则不变。
+
+| 命令／操作 | 结果与范围 |
+| --- | --- |
+| `npm test` | 180 项：127 通过、53 个数据库用例由独立命令执行、0 失败，12.85 秒。日志 `work/path-rules-test.log`。 |
+| `npm run test:db` | 54 项全部通过、0 skip、0 失败，17.44 秒；临时 schema，未领取真实任务。新增用例覆盖读到文件附规则、新建文件补发、补发后仍遗漏时失败且不调用 GitHub 写接口、快照记录给出方式。日志 `work/path-rules-db.log`。 |
+| `node --test dist/test/development/rules.test.js` | 5 项通过：全局与目录分流、同一规则只给一次、语言按扩展名匹配、条件标签不阻止、例外带原规则、补发后不再算遗漏、每任务标记不同。 |
+| `node --test dist/test/review/agent-session.test.js` | 9 项通过；新增用例用 Provider 替身验证复核轮在同一会话进行、返回最后结果并累计两轮 usage。 |
+| `npm run check:docs`、`git diff --check` | 29 篇 Markdown、259 个本地链接与锚点通过；差异格式通过。 |
+| `npm run check:format` | 本次改动文件通过；整体仍报 `src/development/worker.ts`，该文件本次未修改，保留原状。全量测试后仅调整了 `rules.ts` 一处注释位置，随后重新构建并通过规则单测。 |
+
+未运行：真实模型与企微群开发验收，因此本轮没有模型角色、usage、delivery 或 PR URL；`npm audit` 未运行（无依赖变更）。限制：规则附加的效果取决于模型是否遵守，需在测试群用带路径规则的真实任务确认。
+
+## 2026-11-09：所有 Agent 改为 Pi 进程运行
+
+用户确认：不再在服务进程里用 Pi SDK，所有 Agent 改为启动 Pi 进程（RPC 模式），直接用 Pi 内置工具、服务扩展、AGENTS.md、Skills 和 codegraph 插件；bash 在服务里直接运行；Review 移除多 Agent，改为单 Agent + Skills；仓库规则文件不加载，仓库 AGENTS.md 只取目标分支版本作参考；工作区没有 codegraph 索引时每次新建，不缓存。设计见 [Pi Runtime 决策](../../.agents/decisions/pi-runtime.md)、[Review Agent 结构决策](../../.agents/decisions/multi-agent-review.md)，开发任务行为见 [企业微信群内 AI 开发](../wecom-development.md#规则和代码修改)。
+
+基线 `75b04f1`，分支 `feat/development-path-rules`，未提交或推送。主要改动：
+
+- 新增 `src/pi/`：进程运行器（临时配置目录、关闭资源发现、最小环境变量、进程组回收）、本地模型代理（请求前持久化预留、收紧输出上限、超预算不转发、占位 key 换真实 key）、服务扩展（路径按 Pi 的解析方式限制在工作区、读取与 codegraph 结果打码、写入前问服务、读写后附团队规则、服务端工具转发）。
+- 新增 `agent/`：服务 AGENTS.md 与 7 个 Skills（代码审查、Java、安全、架构、团队规则冲突、开发流程、提交与 PR 规范）。
+- 开发任务：Agent 用 edit / write 直接改工作区，可运行检查；服务写入前检查保护范围与"覆盖前先读"，结束后和快照比较收集改动并再查一遍；只交 PR 标题与说明；失败原因写入服务日志。
+- 删除 `orchestration.ts`、`delegation.ts`；管理页和 API 去掉审查方式与专项数（数据库列保留）；eval 脚本改为单 Agent，支持 `--runs=N`；Dockerfile 加入 `agent/`、ripgrep、fd-find。
+
+| 命令／操作 | 结果与范围 |
+| --- | --- |
+| `npm test` | 177 项：123 通过、54 个数据库用例由独立命令执行、0 失败，14.3 秒。 |
+| `npm run test:db` | 55 项全部通过、0 skip、0 失败，21.7 秒；临时 schema。 |
+| `node --test dist/test/pi/session.test.js` | 13 项通过，真实 Pi 进程 + 本地假模型服务：预留先于发送、usage 结算、预算拒绝不发请求、读取打码与附规则、`@`/`file://`/`~` 等越界写法被拦截、写入需服务批准、`.git` 不可写、服务端工具转发、复核轮、不加载仓库 `.pi` 与 AGENTS.md、子进程拿不到服务变量和模型 key、取消结束进程组、超时与错误分类、图片原样传入、codegraph 建索引不算改动且结果打码。路径越界与 codegraph 打码两项用例在修复前的产物上确认会失败。 |
+| `npm run check:docs`、`npm run check:format`、`npm audit --audit-level=high` | 30 篇 Markdown、279 个链接通过；164 个文件格式通过；0 个漏洞。 |
+| `docker build`（本机 arm64） | 成功，镜像 1.49 GB；容器内 rg、fdfind、git、`agent/` 与 codegraph 平台包就位。容器内用假模型跑 Pi：find、grep、codegraph_search 均返回结果，小仓库建索引 1245 ms，工作区无残留改动。未构建 amd64。 |
+
+### 固定样本单 Agent 回归（真实模型）
+
+`eval/evaluate-m2.mjs --runs=3`，固定 SHA `ad75aa1e`，预算 160,000，模型 `tuzi/gpt-6.1-sol`（thinking high），结果 `work/m2-evaluation-pi.json`。旧数据见 [M2 清单](./M2.md) 第 2290 行起的表。
+
+| 样本 | 有效次数 | finding 数 | 平均 tokens / 耗时 | 旧 single / 旧 selective |
+| --- | --- | --- | --- | --- |
+| complex | 3/3 | 5 / 6 / 7 | 69,345 / 141.3 s | 6,994 / 16.1 s；59,686 / 51.7 s |
+| java | 3/3 | 5 / 4 / 5 | 89,244 / 133.4 s | 14,583 / 28.4 s；45,530 / 50.6 s |
+| security | 0/6 | — | — | 24,100 / 26.2 s；专项全失败 |
+| architecture | 2/3 | 3 / 3 | 69,877 / 140.3 s | 结构无效；67,325 / 45.8 s |
+| memory | 3/3 | 1 / 1 / 1 | 54,996 / 44.7 s | 7,966 / 10.5 s；43,018 / 37.2 s |
+| small | 1/6 | 0 | 35,509 / 202.4 s | 16,351 / 19.9 s |
+
+complex 3 次都指出旧对照里只有专项找到的问题：收款账户不存在时已先扣款、入账抛异常后不恢复；另外稳定指出请求头覆盖会话租户、幂等记录缺租户维度、并发重复扣款、CSV 公式注入。这是 Agent 复核，不代替人工标注。
+
+失败 13 次中 12 次是模型服务在正常响应里返回 `Upstream request failed`，1 次是请求挂起直到 300 秒超时。绕过 Pi 和代理直接请求模型服务，6 次中 1 次出现同样错误，属于上游不稳定。security 没有有效结果，不能据此判断质量。代价：单 Agent 会读代码和用 codegraph，token 约为旧 single 的 6–10 倍、与旧 selective 相当，耗时约为旧 selective 的 2.7 倍。
+
+### 真实开发任务
+
+测试仓库 `M2tHane/tuzi-main-service`（用户授权），GitHub App installation `160592861`。为不影响正在运行的本地服务（旧代码、已连接机器人），任务写入独立 schema、使用独立 bot ID，经真实开发处理器、真实模型和 GitHub App 创建 PR；没有经过企微收发，没有群回复。脚本 `work/dev-e2e/run.mjs`。本次放宽了时限与预算：时限 20 分钟（`.env` 为 300 秒）、预算 1,500,000（默认 160,000）。
+
+需求：令牌 IP 白名单在同一行用英文逗号分隔多个 IP 时会被拼成无效地址，要求普通令牌（允许、禁止列表）和开放平台令牌都支持换行和逗号分隔，并补单元测试。团队规则：全局"JSON 编解码用 common 封装"，`model/**` 范围"解析逻辑要有表驱动测试"；开发身份，保护 `deploy/**`、`.github/**`。
+
+| 项目 | 结果 |
+| --- | --- |
+| 第 1 次（task `61901708-09af-4f62-b3b2-90498ea15251`，schema `pi_dev_e2e_20261109_23260`，预算 400,000） | failed，180 秒，283,114 tokens，未创建 PR。处理器当时不记录失败原因；结束时没有未结算预留，说明是请求在发送前被拒绝。推断是按字节估算输入的预算预检：代码约 3–4 字节 / token，长会话后单次预留超过剩余额度。已补失败日志。 |
+| 第 2 次（task `2ad633e7-e85d-4a8e-bd3b-d66d01d36ee8`，schema `pi_dev_e2e_20261109_9463`） | succeeded，[PR #2](https://github.com/M2tHane/tuzi-main-service/pull/2)，分支 `bot/development/2ad633e7-…`，base `089fd36f`，head `94d769aa`。202 秒（其中 codegraph 建索引 46.6 秒），381,316 tokens（input 33,779、output 3,217、cacheRead 344,320），未知消耗 0。 |
+| 改动 | `model/token.go` 改为按换行和逗号拆分；`model/open_platform.go` 复用同一函数；新增表驱动测试 `model/token_ip_limits_test.go`（含 IPv6、CIDR、混合分隔、空值、空白、非法条目保留）。未触及保护路径。标题 `fix(token): 支持 IP 允许和禁止列表使用英文逗号分隔`，正文按三段式并写明运行过的 `go test`。 |
+| 规则 | 全局规则随任务给出；`model/**` 规则在 read `model/token.go` 时附加，模型按它补了表驱动测试。 |
+| 本地复核 | 在 PR head `94d769a` 上运行 `go test ./model -run 'Test(TokenIPLimitsSeparators\|OpenPlatformTokenIPLimitsNilToken)$'` 与 PR 正文所列 controller 测试，均通过；`go vet ./model` 无输出。 |
+
+未做：企微群收发与群回复、amd64 镜像、真实 Webhook 触发的 Review（本轮只有固定样本回归）。PR #2 保持打开，未合并。两个 `pi_dev_e2e_20261109_*` schema 留在本地库作为证据，可删除。
+
+用户随后决定（同日）：开发任务先不设 token 上限；开发任务时限改为 1 小时；`Upstream request failed` 自动重试整个任务；可以重启本地服务；暂不处理真实 Webhook。
+
+### 预算、时限、重试与本地服务重启
+
+- `DEVELOPMENT_BUDGET_TOKENS` 默认留空表示不限制（设置后仍按额度拦截）；新增 `DEVELOPMENT_TIMEOUT_MS`，默认 3,600,000，开发任务不再使用 `AGENT_TIMEOUT_MS`。审查类任务的预算和时限不变。
+- `Upstream request failed` 归为可重试的模型服务错误：Review / Reply / Decision / Health 按任务队列现有规则整单重试（最多 5 次）；开发任务新增整单重试，在新工作区从头执行，最多 3 次，间隔 30 秒、60 秒，用量累加；开始发布后不重试。
+- 验证：`npm test` 178 项（123 通过、55 个数据库用例独立执行、0 失败）；`npm run test:db` 56 项全部通过；新增用例覆盖重试后成功且用量累加（40 + 150 = 190）、确定性错误不重试、3 次用尽后失败且三次用量都计入、配置默认值与非法值；`check:format`、`check:docs` 通过。
+- 本机安装 `fd`（`brew install fd`），Pi 的 find 工具离线运行需要它；`rg` 已有。
+- 重启前确认没有排队或执行中的任务和开发任务；向旧进程（PID 40431，11-06 启动）发 SIGTERM，2 秒内退出；用原命令 `node --env-file-if-exists=.env dist/src/main.js` 启动新构建（PID 18507），日志仍写 `work/local-service.log`。`/healthz`、`/readyz` 均返回 200。企微连接在日志里没有成功事件，需在群里发一条开发需求确认。

@@ -38,8 +38,6 @@ export function RepositoryPage({
                 excludePaths: lines("excludePaths"),
                 outputLanguage: data.get("outputLanguage"),
                 budgetTokens: Number(data.get("budgetTokens")),
-                reviewMode: data.get("reviewMode"),
-                maxDelegates: Number(data.get("maxDelegates")),
               }
             : { enabled: data.get("enabled") === "on" },
         ),

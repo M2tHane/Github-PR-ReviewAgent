@@ -241,6 +241,8 @@ export function createHealthProcessor(
               budgetTokens: securityBudget,
               signal: securitySignal,
               systemPrompt: SECURITY_AUDIT_PROMPT,
+              // 健康检查按读过的行核对证据，只用服务端的读取工具。
+              builtinTools: [],
               tools: healthTools(selection.files, securityReadLines, securitySignal),
               onUsage: (usage) => database.checkpointAgentUsage(securityRun, usage),
               prompt: {
@@ -266,6 +268,7 @@ export function createHealthProcessor(
             budgetTokens: mainBudget,
             signal,
             systemPrompt: HEALTH_PROMPT,
+            builtinTools: [],
             tools: healthTools(selection.files, readLines, signal),
             onUsage: (usage) => database.checkpointAgentUsage(runId!, usage),
             prompt: {

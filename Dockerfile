@@ -11,7 +11,7 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates python3-venv \
+    && apt-get install -y --no-install-recommends git ca-certificates python3-venv ripgrep fd-find \
     && python3 -m venv /opt/semgrep \
     && /opt/semgrep/bin/pip install --no-cache-dir semgrep==1.136.0 \
     && rm -rf /var/lib/apt/lists/*
@@ -24,6 +24,8 @@ COPY --from=build /app/dist/src ./dist/src
 COPY --from=build /app/dist/admin ./dist/admin
 COPY migrations ./migrations
 COPY rules ./rules
+# 服务自有的 Pi AGENTS.md 与 Skills；Pi 的 grep / find 离线运行，依赖上面装的 ripgrep 和 fd-find。
+COPY agent ./agent
 USER node
 EXPOSE 3000
 CMD ["node", "dist/src/main.js"]

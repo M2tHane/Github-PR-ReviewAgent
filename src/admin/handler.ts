@@ -191,16 +191,7 @@ export function createAdminHandler(
           const access = await authorize(request, response, Number(repositoryMatch[1]));
           if (!access) return;
           const value = (await body(request)) as Partial<
-            Pick<
-              Repository,
-              | "enabled"
-              | "includePaths"
-              | "excludePaths"
-              | "outputLanguage"
-              | "budgetTokens"
-              | "reviewMode"
-              | "maxDelegates"
-            >
+            Pick<Repository, "enabled" | "includePaths" | "excludePaths" | "outputLanguage" | "budgetTokens">
           >;
           if (
             (value.enabled !== undefined && typeof value.enabled !== "boolean") ||
@@ -210,14 +201,11 @@ export function createAdminHandler(
               (!Array.isArray(value.excludePaths) || !value.excludePaths.every((x) => typeof x === "string"))) ||
             (value.outputLanguage !== undefined && typeof value.outputLanguage !== "string") ||
             (value.budgetTokens !== undefined &&
-              (!Number.isSafeInteger(value.budgetTokens) || value.budgetTokens! <= 0)) ||
-            (value.reviewMode !== undefined && value.reviewMode !== "single" && value.reviewMode !== "auto") ||
-            (value.maxDelegates !== undefined &&
-              (!Number.isSafeInteger(value.maxDelegates) || value.maxDelegates! < 0 || value.maxDelegates! > 4))
+              (!Number.isSafeInteger(value.budgetTokens) || value.budgetTokens! <= 0))
           )
             return json(response, 422, { error: "仓库配置无效" });
           const updated = await database.pool.query(
-            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),review_mode=COALESCE($7,review_mode),max_delegates=COALESCE($8,max_delegates),updated_at=now() WHERE id=$1 RETURNING *",
+            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),updated_at=now() WHERE id=$1 RETURNING *",
             [
               access.repository.id,
               value.enabled ?? null,
@@ -225,8 +213,6 @@ export function createAdminHandler(
               value.excludePaths ?? null,
               value.outputLanguage ?? null,
               value.budgetTokens ?? null,
-              value.reviewMode ?? null,
-              value.maxDelegates ?? null,
             ],
           );
           if (value.enabled === false) await database.cancelRepository(access.repository.id);

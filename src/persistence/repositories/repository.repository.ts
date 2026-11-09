@@ -19,7 +19,7 @@ export class RepositoryRepository {
 
   async getRepositoryConfig(repositoryId: number) {
     const result = await this.pool.query(
-      "SELECT enabled,include_paths,exclude_paths,output_language,budget_tokens,review_mode,max_delegates FROM repositories WHERE id=$1",
+      "SELECT enabled,include_paths,exclude_paths,output_language,budget_tokens FROM repositories WHERE id=$1",
       [repositoryId],
     );
     const row = result.rows[0];
@@ -30,8 +30,6 @@ export class RepositoryRepository {
           excludePaths: row.exclude_paths as string[],
           outputLanguage: String(row.output_language),
           budgetTokens: Number(row.budget_tokens),
-          reviewMode: String(row.review_mode) as "single" | "auto",
-          maxDelegates: Number(row.max_delegates),
         }
       : undefined;
   }

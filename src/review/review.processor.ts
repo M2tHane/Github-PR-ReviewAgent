@@ -1,4 +1,4 @@
-import { readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
+import { readBaseFile, readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
 import { GitHubClient } from "../github/client.js";
 import { BudgetError, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
 import type { Config } from "../config/config.js";
@@ -8,7 +8,6 @@ import type { MemoryService } from "../memory/memory.service.js";
 import { matchesGlob } from "node:path";
 import { diffLines, linkRepeats, normalizeFindingLocation } from "./finding.js";
 import { displayFinding } from "./presentation.js";
-import { complexityProfile, orchestrateReview, shouldOrchestrate } from "./orchestration.js";
 import { publishReview, type PublicationStore } from "./review.publisher.js";
 import { checkDependencyChanges } from "./dependency-check.js";
 import { checkAddedSecrets, redactFinding } from "./secret-check.js";
@@ -81,52 +80,31 @@ export function createReviewProcessor(
         const rules = config.sastScan
           ? await scanChangedFiles(root, files, config.semgrepPath, controller.signal)
           : { hits: [], limitations: [] };
-        let review;
-        const profile = complexityProfile(files, recalled);
-        if (
-          shouldOrchestrate(profile, repositoryConfig?.reviewMode ?? "single") &&
-          (repositoryConfig?.maxDelegates ?? 2) > 0 &&
-          database
-        ) {
-          review = await orchestrateReview({
-            config,
-            database,
-            job,
-            root,
-            files,
-            memories: recalled,
-            budgetTokens,
-            maxDelegates: repositoryConfig?.maxDelegates ?? 2,
-            signal: controller.signal,
-            outputLanguage: repositoryConfig?.outputLanguage,
-            previousFindings,
-            ruleHits: rules.hits,
-          });
-        } else {
-          singleRunId = await database?.startAgentRun?.(job.id, "general_review", budgetTokens, config.agentTimeoutMs);
-          review = await execute({
-            root,
-            provider: config.modelProvider,
-            modelName: config.modelName,
-            apiKey: config.modelApiKey,
-            endpoint: config.modelEndpoint,
-            timeoutMs: config.agentTimeoutMs,
-            title: job.title,
-            body: job.body,
-            baseSha: job.baseSha,
-            headSha: job.headSha,
-            changedFiles: files,
-            memories: recalled,
-            previousFindings,
-            ruleHits: rules.hits,
-            outputLanguage: repositoryConfig?.outputLanguage,
-            budgetTokens,
-            signal: controller.signal,
-          });
-        }
+        // 仓库 AGENTS.md 取目标分支版本：PR 里改动的说明不能影响对这个 PR 的审查。
+        const repositoryInstructions = await readBaseFile(root, job.baseSha, "AGENTS.md");
+        singleRunId = await database?.startAgentRun?.(job.id, "general_review", budgetTokens, config.agentTimeoutMs);
+        const review = await execute({
+          root,
+          provider: config.modelProvider,
+          modelName: config.modelName,
+          apiKey: config.modelApiKey,
+          endpoint: config.modelEndpoint,
+          timeoutMs: config.agentTimeoutMs,
+          title: job.title,
+          body: job.body,
+          baseSha: job.baseSha,
+          headSha: job.headSha,
+          changedFiles: files,
+          memories: recalled,
+          previousFindings,
+          ruleHits: rules.hits,
+          outputLanguage: repositoryConfig?.outputLanguage,
+          budgetTokens,
+          repositoryInstructions,
+          signal: controller.signal,
+        });
         agentUsage = review.usage;
         controller.signal.throwIfAborted();
-        if ((review as any).orchestration?.partial) job.status = "partial";
         const dependencies = await dependencyCheck;
         const secrets = await checkAddedSecrets(root, files, previous, controller.signal);
         for (const finding of review.result.findings) redactFinding(finding);

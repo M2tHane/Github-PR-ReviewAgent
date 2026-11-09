@@ -106,7 +106,7 @@ export function createDecisionProcessor(
     }));
     const repositoryConfig = await database.getRepositoryConfig(job.repositoryId);
     await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-      // 走统一会话入口：受 token 预算约束、关闭 SDK 自动重试，不读取待审仓库或宿主机的 Pi 设置。
+      // 走统一会话入口：受 token 预算约束、关闭 Pi 自动重试，不加载待审仓库的 .pi 和宿主机的 Pi 设置。
       let run: Awaited<ReturnType<typeof runAgentSession>>;
       try {
         run = await execute({

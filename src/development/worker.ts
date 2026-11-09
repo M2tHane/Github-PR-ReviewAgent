@@ -129,14 +129,9 @@ export class DevelopmentWorker {
                 this.config,
               );
               if (result === "accepted") {
-                await send(() =>
-                  bot.replyStream(
-                    frame,
-                    request.messageId,
-                    "已收到开发任务。",
-                    true,
-                  ),
-                ).catch(() => log("error", "wecom_development_ack_uncertain", {}));
+                await send(() => bot.replyStream(frame, request.messageId, "已收到开发任务。", true)).catch(() =>
+                  log("error", "wecom_development_ack_uncertain", {}),
+                );
               }
             } catch (error) {
               if (signal.aborted) return;

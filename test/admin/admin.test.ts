@@ -42,8 +42,6 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     exclude_paths: [],
     output_language: "zh",
     budget_tokens: 1000,
-    review_mode: "auto",
-    max_delegates: 2,
     health_schedule: "off",
   }));
   const db: any = {
