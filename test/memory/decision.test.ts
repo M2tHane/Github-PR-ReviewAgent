@@ -93,6 +93,24 @@ test("争议或无有效人类证据不能伪装为决定", () => {
   );
 });
 
+test("人类证据必须对得上真实人类评论：commentIds 非空，human_comment 的 reference 是人类评论 id", () => {
+  const parse = (value: DecisionProposal) =>
+    parseDecisionProposals(JSON.stringify([value]), job, new Set([11, 12]), new Set(["backend/x/dto/A.java"]));
+  assert.throws(() => parse({ ...proposal, source: { ...proposal.source, commentIds: [] } }), /source\.commentIds/);
+  assert.throws(
+    () => parse({ ...proposal, source: { ...proposal.source, commentIds: ["11"] as unknown as number[] } }),
+    /source\.commentIds/,
+  );
+  const human = (reference: string) => ({
+    ...proposal,
+    evidence: [{ kind: "human_comment" as const, reference, detail: "d" }, proposal.evidence[1]!],
+  });
+  assert.throws(() => parse(human("99")), /人类讨论证据引用了无效评论/, "不是真实人类评论 id");
+  assert.throws(() => parse(human("维护者在评论里同意")), /人类讨论证据引用了无效评论/, "不是数字");
+  assert.throws(() => parse(human("11 和 12")), /人类讨论证据引用了无效评论/);
+  assert.equal(parse(human(" 12 "))[0]?.title, proposal.title, "去掉首尾空白后是人类评论 id 即通过");
+});
+
 test("局部例外与替代关系保留，指纹稳定", () => {
   const exception = {
     ...proposal,
@@ -115,7 +133,7 @@ test("局部例外与替代关系保留，指纹稳定", () => {
   );
 });
 
-test("Decision Extractor 走统一会话入口：使用仓库预算、只给只读工具，超时记为 timeout", async () => {
+test("Decision Extractor 走统一会话入口：有人类讨论时照常运行，使用仓库预算、只给只读工具，超时记为 timeout", async () => {
   const source = await mkdtemp(join(tmpdir(), "pi-decision-test-"));
   const git = async (...args: string[]) =>
     (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
@@ -131,7 +149,9 @@ test("Decision Extractor 走统一会话入口：使用仓库预算、只给只�
       installationToken: async () => "token",
       getPullRequest: async () => ({ merged: true, merge_commit_sha: headSha, title: "t", body: "" }),
       getFiles: async () => [],
-      getConversationComments: async () => [],
+      getConversationComments: async () => [
+        { id: 11, html_url: "u", body: "以后 DTO 字段都不用 Optional", user: { login: "maintainer", type: "User" } },
+      ],
       getReviews: async () => [],
       getReviewComments: async () => [],
     } as unknown as GitHubClient;
@@ -178,4 +198,51 @@ test("Decision Extractor 走统一会话入口：使用仓库预算、只给只�
   } finally {
     await rm(source, { recursive: true, force: true });
   }
+});
+
+test("没有正文非空的人类讨论时不跑规则抽取：不启动 Agent、不写候选，任务照常结束", async () => {
+  const comment = (id: number, body: string | null, type: string) => ({
+    id,
+    html_url: `https://example/${id}`,
+    body,
+    user: { login: type === "Bot" ? "ci[bot]" : "maintainer", type },
+  });
+  const run = async (discussion: { comments?: unknown[]; reviews?: unknown[]; reviewComments?: unknown[] }) => {
+    const github = {
+      installationToken: async () => "token",
+      getPullRequest: async () => ({ merged: true, merge_commit_sha: "merged", title: "t", body: "" }),
+      getFiles: async () => [],
+      getConversationComments: async () => discussion.comments ?? [],
+      getReviews: async () => discussion.reviews ?? [],
+      getReviewComments: async () => discussion.reviewComments ?? [],
+    } as unknown as GitHubClient;
+    let executed = 0,
+      inserted = 0;
+    const database = {
+      getDecisionClues: async () => [],
+      getRepositoryConfig: async () => undefined,
+      insertCandidates: async () => {
+        inserted++;
+      },
+    } as unknown as Database;
+    const config = { modelProvider: "p", modelName: "m", modelApiKey: "k", agentTimeoutMs: 1000 } as Config;
+    // 工作区地址无效：一旦走到建工作区就会报错。
+    const target = { ...job, cloneUrl: join(tmpdir(), "no-such-decision-repo") } as ReviewJob;
+    const outcome = await createDecisionProcessor(config, database, github, async () => {
+      executed++;
+      return { text: "[]", durationMs: 1, model: "m", usage: emptyUsage() };
+    })(target).then(
+      () => "ok",
+      (error: Error) => error.message,
+    );
+    return { outcome, executed, inserted, status: target.status };
+  };
+  for (const discussion of [
+    { comments: [comment(1, "CI passed", "Bot")] },
+    { reviews: [comment(2, "", "User"), comment(3, null, "User")], reviewComments: [comment(4, "  \n", "User")] },
+  ]) {
+    const result = await run(discussion);
+    assert.deepEqual(result, { outcome: "ok", executed: 0, inserted: 0, status: "running" });
+  }
+  // 有正文非空的人类评论时流程照旧，见上面"走统一会话入口"的用例。
 });

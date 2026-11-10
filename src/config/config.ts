@@ -28,7 +28,7 @@ export interface Config {
   // 健康检查用本地规则跑 Semgrep；只解析代码，不构建、不运行仓库脚本。
   sastScan: boolean;
   semgrepPath: string;
-  // 每个实例同时执行的任务数；同一仓库的 PR 任务仍然一个一个来。
+  // 每个实例同时执行的任务数；同一个 PR 的任务仍然一个一个来。
   workerConcurrency: number;
   // 已结束任务（含审查结果、Agent 记录）保留天数，0 表示永久保留。
   dataRetentionDays: number;

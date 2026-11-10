@@ -93,6 +93,8 @@ export interface ReviewResult {
   limitations: string[];
   // 之前提过、这次没再出现的问题数，只用于总评展示。
   resolvedPrevious?: number;
+  // 模型给出但没通过核对（指向本 PR 之外的文件或未提供的团队规则）而丢弃的意见数，只用于总评展示。
+  droppedFindings?: number;
   // 这次 PR 新引入或改了版本的依赖查到的已知漏洞；锁文件没变时没有这一项。
   dependencyAudit?: {
     manifests: string[];

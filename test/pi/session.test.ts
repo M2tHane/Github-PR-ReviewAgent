@@ -53,7 +53,7 @@ test("请求前先持久化预留，结算实际 usage；真实 key 只在代理
       : { text: '{"ok":true}', usage: { input: 200, output: 10 } };
   });
   const run = await runPiSession(
-    input({ budgetTokens: 20_000, onUsage: async (usage) => void checkpoints.push(usage) }),
+    input({ budgetTokens: 12_000, onUsage: async (usage) => void checkpoints.push(usage) }),
   );
   assert.equal(run.text, '{"ok":true}');
   assert.equal(model.requests.length, 2);
@@ -89,12 +89,65 @@ test("记账失败或预算不足时不发送请求", async (t) => {
 });
 
 test("工具结果把上下文撑大后，在下一次请求前按预算拦截", async (t) => {
-  const { root, model, input } = await fixture(t, [call("read", { path: "big.txt" }), text("{}")]);
+  // 替身按请求字节数的一半回报输入 token；校准后的估算仍随上下文变大。
+  let firstInput = 0;
+  const { root, model, input } = await fixture(t, (request, index) => {
+    if (index) return text("{}");
+    firstInput = Math.ceil(Buffer.byteLength(JSON.stringify(request.body)) / 2);
+    return { ...call("read", { path: "big.txt" }), usage: { input: firstInput, output: 20 } };
+  });
   await writeFile(join(root, "big.txt"), "x".repeat(40_000));
   const error = await runPiSession(input({ budgetTokens: 30_000 })).catch((caught) => caught);
   assert(error instanceof BudgetError, String(error));
   assert.equal(model.requests.length, 1);
-  assert.equal((error as BudgetError & { usage: AgentUsage }).usage.totalTokens, 120);
+  assert.equal((error as BudgetError & { usage: AgentUsage }).usage.totalTokens, firstInput + 20);
+});
+
+test("拿到第一次回复的 usage 后按实际比例校准：后续请求的输入预留小于请求字节数", async (t) => {
+  const checkpoints: AgentUsage[] = [];
+  const { model, input } = await fixture(t, [call("read", { path: "sample.txt" }), text("{}")]);
+  await runPiSession(input({ onUsage: async (usage) => void checkpoints.push(usage) }));
+  // 每次请求前保存的待定额就是这次的预留（输入估算 + 输出上限），回复都带 usage，结算后清零。
+  const reserved = checkpoints.map((usage) => usage.unreportedTokens).filter(Boolean);
+  assert.equal(reserved.length, 2);
+  const inputReserved = reserved.map((tokens, index) => tokens - model.requests[index]!.body.max_completion_tokens);
+  const bytes = model.requests.map((request) => Buffer.byteLength(JSON.stringify(request.body)));
+  assert(inputReserved[0]! >= bytes[0]! + 1024, "第一次没有观测值，按字节数预留");
+  assert(inputReserved[1]! < bytes[1]!, `第二次按比例估算：${inputReserved[1]} / ${bytes[1]}`);
+});
+
+test("模型服务临时失败时代理重试同一请求：收到错误响应的尝试不计消耗，没收到响应的计入未知消耗", async (t) => {
+  const checkpoints: AgentUsage[] = [];
+  const { model, input } = await fixture(t, [
+    { status: 503, error: "service unavailable", headers: { "retry-after": "0" } },
+    text('{"ok":true}'),
+  ]);
+  const run = await runPiSession(input({ onUsage: async (usage) => void checkpoints.push(usage) }));
+  assert.equal(run.text, '{"ok":true}');
+  assert.equal(model.requests.length, 2);
+  const first = checkpoints[0]!.unreportedTokens;
+  assert(first > 0);
+  // 输出上限收紧后请求体略有变化，两次预留相差几个字节。
+  assert(Math.abs(checkpoints[1]!.unreportedTokens - first) < 16, "重试前重新预留并持久化，上一次的预留不累加");
+  assert.equal(run.usage.unreportedTokens, 0, "上游明确回了 503，这次尝试没有消耗");
+  assert.equal(run.usage.totalTokens, 120);
+
+  const dropped: AgentUsage[] = [];
+  const network = await fixture(t, [{ drop: true }, text('{"ok":true}')]);
+  const second = await runPiSession(network.input({ onUsage: async (usage) => void dropped.push(usage) }));
+  assert.equal(second.text, '{"ok":true}');
+  assert.equal(network.model.requests.length, 2);
+  const lost = dropped[0]!.unreportedTokens;
+  assert(lost > 0);
+  assert.equal(second.usage.unreportedTokens, lost, "连接断开、没收到响应：预留额计入未知消耗");
+  assert(dropped[1]!.unreportedTokens > lost, "重试前重新预留并持久化");
+
+  const tight = await fixture(t, [{ drop: true }, text('{"ok":true}')]);
+  // 第一次预留就占满预算，连接断开后这笔预留计入未知消耗，剩余预算不够重新预留：不重试，Pi 收到原错误。
+  const error = await runPiSession(tight.input({ budgetTokens: 15_000 })).catch((caught) => caught);
+  assert(error instanceof ProviderError && error.retryable, String(error));
+  assert.equal(tight.model.requests.length, 1);
+  assert.equal((error as ProviderError & { usage: AgentUsage }).usage.unreportedTokens, 15_000, "只计一次预留");
 });
 
 test("读取结果经服务扩展：凭据打码、附加规则，越出工作区的路径被拦截", async (t) => {
@@ -272,9 +325,12 @@ test("取消时结束 Pi 和它启动的命令；请求未回报 usage 时保留
 test("超时返回 TimeoutError；模型服务错误按是否可重试分类", async (t) => {
   const slow = await fixture(t, [{ hang: true }]);
   await assert.rejects(runPiSession(slow.input({ timeoutMs: 1500 })), TimeoutError);
-  const limited = await fixture(t, [{ status: 429, error: "rate limit exceeded" }]);
+  // 代理先重试两次（Retry-After: 0 不等待），仍然限流才交给 Pi。
+  const limit = { status: 429, error: "rate limit exceeded", headers: { "retry-after": "0" } };
+  const limited = await fixture(t, [limit, limit, limit]);
   const retryable = await runPiSession(limited.input()).catch((caught) => caught);
   assert(retryable instanceof ProviderError && retryable.retryable, String(retryable));
+  assert.equal(limited.model.requests.length, 3);
   const denied = await fixture(t, [{ status: 401, error: "invalid api key" }]);
   const permanent = await runPiSession(denied.input()).catch((caught) => caught);
   assert(permanent instanceof ProviderError && !permanent.retryable, String(permanent));

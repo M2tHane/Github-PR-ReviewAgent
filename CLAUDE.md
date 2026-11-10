@@ -6,7 +6,7 @@
 
 ## 项目一句话
 
-GitHub App + Pi agent 的 PR Review 服务：Webhook 进 PostgreSQL 任务表 → Worker 按租约领取（可多实例，同仓库 PR 任务串行）→ 固定 SHA 的临时 Workspace 里启动 Pi 进程跑模型 → 校验后发布 `COMMENT` Review；合并后抽取团队规则候选，维护者确认后进入后续 Review 的召回。群内开发任务也用 Pi 进程改代码，由服务收集改动后提 PR。
+GitHub App + Pi agent 的 PR Review 服务：Webhook 进 PostgreSQL 任务表 → Worker 按租约领取（可多实例，同一 PR 的任务串行）→ 固定 SHA 的临时 Workspace 里启动 Pi 进程跑模型 → 校验后发布 `COMMENT` Review；合并后抽取团队规则候选，维护者确认后进入后续 Review 的召回。群内开发任务也用 Pi 进程改代码，由服务收集改动后提 PR。
 
 ## 命令
 

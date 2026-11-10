@@ -23,6 +23,6 @@ PostgreSQL 同时承担持久状态、幂等键、事务、Job 领取、租约�
 - 修改模块边界时保留 Webhook 验签、Job 状态、重试、取消与发布事务语义。
 - 新 SQL 放在所属业务 Repository；不要把业务判断重新堆进 Database facade。
 - 新 Job Type 必须显式接入 Dispatcher、持久化和验证，不能默认按 Review 处理。
-- 同一仓库的 PR 任务（Review、Reply、Decision Extract）必须串行：Reply 按回复时间处理，Decision Extract 会改变后续召回的团队规则。不要为了吞吐去掉这条领取条件。
+- 同一个 PR 的任务（Review、Reply、Decision Extract）必须串行：Reply 按回复时间处理，同一 PR 的 Review 和 Reply 读写同一批 finding。Decision Extract 只产生候选、不影响召回，不需要跨 PR 串行，所以同仓库不同 PR 可以并行。不要为了吞吐去掉这条领取条件。
 - 只有持有租约的实例能结束任务（`finishJob`／`failJob` 带 `lease_token` 条件）；新增写任务状态的路径要保留这个条件。
 - 只有实际吞吐、隔离或部署需求出现时，再评估独立服务或额外队列。

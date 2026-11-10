@@ -10,8 +10,12 @@ export interface FakeReply {
   usage?: { input: number; output: number; cacheRead?: number };
   // 不回应，直到连接被关闭；用于测试取消与超时。
   hang?: boolean;
+  // 不回应并直接断开连接；用于测试网络错误。
+  drop?: boolean;
   status?: number;
   error?: string;
+  // 错误响应额外带的响应头，例如 retry-after。
+  headers?: Record<string, string>;
 }
 export interface FakeRequest {
   body: Record<string, any>;
@@ -28,8 +32,9 @@ export async function startFakeModel(script: FakeReply[] | ((request: FakeReques
     const index = requests.length - 1;
     const reply = typeof script === "function" ? script(entry, index) : (script[index] ?? { text: "{}" });
     if (reply.hang) return;
+    if (reply.drop) return void response.socket?.destroy();
     if (reply.status) {
-      response.writeHead(reply.status, { "content-type": "application/json" });
+      response.writeHead(reply.status, { "content-type": "application/json", ...reply.headers });
       return void response.end(JSON.stringify({ error: { message: reply.error ?? "error" } }));
     }
     response.writeHead(200, { "content-type": "text/event-stream" });

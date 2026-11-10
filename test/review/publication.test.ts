@@ -753,3 +753,113 @@ test("公开仓库里高危安全问题不写细节、不发行内评论，只�
     await rm(source, { recursive: true, force: true });
   }
 });
+
+test("模型意见指向 PR 之外的文件或未提供的团队规则时整组丢弃，其余照常发布并说明；规则超上限时说明只带了几条", async () => {
+  const source = await mkdtemp(join(tmpdir(), "pi-publication-drop-"));
+  const git = async (...args: string[]) =>
+    (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
+  try {
+    await git("init", "-q");
+    await git("config", "user.name", "test");
+    await git("config", "user.email", "test@example.invalid");
+    await mkdir(join(source, "src"));
+    await writeFile(join(source, "src/a.ts"), "a\n");
+    await writeFile(join(source, "src/other.ts"), "other\n");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    const baseSha = await git("rev-parse", "HEAD");
+    await writeFile(join(source, "src/a.ts"), "a\nnew bug\n");
+    await git("commit", "-qam", "head");
+    const headSha = await git("rev-parse", "HEAD");
+    const config = {
+      appId: "1",
+      privateKey: "",
+      allowedRepositories: new Set(["owner/test"]),
+      agentTimeoutMs: 10_000,
+      modelName: "test",
+    } as Config;
+    const job = {
+      id: "job-drop",
+      deliveryId: "d-drop",
+      repositoryId: 1,
+      installationId: 1,
+      repository: "owner/test",
+      prNumber: 5,
+      cloneUrl: source,
+      baseSha,
+      headSha,
+      title: "",
+      body: "",
+      status: "running",
+    } satisfies ReviewJob;
+    const finding = (path: string, title: string, extra: Partial<Finding> = {}): Finding => ({
+      path,
+      category: "correctness",
+      severity: "medium",
+      evidenceLevel: "strong",
+      description: `${title} 的描述`,
+      evidence: "e",
+      impact: "i",
+      display: { title, reason: "r", fix: "f" },
+      ...extra,
+    });
+    const publish = async (findings: Finding[], memories?: MemoryService) => {
+      let posted: { body: string; comments: unknown[] } | undefined, saved: any;
+      const github = {
+        installationToken: async () => "t",
+        getPullRequest: async () => ({ state: "open", draft: false, base: { sha: baseSha }, head: { sha: headSha } }),
+        getFiles: async () => [{ filename: "src/a.ts", status: "modified", patch: "@@ -1 +1,2 @@\n a\n+new bug" }],
+        createReview: async (_t: string, _j: ReviewJob, body: string, comments: unknown[]) => {
+          posted = { body, comments };
+          return { id: 8, html_url: "u" };
+        },
+        getReviewCommentsForReview: async () => [],
+        isPrivateRepository: async () => true,
+      } as unknown as GitHubClient;
+      const store = {
+        saveReviewResult: async (_job: ReviewJob, result: unknown) => {
+          saved = result;
+        },
+        beginPublication: async () => ({ status: "pending", inserted: true }),
+        finishPublication: async () => {},
+      };
+      await createReviewProcessor(config, github, store as unknown as PublicationStore, memories, async () => ({
+        result: { summary: "", findings, coverage: [], limitations: [] },
+        model: "test",
+        durationMs: 1,
+        usage: emptyUsage(),
+      }))({ ...job });
+      return { posted: posted!, saved };
+    };
+
+    const partly = await publish([
+      finding("src/a.ts", "保留的问题", { line: 2, side: "RIGHT" }),
+      finding("src/other.ts", "越界的问题"),
+    ]);
+    assert.match(partly.posted.body, /发现 1 个问题/);
+    assert.match(partly.posted.body, /保留的问题/);
+    assert.doesNotMatch(partly.posted.body, /越界的问题/);
+    assert.match(partly.posted.body, /⚠ 模型另有 1 条意见指向本 PR 之外的文件或不存在的团队规则，没有采用\n/);
+    assert.deepEqual(partly.saved.limitations, ["模型有 1 条意见指向不属于本 PR 的文件或未提供的团队规则，已丢弃。"]);
+
+    const none = await publish([
+      finding("src/a.ts", "关联位置越界", { relatedLocations: [{ path: "src/other.ts" }] }),
+      finding("src/a.ts", "规则没提供", {
+        category: "team_rule",
+        memory: { id: "memory-unknown", version: 1, source: {} },
+      }),
+    ]);
+    assert.doesNotMatch(none.posted.body, /✅/, "有意见被丢弃时不能说没发现问题");
+    assert.match(none.posted.body, /⚠ 模型另有 2 条意见.*没有采用；其余部分没发现需要改的问题/);
+    assert.match(none.posted.body, /<!-- pi-review:/);
+    assert.deepEqual(none.saved.findings, []);
+    assert.deepEqual(none.saved.limitations, ["模型有 2 条意见指向不属于本 PR 的文件或未提供的团队规则，已丢弃。"]);
+
+    const truncated = await publish([], {
+      retrieveForReview: async () => ({ memories: [], total: 3 }),
+    } as unknown as MemoryService);
+    assert.deepEqual(truncated.saved.limitations, ["团队规则超过上限，本次只带了 0/3 条。"]);
+  } finally {
+    await rm(source, { recursive: true, force: true });
+  }
+});

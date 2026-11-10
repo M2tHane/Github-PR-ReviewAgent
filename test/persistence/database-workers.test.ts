@@ -34,22 +34,81 @@ async function clear(database: Database, ids: number[]) {
   await database.pool.query("DELETE FROM jobs WHERE repository_id=ANY($1::bigint[])", [ids]);
 }
 
-test("多实例领取：同一仓库的 PR 任务一次只跑一个，不同仓库可以并行", { skip: !fixture.url }, async () => {
+test("多实例领取：同一个 PR 的任务一次只跑一个，同仓库不同 PR 可以并行", { skip: !fixture.url }, async () => {
   const [a, b] = await workers();
+  const repo = 9_200_000_001;
   try {
-    const first = await a.accept(pr(9_200_000_001, 1), opened);
-    await a.accept(pr(9_200_000_001, 2), opened);
-    const other = await a.accept(pr(9_200_000_002, 1), opened);
+    const first = await a.accept(pr(repo, 1), opened);
     const claimedA = await a.claimNext();
-    const claimedB = await b.claimNext();
     assert.equal(claimedA?.id, first.job!.id);
-    assert.equal(claimedB?.id, other.job!.id, "同仓库的第二个 PR 要等第一个结束");
     assert.notEqual(claimedA?.leaseToken, undefined);
-    assert.equal(await b.claimNext(), undefined);
+    // 同一个 PR 合并后的规则抽取排在前面，也要等这个 PR 正在跑的任务结束；同仓库的另一个 PR 不用等。
+    const decision = await a.accept(pr(repo, 1), {
+      event: "pull_request",
+      action: "closed",
+      merged: true,
+      mergeCommitSha: "merge-1",
+    });
+    const second = await a.accept(pr(repo, 2), opened);
+    assert.equal((await b.claimNext())?.id, second.job!.id, "同仓库的另一个 PR 可以同时领取");
+    assert.equal(await b.claimNext(), undefined, "同一个 PR 的下一个任务要等");
     await a.finishJob(claimedA!);
-    assert.equal((await b.claimNext())?.repositoryId, 9_200_000_001, "前一个结束后才轮到");
+    assert.equal((await b.claimNext())?.id, decision.job!.id, "前一个结束后才轮到");
   } finally {
-    await clear(a, [9_200_000_001, 9_200_000_002]);
+    await clear(a, [repo]);
+    await a.close();
+    await b.close();
+  }
+});
+
+test("同一个 PR 内的 Reply 仍按回复时间一个一个领取", { skip: !fixture.url }, async () => {
+  const [a, b] = await workers();
+  const repo = 9_200_000_003;
+  try {
+    const review = await a.accept(pr(repo, 1), opened);
+    const finding = {
+      path: "src/a.ts",
+      line: 2,
+      side: "RIGHT",
+      category: "correctness",
+      severity: "high",
+      evidenceLevel: "strong",
+      description: "bad",
+      evidence: "line",
+      impact: "crash",
+    } as const;
+    const stored = await a.saveFindings(review.job!, [finding], new Set([finding]));
+    await a.bindFindings(review.job!, 10, [{ id: 11, body: `<!-- pi-finding:${stored[0]!.id} -->` }]);
+    await a.finishJob({ ...review.job!, status: "succeeded" });
+    const reply = (sourceCommentId: number, humanReplyCreatedAt: string) =>
+      a.acceptReply({
+        deliveryId: `workers-reply-${sourceCommentId}`,
+        installationId: 1,
+        repositoryId: repo,
+        repository: `owner/workers-${repo}`,
+        prNumber: 1,
+        baseSha: "base",
+        eventHeadSha: "head-1",
+        rootCommentId: 11,
+        sourceCommentId,
+        sourceCommentUrl: `https://example/reply/${sourceCommentId}`,
+        humanActorId: 42,
+        humanActorLogin: "human",
+        humanReplyBody: "fixed",
+        humanReplyCreatedAt,
+      });
+    // 回复时间早于下面新建的 PR 任务，排序在前。先收到较新的回复。
+    const newer = await reply(15, "2021-01-01T00:00:00Z");
+    const older = await reply(14, "2020-01-01T00:00:00Z");
+    const other = await a.accept(pr(repo, 2), opened);
+    const claimed = await a.claimNext();
+    assert.equal(claimed?.id, older.job!.id, "先领回复时间早的");
+    assert.equal((await b.claimNext())?.id, other.job!.id, "同一个 PR 的下一条回复要等，另一个 PR 不用等");
+    assert.equal(await b.claimNext(), undefined);
+    await a.finishJob(claimed!);
+    assert.equal((await b.claimNext())?.id, newer.job!.id);
+  } finally {
+    await clear(a, [repo]);
     await a.close();
     await b.close();
   }

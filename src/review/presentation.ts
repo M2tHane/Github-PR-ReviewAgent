@@ -141,6 +141,8 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
     shown = fresh.filter((f) => !f.restricted);
   const adminLink = detailsUrl ? `：[到管理页查看](${detailsUrl})` : "，请到管理页查看";
   const resolved = result.resolvedPrevious ?? 0;
+  const dropped = result.droppedFindings ?? 0;
+  const droppedNote = `模型另有 ${dropped} 条意见指向本 PR 之外的文件或不存在的团队规则，没有采用`;
   const lines = ["## Pi Review", ""];
   if (fresh.length) {
     lines.push(`发现 ${fresh.length} 个${repeats.length || resolved ? "新" : ""}问题`, "");
@@ -149,7 +151,9 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
     if (hidden.length)
       lines.push(`- 🔴 必须改 · 发现 ${hidden.length} 个安全问题，为避免修复前公开，细节只在管理页显示${adminLink}`);
   } else if (repeats.length) lines.push("没有发现新问题");
-  else lines.push(partial ? "⚠ 部分检查未完成，已检查的部分没发现问题" : "✅ 没发现需要改的问题");
+  else if (partial) lines.push("⚠ 部分检查未完成，已检查的部分没发现问题");
+  // 有意见被丢弃时不能说“没发现问题”。
+  else lines.push(dropped ? `⚠ ${droppedNote}；其余部分没发现需要改的问题` : "✅ 没发现需要改的问题");
   if (repeats.length) {
     lines.push("", `之前提过、仍未解决的 ${repeats.length} 个：`, "");
     for (const f of repeats)
@@ -172,7 +176,8 @@ export function reviewBody(job: ReviewJob, result: ReviewResult, partial = false
       "</details>",
     );
   if (partial && (fresh.length || repeats.length)) lines.push("", "⚠ 部分检查未完成，结果可能不全");
-  lines.push("", "仅静态审查，未运行测试" + (detailsUrl ? ` · [查看详情](${detailsUrl})` : ""));
+  if (dropped && (partial || fresh.length || repeats.length)) lines.push("", `⚠ ${droppedNote}`);
+  lines.push("", "自动审查，不代替 CI 测试" + (detailsUrl ? ` · [查看详情](${detailsUrl})` : ""));
   return lines.join("\n");
 }
 

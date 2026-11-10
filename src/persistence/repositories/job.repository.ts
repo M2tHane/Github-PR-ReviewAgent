@@ -33,7 +33,7 @@ export interface JobAcceptor {
   }): Promise<{ duplicate: boolean }>;
 }
 
-// 所有实例领取任务时排队拿这把锁，"同一仓库同一时间只跑一个 PR 任务"的判断才不会被并发打破。领取本身只要几毫秒。
+// 所有实例领取任务时排队拿这把锁，"同一个 PR 同一时间只跑一个任务"的判断才不会被并发打破。领取本身只要几毫秒。
 const CLAIM_LOCK = 4897034;
 export const LEASE_MS = 60_000;
 // 临时故障最多执行 5 次，等待 30 秒、1、2、4 分钟（单次最长 15 分钟），能撑过一次几分钟的服务故障。
@@ -310,13 +310,15 @@ export class JobRepository {
         await client.query("SELECT pg_advisory_xact_lock($1)", [CLAIM_LOCK]);
         const recovered = await this.requeueExpired(client);
         if (recovered) log("info", "jobs_recovered", { count: recovered });
-        // 同一仓库的 PR 任务（Review、Reply、规则抽取）一次只跑一个：Reply 要按回复时间顺序处理，
-        // 规则抽取会改变后续 Review 召回的团队规则。健康检查是只读快照，不受这个限制。
+        // 同一个 PR 的任务（Review、Reply、规则抽取）一次只跑一个：Reply 要按回复时间顺序处理，
+        // 同一 PR 的 Review 和 Reply 读写同一批 finding。规则抽取只写入候选、不影响召回，不需要跨 PR 串行。
+        // 同仓库不同 PR 的任务可以同时跑；健康检查是只读快照，不受这个限制。
         const result = await client.query(
           `SELECT * FROM jobs j WHERE status='queued' AND (next_run_at IS NULL OR next_run_at<=now())
              AND ($1 OR job_type<>'HEALTH_AUDIT')
              AND (job_type='HEALTH_AUDIT' OR NOT EXISTS (
-               SELECT 1 FROM jobs r WHERE r.status='running' AND r.job_type<>'HEALTH_AUDIT' AND r.repository_id=j.repository_id))
+               SELECT 1 FROM jobs r WHERE r.status='running' AND r.job_type<>'HEALTH_AUDIT' AND r.repository_id=j.repository_id
+                 AND r.pr_number=j.pr_number))
            ORDER BY (job_type='HEALTH_AUDIT'),COALESCE((payload->>'humanReplyCreatedAt')::timestamptz,created_at),COALESCE((payload->>'sourceCommentId')::bigint,0),created_at
            FOR UPDATE SKIP LOCKED LIMIT 1`,
           [options.allowHealth ?? true],

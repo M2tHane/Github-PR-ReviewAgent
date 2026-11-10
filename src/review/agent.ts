@@ -141,14 +141,65 @@ export interface AgentReviewInput {
   onSession?: PiSessionInput["onSession"];
 }
 
+// 发给模型的规则只带判断需要的字段；证据、置信度、审批人和时间等留在服务内部。
+function memoryForPrompt(memory: MemoryRecord) {
+  const { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes } = memory;
+  return { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes };
+}
+
 // 所有 Agent 调用都经过这里：在 Pi 进程中运行，预算、超时、取消和工具权限由服务控制。
 export function runAgentSession(input: PiSessionInput) {
   return runPiSession(input);
 }
 
+// 模型意见里服务能核对的引用：所有位置（主位置、关联位置、候选）都要属于本 PR，团队规则引用要是本次提供的 id:version。
+// 修复轮和处理器丢弃无效意见共用这一份检查。
+export function findingReferenceErrors(
+  finding: Finding,
+  changedFiles: ReadonlySet<string>,
+  memories: Array<Pick<MemoryRecord, "id" | "version">>,
+) {
+  const provided = new Set(memories.map((memory) => `${memory.id}:${memory.version}`));
+  const errors: Array<{ kind: "path" | "memory"; message: string }> = [];
+  for (const location of [finding, ...(finding.relatedLocations ?? []), ...(finding.candidates ?? [])])
+    if (location.path && !changedFiles.has(location.path))
+      errors.push({ kind: "path", message: `finding 路径不属于 PR: ${location.path}` });
+  for (const item of [finding, ...(finding.candidates ?? [])])
+    if (item.memory && !provided.has(`${item.memory.id}:${item.memory.version}`))
+      errors.push({ kind: "memory", message: `引用了未提供的团队规则: ${item.memory.id} v${item.memory.version}` });
+  return errors;
+}
+
+function reviewOutputErrors(text: string, input: AgentReviewInput) {
+  let result: ReviewResult;
+  try {
+    result = parseReviewResult(text, true);
+  } catch (error) {
+    return [(error as Error).message];
+  }
+  const changed = new Set(input.changedFiles.map((file) => file.filename));
+  return [
+    ...new Set(
+      result.findings.flatMap((finding) =>
+        findingReferenceErrors(finding, changed, input.memories ?? []).map((error) => error.message),
+      ),
+    ),
+  ];
+}
+
 export async function runAgentReview(input: AgentReviewInput) {
+  let repaired = false;
   const run = await runAgentSession({
     ...input,
+    // 输出没通过服务校验时在同一会话里修一次，共用预算、超时和取消。
+    // 仍不合格时，结构错误照旧抛出，个别无效意见由处理器丢弃。
+    followUp: (text) => {
+      if (repaired) return undefined;
+      const errors = reviewOutputErrors(text, input);
+      if (!errors.length) return undefined;
+      repaired = true;
+      return `上一条输出没有通过服务校验：\n${errors.map((error) => `- ${redactSecrets(error)}`).join("\n")}\n只修正这些问题，重新输出完整的 JSON 对象，不要输出其他内容。`;
+    },
     systemPrompt: REVIEW_PROMPT,
     builtinTools: READ_ONLY_TOOLS,
     skills: REVIEW_SKILLS,
@@ -162,7 +213,7 @@ export async function runAgentReview(input: AgentReviewInput) {
       changedFiles: input.changedFiles.map((file) =>
         file.patch ? { ...file, patch: redactSecrets(file.patch) } : file,
       ),
-      activeTeamMemories: input.memories ?? [],
+      activeTeamMemories: (input.memories ?? []).map(memoryForPrompt),
       ruleHits: (input.ruleHits ?? []).filter((hit) => input.changedFiles.some((file) => file.filename === hit.path)),
       previousFindings: input.previousFindings ?? [],
     },

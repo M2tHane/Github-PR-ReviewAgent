@@ -1,6 +1,6 @@
 import { readBaseFile, readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
 import { GitHubClient } from "../github/client.js";
-import { BudgetError, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
+import { BudgetError, findingReferenceErrors, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
 import { DEFAULT_BUDGET_TOKENS } from "../pi/types.js";
 import type { Config } from "../config/config.js";
 import type { ReviewJob } from "../jobs/types.js";
@@ -15,6 +15,7 @@ import { checkAddedSecrets, redactFinding } from "./secret-check.js";
 import { scanChangedFiles, uncoveredRuleFindings } from "./rule-check.js";
 import { redactSecrets } from "../health/secrets.js";
 import { OsvClient } from "../health/vulnerabilities.js";
+import { log } from "../logging.js";
 
 export function createReviewProcessor(
   config: Config,
@@ -66,11 +67,11 @@ export function createReviewProcessor(
     let singleRunId: string | undefined, agentUsage: AgentUsage | undefined;
     try {
       await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-        const recalled =
-          (await memories?.retrieve(job.repositoryId, {
-            paths: files.map((file) => file.filename),
-            text: recallText(job, files),
-          })) ?? [];
+        const selection = await memories?.retrieveForReview(job.repositoryId, {
+          paths: files.map((file) => file.filename),
+          text: recallText(job, files),
+        });
+        const recalled = selection?.memories ?? [];
         const previous = (await publications?.getOpenFindings?.(job)) ?? [];
         const previousFindings = previous.map((finding) => {
           const display = displayFinding(finding);
@@ -115,6 +116,22 @@ export function createReviewProcessor(
         controller.signal.throwIfAborted();
         const dependencies = await dependencyCheck;
         const secrets = await checkAddedSecrets(root, files, previous, controller.signal);
+        // 模型的个别意见指向本 PR 之外的文件或未提供的团队规则时整组丢弃，其余照常发布；服务自己产生的意见随后合入。
+        const changed = new Set(files.map((file) => file.filename));
+        const invalid = review.result.findings.map((finding) => findingReferenceErrors(finding, changed, recalled));
+        const dropped = invalid.filter((errors) => errors.length);
+        if (dropped.length) {
+          review.result.findings = review.result.findings.filter((_, index) => !invalid[index]!.length);
+          review.result.droppedFindings = dropped.length;
+          review.result.limitations.push(
+            `模型有 ${dropped.length} 条意见指向不属于本 PR 的文件或未提供的团队规则，已丢弃。`,
+          );
+          log("info", "review_findings_dropped", {
+            jobId: job.id,
+            count: dropped.length,
+            reasons: [...new Set(dropped.flat().map((error) => error.kind))],
+          });
+        }
         for (const finding of review.result.findings) redactFinding(finding);
         review.result.summary = redactSecrets(review.result.summary);
         review.result.findings.push(
@@ -127,7 +144,11 @@ export function createReviewProcessor(
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))
           review.result.limitations.push("GitHub 未提供部分文件的 patch，相关内容只能按 Workspace 源码检查。");
-        const changed = new Set(files.map((file) => file.filename));
+        if (selection && selection.memories.length < selection.total)
+          review.result.limitations.push(
+            `团队规则超过上限，本次只带了 ${selection.memories.length}/${selection.total} 条。`,
+          );
+        // 兜底：上面已丢弃无效的模型意见，正常情况下这里不会再报错。
         const locations = review.result.findings.flatMap((finding) => [
           finding,
           ...(finding.relatedLocations ?? []),

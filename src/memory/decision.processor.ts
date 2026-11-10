@@ -44,7 +44,10 @@ export function parseDecisionProposals(
             (!proposal.scope || typeof proposal.scope !== "object") && "scope",
             proposal.source?.pullRequestNumber !== job.prNumber && "source.pullRequestNumber",
             proposal.source?.commitSha !== job.headSha && "source.commitSha",
-            !Array.isArray(proposal.source?.commentIds) && "source.commentIds",
+            (!Array.isArray(proposal.source?.commentIds) ||
+              !proposal.source.commentIds.length ||
+              !proposal.source.commentIds.every((id) => typeof id === "number")) &&
+              "source.commentIds",
             !Array.isArray(proposal.evidence) && "evidence",
             (typeof proposal.confidence !== "number" || proposal.confidence < 0 || proposal.confidence > 1) &&
               "confidence",
@@ -55,6 +58,17 @@ export function parseDecisionProposals(
       throw new Error("DecisionProposal 缺少人类讨论或代码证据");
     if (humanCommentIds && !proposal.source.commentIds.every((id) => humanCommentIds.has(id)))
       throw new Error("DecisionProposal 引用了无效人类评论");
+    // 人类讨论证据的 reference 必须是真实人类评论的 id，不能用说明文字或其他评论冒充。
+    if (
+      humanCommentIds &&
+      !proposal.evidence
+        .filter((e) => e.kind === "human_comment")
+        .every((e) => {
+          const reference = typeof e.reference === "string" ? e.reference.trim() : "";
+          return /^\d+$/.test(reference) && humanCommentIds.has(Number(reference));
+        })
+    )
+      throw new Error("DecisionProposal 人类讨论证据引用了无效评论");
     if (
       changedPaths &&
       !proposal.evidence.filter((e) => e.kind === "code").every((e) => changedPaths.has(e.reference.split(":")[0]!))
@@ -104,6 +118,11 @@ export function createDecisionProcessor(
       authorType: entry.user.type,
       human: entry.user.type === "User",
     }));
+    // 每条候选都要有人类评论作证据；没有正文非空的人类讨论时不可能产出有效候选，不建工作区也不启动 Agent。
+    if (!discussions.some((entry) => entry.human && typeof entry.body === "string" && entry.body.trim())) {
+      log("info", "decision_skipped", { jobId: job.id, reason: "no_human_discussion" });
+      return;
+    }
     const repositoryConfig = await database.getRepositoryConfig(job.repositoryId);
     await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
       // 走统一会话入口：受 token 预算约束、关闭 Pi 自动重试，不加载待审仓库的 .pi 和宿主机的 Pi 设置。

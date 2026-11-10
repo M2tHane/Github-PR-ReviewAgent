@@ -110,7 +110,10 @@ test("规则来源默认折叠，partial 不宣称完成，零意见不等于测
   assert(!body.includes("uuid-hidden"));
   assert(!body.includes("版本"));
   assert.match(reviewBody(job, { summary: "", findings: [], coverage: [], limitations: [] }, true), /未完成/);
-  assert.match(reviewBody(job, { summary: "", findings: [], coverage: [], limitations: [] }), /未运行测试/);
+  assert.match(
+    reviewBody(job, { summary: "", findings: [], coverage: [], limitations: [] }),
+    /自动审查，不代替 CI 测试/,
+  );
   const unmapped = reviewBody(job, {
     summary: "",
     findings: [{ ...exportFinding, line: undefined, side: undefined, display }],
@@ -177,8 +180,16 @@ test("严重度只展示三档，总评按严重度列成清单，行内评论�
   assert.match(items[0]!, /^- 🔴 必须改 · .*导出会改变订单原始顺序$/);
   assert.match(items[1]!, /^- 🟡 可以不改 · .*命名不统一$/);
   assert(!/\|\s*---|Critical|High|Medium|Low/.test(body));
-  assert.match(body, /仅静态审查，未运行测试 · \[查看详情\]/);
+  assert.match(body, /自动审查，不代替 CI 测试 · \[查看详情\]/);
   assert.match(reviewBody(job, { summary: "", findings: [], coverage: [], limitations: [] }), /✅ 没发现需要改的问题/);
+  const dropped = { summary: "", findings: [], coverage: [], limitations: [], droppedFindings: 3 };
+  assert.match(
+    reviewBody(job, dropped),
+    /^## Pi Review\n\n⚠ 模型另有 3 条意见.*没有采用；其余部分没发现需要改的问题\n/,
+  );
+  const partialDropped = reviewBody(job, dropped, true);
+  assert.match(partialDropped, /⚠ 部分检查未完成，已检查的部分没发现问题/);
+  assert.equal(partialDropped.match(/模型另有 3 条意见/g)?.length, 1);
   const grouped = groupFindings([exportFinding, catalog], [[0, 1]], [display])[0]!;
   const inline = inlineBody(job, { ...grouped, id: "x" });
   assert(inline.startsWith("🔴 必须改：导出会改变订单原始顺序\n\n查询返回内部 List，sort 会修改目录。\n查询返回快照"));

@@ -107,6 +107,9 @@ export async function runPiSession(input: PiSessionInput) {
     reservedTokens = 0,
     requestSent = false,
     stderr = "";
+  // 本会话观测到的每字节 token 数，用来校准后续请求的输入预留；requestBytes 是最近一次发出的请求体字节数。
+  let tokensPerByte: number | undefined,
+    requestBytes = 0;
   let checkpoint = Promise.resolve();
   let outcome: Pick<RecordedSession, "status" | "error"> = { status: "succeeded" };
   const timings: SessionTimings = { models: [], tools: {} };
@@ -169,30 +172,45 @@ export async function runPiSession(input: PiSessionInput) {
   try {
     const root = await realpath(input.root);
     const target = await resolveModel(input);
+    // failed 是同一请求上一次尝试结果未知时的预留额：重试时计入未知消耗，再按剩余预算重新预留。
+    const reserve = async (body: Record<string, unknown>, failed = 0) => {
+      await checkpoint;
+      input.signal?.throwIfAborted();
+      if (timedOut) throw new TimeoutError();
+      const reservation = requestTokenBudget(
+        body,
+        budget - usage.totalTokens - usage.unreportedTokens - failed,
+        input.images,
+        tokensPerByte,
+      );
+      const field = ["max_tokens", "max_completion_tokens", "max_output_tokens"].find(
+        (key) => typeof body[key] === "number",
+      );
+      if (!field) throw new BudgetError("当前 Provider payload 不支持已验证的输出 Token 限制");
+      body[field] = Math.min(Number(body[field]), reservation.maxTokens);
+      usage.unreportedTokens += failed;
+      reservedTokens = reservation.reservedTokens;
+      requestBytes = reservation.bytes;
+      requestSent = false;
+      // 先持久化预留再发送：进程中断时，未知消耗不会被当成零。
+      await persistUsage(reservedTokens);
+      input.signal?.throwIfAborted();
+      if (timedOut) throw new TimeoutError();
+      requestSent = true;
+      return body;
+    };
     proxy = await startModelProxy(target.baseUrl, input.apiKey, {
       async prepare(body) {
-        await checkpoint;
-        input.signal?.throwIfAborted();
-        if (timedOut) throw new TimeoutError();
         // 图片必须原样进入请求；Pi 丢弃或改写图片时拒绝发送，避免模型在没看到图的情况下改代码。
         const text = JSON.stringify(body);
         if (input.images?.some((image) => !text.includes(image.data.slice(0, 256))))
           throw new Error("图片未完整传入模型，请检查图片格式或重新发送。");
-        const reservation = requestTokenBudget(body, budget - usage.totalTokens - usage.unreportedTokens, input.images);
-        const field = ["max_tokens", "max_completion_tokens", "max_output_tokens"].find(
-          (key) => typeof body[key] === "number",
-        );
-        if (!field) throw new BudgetError("当前 Provider payload 不支持已验证的输出 Token 限制");
-        body[field] = Math.min(Number(body[field]), reservation.maxTokens);
-        reservedTokens = reservation.reservedTokens;
-        // 先持久化预留再发送：进程中断时，未知消耗不会被当成零。
-        await persistUsage(reservedTokens);
-        input.signal?.throwIfAborted();
-        if (timedOut) throw new TimeoutError();
-        requestSent = true;
+        await reserve(body);
         modelStarted = Date.now();
         return body;
       },
+      // 上游明确回了错误响应（429、5xx）的尝试没有消耗；只有没收到响应的尝试才把预留计入未知消耗。
+      retry: (body, answered) => reserve(body, answered ? 0 : reservedTokens),
       rejected(error) {
         rejection ??= error;
         if (error instanceof BudgetError) budgetError ??= error;
@@ -267,6 +285,9 @@ export async function runPiSession(input: PiSessionInput) {
     rpc.onAssistant = (message) => {
       const reported = emptyUsage();
       addUsage(reported, message.usage ?? {});
+      // 按这次请求的实际输入校准每字节 token 数；输入为 0 或缺失时不更新。
+      const prompt = reported.input + reported.cacheRead + reported.cacheWrite;
+      if (requestSent && prompt > 0 && requestBytes > 0) tokensPerByte = prompt / requestBytes;
       // 请求发出后未收到 usage 时保留预留额，不把未知消耗记成免费重试或实际 token。
       if (requestSent && !reported.totalTokens) reported.unreportedTokens = reservedTokens;
       reservedTokens = 0;
@@ -405,7 +426,8 @@ async function prepareRunDirectory(
       }
     : { baseUrl: proxyUrl, apiKey: KEY_PLACEHOLDER };
   await writeFile(join(agentDir, "models.json"), JSON.stringify({ providers: { [input.provider]: provider } }));
-  // 关闭压缩与自动重试：重试由任务队列按错误类型决定；图片保持原样，便于发送前核对。
+  // 关闭压缩与 Pi 的自动重试：单次请求的瞬时错误由模型代理有限次重试并照常记账，其余由任务队列按错误类型决定；
+  // 图片保持原样，便于发送前核对。
   await writeFile(
     join(agentDir, "settings.json"),
     JSON.stringify({

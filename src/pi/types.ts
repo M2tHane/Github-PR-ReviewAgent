@@ -38,18 +38,27 @@ export class BudgetError extends Error {
   }
 }
 
-// ponytail: 用 UTF-8 字节数加协议余量保守预留输入；接入 provider tokenizer 后可减少过度拒绝。
-export function requestTokenBudget(context: unknown, remaining: number, images: Array<{ data: string }> = []) {
+// 输入按 UTF-8 字节数预留；传入本会话观测到的每字节 token 数时按它的 1.25 倍估算，但不超过字节数。
+// 返回的 bytes 是图片替换后的字节数，供调用方拿实际 usage 校准比例。
+export function requestTokenBudget(
+  context: unknown,
+  remaining: number,
+  images: Array<{ data: string }> = [],
+  tokensPerByte?: number,
+) {
   let payload = JSON.stringify(context);
   for (const image of images) payload = payload.replaceAll(image.data, "[image]");
+  const bytes = Buffer.byteLength(payload, "utf8");
+  const text =
+    tokensPerByte !== undefined && Number.isFinite(tokensPerByte) && tokensPerByte > 0
+      ? Math.min(bytes, Math.ceil(bytes * tokensPerByte * 1.25))
+      : bytes;
   // 开发入口只接收最大 2048px 的截图；每图保守预留 32768 tokens，避免把 base64 当正文逐字计费。
-  const inputUpperBound = Buffer.byteLength(payload, "utf8") + 1024 + images.length * 32768;
-  if (remaining < inputUpperBound + 128)
-    throw new BudgetError(
-      `Agent Token 预算不足：输入与输出至少需预留 ${inputUpperBound + 128}，剩余 ${remaining}；未发送请求`,
-    );
-  const maxTokens = Math.min(16_384, remaining - inputUpperBound);
-  return { maxTokens, reservedTokens: inputUpperBound + maxTokens };
+  const input = text + 1024 + images.length * 32768;
+  if (remaining < input + 128)
+    throw new BudgetError(`Agent Token 预算不足：输入与输出至少需预留 ${input + 128}，剩余 ${remaining}；未发送请求`);
+  const maxTokens = Math.min(16_384, remaining - input);
+  return { maxTokens, reservedTokens: input + maxTokens, bytes };
 }
 
 export class TimeoutError extends Error {

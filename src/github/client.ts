@@ -28,7 +28,7 @@ function base64url(value: string | Buffer): string {
 }
 
 export class GitHubClient {
-  // 一个挂住的请求会一直占着 Worker 槽位，同仓库的后续任务也跟着排队，所以每个请求都有上限。
+  // 一个挂住的请求会一直占着 Worker 槽位，同一 PR 的后续任务也跟着排队，所以每个请求都有上限。
   constructor(
     private appId: string,
     private privateKey: string,

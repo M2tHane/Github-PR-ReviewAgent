@@ -146,7 +146,7 @@ export function ReviewDetails({ id }: { id: string }) {
           {job.last_error}
         </p>
       )}
-      {job.job_type === "PR_REVIEW" && <p className="review-lead">{lead}。未运行测试，仅进行静态代码审查。</p>}
+      {job.job_type === "PR_REVIEW" && <p className="review-lead">{lead}。自动审查，不代替 CI 测试。</p>}
       <div className="review-issues">
         {fresh.map((finding, i) => {
           const display = displayFinding(finding),

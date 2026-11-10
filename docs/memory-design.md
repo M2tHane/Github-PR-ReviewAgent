@@ -239,6 +239,10 @@ scope / path / language / condition
 
 Review 只允许 ACTIVE 且作用域匹配的 Memory 作为团队约定依据。
 
+Review 的选取（`selectReviewMemories`）不按相关性截断：作用域命中改动文件的规则全部带上，未限定作用域的全局规则不要求最低分；选中的例外规则把未选中的 ACTIVE 原规则一并带上。内容相关性排序只在选中规则的 `title + content + rationale` 合计超过 30 000 字符时使用：限定作用域的在前、全局的在后，各自按词重叠分数从高到低、同分按 ID 保留到上限，并在 Review 的 limitations 写明“只带了 N/M 条”。发给模型的规则只保留 `id`、`version`、`type`、`title`、`content`、`rationale`、`scope`、`source`、`exceptionTo`、`supersedes`。代价是每次 Review 的首条提示变长，预算把缓存读取按全额计入，规则多的仓库每轮请求都会多算这部分。
+
+Reply 与健康检查仍按词重叠计分排序后取前 10 条（`retrieve`）。
+
 模型输出中引用的 Memory ID 和 version 必须由服务端再次校验：
 
 - 记录存在。

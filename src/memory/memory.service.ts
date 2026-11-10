@@ -168,11 +168,20 @@ export class MemoryService {
   }
 
   async retrieve(repositoryId: number, input: RetrieveInput) {
+    return rankMemories(await this.activeMemories(repositoryId), input);
+  }
+
+  // Review 用：范围命中的规则全部带上，见 selectReviewMemories。Reply 和健康检查仍用 retrieve。
+  async retrieveForReview(repositoryId: number, input: Pick<RetrieveInput, "paths" | "text">) {
+    return selectReviewMemories(await this.activeMemories(repositoryId), input);
+  }
+
+  private async activeMemories(repositoryId: number) {
     const result = await this.database.pool.query(
       "SELECT DISTINCT ON (id) * FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version DESC",
       [repositoryId],
     );
-    return rankMemories(result.rows.map(toMemory), input);
+    return result.rows.map(toMemory);
   }
 }
 
@@ -217,6 +226,54 @@ export function rankMemories(memories: MemoryRecord[], input: RetrieveInput) {
       .slice(0, input.limit ?? 10)
       .map(({ memory }) => memory)
   );
+}
+
+// Review 一次带上的团队规则 title + content + rationale 总字符数上限。
+export const REVIEW_MEMORY_CHARS = 30_000;
+
+// Review 的规则选取：范围命中改动文件的规则全部带上，全局规则不要求最低分；选中的例外把未选中的 ACTIVE 原规则一并带上。
+// 只有总字符数超过上限时才截断：限定范围的在前、全局的在后，各自按词重叠分数从高到低、同分按 ID，保留到上限为止。
+// total 是截断前的条数，调用方据此说明"只带了几条"。
+export function selectReviewMemories(
+  memories: MemoryRecord[],
+  input: Pick<RetrieveInput, "paths" | "text">,
+  maxChars = REVIEW_MEMORY_CHARS,
+) {
+  const selected = memories.filter((memory) => scopeMatches(memory, input.paths, []));
+  const ids = new Set(selected.map((memory) => memory.id));
+  for (const memory of [...selected]) {
+    const original =
+      memory.exceptionTo && !ids.has(memory.exceptionTo)
+        ? memories.find((item) => item.id === memory.exceptionTo)
+        : undefined;
+    if (original) {
+      selected.push(original);
+      ids.add(original.id);
+    }
+  }
+  const size = (memory: MemoryRecord) => memory.title.length + memory.content.length + memory.rationale.length;
+  if (selected.reduce((sum, memory) => sum + size(memory), 0) <= maxChars)
+    return { memories: selected, total: selected.length };
+  const queryWords = matchWords(input.text);
+  const ranked = selected
+    .map((memory) => ({
+      memory,
+      specific: hasSpecificScope(memory),
+      score: [...matchWords(`${memory.title} ${memory.content} ${memory.rationale}`)].filter((word) =>
+        queryWords.has(word),
+      ).length,
+    }))
+    .sort(
+      (a, b) => Number(b.specific) - Number(a.specific) || b.score - a.score || a.memory.id.localeCompare(b.memory.id),
+    );
+  const kept: MemoryRecord[] = [];
+  let used = 0;
+  for (const { memory } of ranked) {
+    if (used + size(memory) > maxChars) break;
+    kept.push(memory);
+    used += size(memory);
+  }
+  return { memories: kept, total: selected.length };
 }
 
 export function scopeMatches(memory: Pick<MemoryRecord, "scope">, paths: string[], conditions: string[]) {

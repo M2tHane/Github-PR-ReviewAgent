@@ -6,7 +6,7 @@ import { BudgetError, ProviderError, TimeoutError } from "../review/agent.js";
 import { GitHubApiError } from "../github/client.js";
 
 export interface RunnerOptions {
-  // 同时执行的任务数。同一仓库的 PR 任务仍然串行，由领取时的数据库条件保证。
+  // 同时执行的任务数。同一个 PR 的任务仍然串行，由领取时的数据库条件保证。
   concurrency?: number;
   leaseMs?: number;
   heartbeatMs?: number;
@@ -138,6 +138,7 @@ const NETWORK_CODES = new Set([
 ]);
 
 // 能否重试先看错误类型：模型服务错误按服务方说明判断，GitHub 按状态码（含 403 二级限流），网络错误按错误码。
+// 整次执行超时不重试：多半是 PR 太大，重跑结果一样，只会耗尽预算；模型服务自己报的超时仍按 ProviderError 判断。
 // 最后才按文字匹配，兜底没有类型的错误（例如 fetch 抛出的 TypeError）。
 export function transient(error: Error): boolean {
   if (error instanceof ProviderError) return error.retryable;
@@ -146,7 +147,7 @@ export function transient(error: Error): boolean {
       error.status === 429 || error.status >= 500 || (error.status === 403 && error.retryAfterSeconds !== undefined)
     );
   if (error instanceof BudgetError) return false;
-  if (error instanceof TimeoutError) return true;
+  if (error instanceof TimeoutError) return false;
   for (let current: unknown = error, depth = 0; current instanceof Error && depth < 4; depth++) {
     const code = (current as Error & { code?: unknown }).code;
     if (typeof code === "string" && NETWORK_CODES.has(code)) return true;

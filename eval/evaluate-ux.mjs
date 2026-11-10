@@ -74,10 +74,12 @@ try {
         const recalled =
           sample.prNumber === 8
             ? []
-            : await memories.retrieve(repositoryId, {
-                paths: files.map((file) => file.filename),
-                text: files.map((file) => file.patch).join(" "),
-              });
+            : (
+                await memories.retrieveForReview(repositoryId, {
+                  paths: files.map((file) => file.filename),
+                  text: files.map((file) => file.patch).join(" "),
+                })
+              ).memories;
         entry.memoryReferences = recalled.map(({ id, version }) => ({ id, version }));
         const job = {
           id: randomUUID(),
