@@ -205,7 +205,7 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 
 用户授权为项目提供镜像打包脚本，将服务与数据库容器部署到 `192.168.50.207`，允许安装 Docker 及传输 `.env`。基线 `3d1f5370a95f1f9c005924e9a8ded8c220bf4755`；当前完成的是本地镜像与隔离容器验证，目标服务器尚未部署成功。
 
-新增 Dockerfile、多阶段构建、构建上下文白名单、[打包脚本](../../scripts/build-image.sh) 和独立的 [部署 Compose](../../compose.deploy.yaml)。保留原开发 Compose；服务和数据库分容器，数据库不发布端口并使用持久卷，迁移容器成功后才启动应用。沿用现有 Semgrep 1.136.0，镜像包含 Git、扫描规则和管理页。`.env` 与私钥仅在运行时只读挂载，不进入镜像。操作步骤见 [Docker 测试部署](../docker-deployment.md)。
+新增 Dockerfile、多阶段构建、构建上下文白名单、打包脚本 `scripts/build-image.sh` 和独立的部署 Compose `compose.deploy.yaml`。保留原开发 Compose；服务和数据库分容器，数据库不发布端口并使用持久卷，迁移容器成功后才启动应用。沿用现有 Semgrep 1.136.0，镜像包含 Git、扫描规则和管理页。`.env` 与私钥仅在运行时只读挂载，不进入镜像。操作步骤写在 `docs/docker-deployment.md`（已删除）。
 
 | 实际操作 | 结果与限制 |
 | --- | --- |
@@ -227,7 +227,7 @@ ego-browser TaskSpace 1；独立 `development_preview_1793947530743` schema、�
 
 ## 2026-11-07：GitHub Actions 镜像发布
 
-用户确认先实现 main 自动构建并发布 GHCR，测试机暂时手工更新。将已验证的 Docker 打包文件一并提交，新增 [Docker image 工作流](../../.github/workflows/docker-image.yml)：PR 构建仅有 contents:read，不发布；main push 的独立任务使用 packages:write 和内置 GITHUB_TOKEN 发布 Linux amd64 镜像。镜像为 `ghcr.io/m2thane/github-pr-reviewagent`，带 latest、sha-完整提交号和发布摘要 digest。业务凭据不进入 Actions 或镜像，未设置个人 PAT，也不改变 GHCR 包可见性。
+用户确认先实现 main 自动构建并发布 GHCR，测试机暂时手工更新。将已验证的 Docker 打包文件一并提交，新增 Docker image 工作流 `.github/workflows/docker-image.yml`：PR 构建仅有 contents:read，不发布；main push 的独立任务使用 packages:write 和内置 GITHUB_TOKEN 发布 Linux amd64 镜像。镜像为 `ghcr.io/m2thane/github-pr-reviewagent`，带 latest、sha-完整提交号和发布摘要 digest。业务凭据不进入 Actions 或镜像，未设置个人 PAT，也不改变 GHCR 包可见性。
 
 本地 actionlint 1.7.12、文档链接（29 篇、259 个链接）、差异格式和打包脚本语法检查通过；8 个提交文件未匹配到当前配置敏感值。Dockerfile 沿用上一节实际构建与隔离数据库验证的版本；本轮没有修改业务代码、依赖、数据库结构或请求校验。
 
@@ -372,3 +372,11 @@ complex 3 次都指出旧对照里只有专项找到的问题：收款账户不�
 2026-11-10 01:38Z 补做：停服务后执行 `npm run migrate`，本地主库应用 008、009（`schema_migrations` 有两条记录，`repositories.budget_tokens` 默认 500000；唯一仓库单独设置为 200000，未被改动），再用 `node --env-file-if-exists=.env dist/src/main.js` 启动，监听 3000，日志 `work/local-service.log` 无数据清理错误。
 
 未做：企微群内真实收发、多任务并发和浏览器的真实开发任务未跑；Docker 镜像不含浏览器（用户决定不再考虑打包镜像）。
+
+## 2026-11-10：移除镜像构建
+
+用户决定不构建镜像，相关设置全部移除：删除 `.github/workflows/docker-image.yml`、`Dockerfile`、`.dockerignore`、`compose.deploy.yaml`、`scripts/build-image.sh`、`docs/docker-deployment.md`，README 去掉“Docker 部署”一节。`compose.yaml` 保留，它只用于本机开发数据库（`npm run db:up`）。上面 2026-11-07 两节里测试服务器部署的待办随之取消。
+
+GitHub 上的 Docker image 工作流已用 `gh workflow disable` 停用（状态 `disabled_manually`），合并前推送到 main 也不会再构建。停用前最后一次发布是合并 PR #9 后的 [run 42737697827](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42737697827)。
+
+已用 `gh cache delete --all` 清空 Actions 构建缓存，删除本地 `work/docker/`（约 214 MB 镜像包）。GHCR 上已发布的 `ghcr.io/m2thane/github-pr-reviewagent` 包未删除：当前 gh 登录没有 `read:packages`、`delete:packages` 权限。

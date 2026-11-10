@@ -170,7 +170,7 @@ Agent 运行依赖：
 | `fd`（Debian 包名 `fd-find`，命令 `fdfind`） | 系统包 | Pi 的 find 工具 |
 | `git` | 系统包 | 获取固定提交的工作区 |
 
-Docker 镜像包含除 Playwright 浏览器以外的依赖（项目后续不考虑镜像打包，镜像里没有加浏览器）。本机开发时用系统包管理器安装 `rg`、`fd`，例如 `brew install ripgrep fd`。
+`rg`、`fd` 用系统包管理器安装，例如 `brew install ripgrep fd`。
 
 每个工作区第一次运行 Agent 时会建 codegraph 索引（大仓库可能需要数十秒、占用数百 MB 临时空间），不跨任务缓存。`codegraph_*` 工具由服务自己的 Pi 扩展提供（`src/pi/codegraph-extension.ts`）：每个 Agent 一个常驻 codegraph 进程，启动时预热，查询固定在当前工作区。
 
@@ -233,14 +233,6 @@ npm run dev
 ```
 
 > `npm start` 不会自动执行数据库迁移。数据库结构发生变化时，应先显式运行 `npm run migrate`。
-
-## Docker 部署
-
-运行 `scripts/build-image.sh` 可构建应用镜像并导出到 `work/docker/`。服务器使用 `compose.deploy.yaml` 启动应用、一次性迁移任务和 PostgreSQL；`.env` 与 GitHub 私钥通过只读文件挂载，不进入镜像。
-
-PR 自动验证镜像构建；推送或合并到 main 后，GitHub Actions 自动发布 `ghcr.io/m2thane/github-pr-reviewagent:latest` 和 `sha-完整提交号` 标签。测试服务器仍需主动拉取并更新，工作流不自动部署到内网。
-
-架构选择、私密配置、已有数据库迁移和机器人连接切换见 [Docker 测试部署](docs/docker-deployment.md)。
 
 ## GitHub App 配置
 
