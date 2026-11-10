@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -87,6 +87,8 @@ export interface PiSessionInput {
   codegraph?: boolean;
   // 开启 Playwright 浏览器（@playwright/mcp），可访问任意网站；目前只给开发任务。
   browser?: boolean;
+  // 依赖下载缓存目录，跨任务共享；设置后 bash 里的 Go、npm、pnpm、yarn、bun、pip、Maven 都下载到这里。目前只给开发任务。
+  cacheDir?: string;
   bridge?: SessionBridge;
   onUsage?: (usage: AgentUsage) => Promise<void>;
   // 交出整理后的 Pi 会话记录：开始时、运行中（有新步骤时每 5 秒，至少每 30 秒）和结束时（含失败、超时、取消）。
@@ -255,7 +257,7 @@ export async function runPiSession(input: PiSessionInput) {
     if (Date.now() - started >= input.timeoutMs) throw new TimeoutError();
     child = spawn(process.execPath, args, {
       cwd: root,
-      env: processEnv(runDir, files.config),
+      env: processEnv(runDir, files.config, input.cacheDir),
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
@@ -340,6 +342,8 @@ export async function runPiSession(input: PiSessionInput) {
       void persistUsage();
     }
     if (child) await terminate(child);
+    // bash 里放到后台的命令（例如启动的服务）有自己的进程组，Pi 退出后还在；按工作目录找出来结束。
+    await killProcessesUnder(input.root);
     await proxy?.close();
     // 请求已发出但没等到回复（超时或取消）时，也记下这次模型请求。
     if (modelStarted) timings.models.push({ startedAt: modelStarted });
@@ -501,7 +505,7 @@ async function prepareRunDirectory(
   return files;
 }
 
-function processEnv(runDir: string, configFile: string): NodeJS.ProcessEnv {
+function processEnv(runDir: string, configFile: string, cacheDir?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of PASS_THROUGH) if (process.env[name]) env[name] = process.env[name];
   const noProxy = [process.env.NO_PROXY ?? process.env.no_proxy, "127.0.0.1", "localhost"].filter(Boolean).join(",");
@@ -520,6 +524,21 @@ function processEnv(runDir: string, configFile: string): NodeJS.ProcessEnv {
     PI_OFFLINE: "1",
     PI_SERVICE_CONFIG: configFile,
     ...CODEGRAPH_ENV,
+    ...(cacheDir ? dependencyCacheEnv(cacheDir) : {}),
+  };
+}
+
+// HOME 是每次运行的临时目录，各工具默认的下载缓存会随任务删除；指到共享目录，后面的任务不用重新下载。
+function dependencyCacheEnv(cacheDir: string) {
+  return {
+    GOPATH: join(cacheDir, "go"),
+    GOCACHE: join(cacheDir, "go-build"),
+    npm_config_cache: join(cacheDir, "npm"),
+    npm_config_store_dir: join(cacheDir, "pnpm"),
+    YARN_CACHE_FOLDER: join(cacheDir, "yarn"),
+    BUN_INSTALL_CACHE_DIR: join(cacheDir, "bun"),
+    PIP_CACHE_DIR: join(cacheDir, "pip"),
+    MAVEN_OPTS: `-Dmaven.repo.local=${join(cacheDir, "m2")}`,
   };
 }
 
@@ -665,5 +684,37 @@ class RpcConnection {
     this.pending.clear();
     this.settled?.reject(error);
     this.settled = undefined;
+  }
+}
+
+// 结束当前用户下工作目录在 root 里的进程。Linux 读 /proc，其他系统用 lsof；都拿不到时跳过。
+export async function killProcessesUnder(root: string) {
+  const prefix = `${await realpath(root).catch(() => root)}/`;
+  const pids: number[] = [];
+  if (existsSync("/proc/self/cwd")) {
+    for (const name of await readdir("/proc").catch(() => [] as string[])) {
+      const pid = Number(name);
+      if (!pid || pid === process.pid) continue;
+      const cwd = await readlink(`/proc/${name}/cwd`).catch(() => "");
+      if (`${cwd}/`.startsWith(prefix)) pids.push(pid);
+    }
+  } else {
+    const output = await new Promise<string>((resolve) =>
+      execFile("lsof", ["-a", "-u", String(process.getuid?.()), "-d", "cwd", "-Fpn"], (_error, stdout) =>
+        resolve(stdout ?? ""),
+      ),
+    );
+    let pid = 0;
+    for (const line of output.split("\n")) {
+      if (line.startsWith("p")) pid = Number(line.slice(1));
+      else if (line.startsWith("n") && `${line.slice(1)}/`.startsWith(prefix) && pid !== process.pid) pids.push(pid);
+    }
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* 已退出 */
+    }
   }
 }

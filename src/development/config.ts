@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 export interface DevelopmentConfig {
   botId: string;
   secret: string;
@@ -6,6 +8,8 @@ export interface DevelopmentConfig {
   timeoutMs: number;
   // 同时开发的任务数；不同项目并行，同一项目按顺序一个一个做。
   concurrency: number;
+  // 依赖下载缓存，跨任务共享。
+  cacheDir: string;
 }
 export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig | undefined {
   const botId = env.WECOM_BOT_ID?.trim(),
@@ -23,5 +27,6 @@ export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig
   const concurrency = Number(env.DEVELOPMENT_CONCURRENCY?.trim() || 3);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 10)
     throw new Error("DEVELOPMENT_CONCURRENCY 必须是 1 到 10 的整数");
-  return { botId, secret, budgetTokens, timeoutMs, concurrency };
+  const cacheDir = resolve(env.DEVELOPMENT_CACHE_DIR?.trim() || "work/dev-cache");
+  return { botId, secret, budgetTokens, timeoutMs, concurrency, cacheDir };
 }

@@ -322,6 +322,22 @@ test("取消时结束 Pi 和它启动的命令；请求未回报 usage 时保留
   assert(aborted.usage.unreportedTokens > 0, "发出后没有回报 usage，预留额计入未知消耗");
 });
 
+test("开发任务的依赖下载缓存指到共享目录；放到后台的命令在会话结束后也被结束", async (t) => {
+  const cache = await mkdtemp(join(tmpdir(), "pi-cache-test-"));
+  t.after(() => rm(cache, { recursive: true, force: true }));
+  const { root, model, input } = await fixture(t, [
+    call("bash", {
+      command: 'echo "cache=$GOPATH|$npm_config_cache"; nohup sleep 60 > /dev/null 2>&1 & echo $! > bg.pid',
+    }),
+    text("{}"),
+  ]);
+  await runPiSession(input({ cacheDir: cache }));
+  assert(lastToolResult(model.requests[1]!)!.includes(`cache=${join(cache, "go")}|${join(cache, "npm")}`));
+  const pid = Number((await readFile(join(root, "bg.pid"), "utf8")).trim());
+  assert(pid > 0);
+  assert.throws(() => process.kill(pid, 0), "后台命令有自己的进程组，也要随会话结束");
+});
+
 test("超时返回 TimeoutError；模型服务错误按是否可重试分类", async (t) => {
   const slow = await fixture(t, [{ hang: true }]);
   await assert.rejects(runPiSession(slow.input({ timeoutMs: 1500 })), TimeoutError);

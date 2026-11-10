@@ -272,7 +272,7 @@ Pi 默认会从工作目录和 `~/.pi` 发现上下文文件、Skills、扩展�
 
 服务自己的 Git 调用禁用 hooks、宿主机全局配置、credential helper 和外部 filter；收集开发改动时再用命令行配置关闭 fsmonitor，因为 Agent 能改 `.git/config`。工作区 Git 配置不保存 token。
 
-Agent 可以用 bash 在工作区里读代码、运行编译和测试等检查，不安装依赖、不访问网络服务。开发任务另有 Playwright 浏览器（`@playwright/mcp`，Pi 内置 MCP 加载）：无界面 Chromium、内存里的临时配置，可访问任意网站；文件读写限制在工作区，执行任意 Node 代码的 `browser_run_code_unsafe` 不开放，网页内容按数据处理并打码。浏览器的网址白名单不是安全边界，真要限制网络需要容器网络层。bash 的限制：
+Agent 可以用 bash 在工作区里读代码、运行编译和测试等检查；审查类 Agent 不安装依赖、不访问网络服务。开发任务可以安装依赖、照 README 在本地启动服务验证：Go、npm、pnpm、yarn、bun、pip、Maven 的下载缓存指到 `DEVELOPMENT_CACHE_DIR`（默认 `work/dev-cache`），跨任务共享；Pi 结束后，服务按工作目录找出仍在工作区里运行的进程（Linux 读 `/proc`，其他系统用 `lsof`）并结束，避免后台启动的服务残留。开发任务另有 Playwright 浏览器（`@playwright/mcp`，Pi 内置 MCP 加载）：无界面 Chromium、内存里的临时配置，可访问任意网站；文件读写限制在工作区，执行任意 Node 代码的 `browser_run_code_unsafe` 不开放，网页内容按数据处理并打码。浏览器的网址白名单不是安全边界，真要限制网络需要容器网络层。bash 的限制：
 
 - 工作目录是 Workspace；Pi 子进程只拿最小环境变量（PATH、临时 HOME、代理与 CA），不继承数据库、GitHub、企微和模型凭据；模型 key 只在本地代理里。
 - 单条命令有 Pi 自带的超时；任务总时限到达或取消时结束整个进程组。
