@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Config } from "../../config/config.js";
 import type { JobAcceptor } from "../../persistence/database.js";
+import type { PullRequestEventMeta } from "../../persistence/repositories/job.repository.js";
 import { JobQueue } from "../../jobs/queue.js";
 import type { ReviewJob } from "../../jobs/types.js";
 import { readBody, send } from "./http.js";
@@ -25,10 +26,7 @@ export function createApp(
   const queue = typeof target === "function" ? new JobQueue(config.queueCapacity, target) : undefined;
   const accept =
     typeof target === "function"
-      ? (
-          input: Omit<ReviewJob, "id" | "status">,
-          _meta: { event: string; action: string; merged?: boolean; mergeCommitSha?: string | null },
-        ) => Promise.resolve(queue!.enqueue(input))
+      ? (input: Omit<ReviewJob, "id" | "status">, _meta: PullRequestEventMeta) => Promise.resolve(queue!.enqueue(input))
       : target.accept.bind(target);
   const server = createServer(async (request, response) => {
     // 部署平台用的探针：healthz 只看进程活着；readyz 还要数据库可用、服务没有在停止。

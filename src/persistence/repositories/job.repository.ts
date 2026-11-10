@@ -6,11 +6,20 @@ import { transaction } from "../transaction.js";
 import { rowToJob } from "../rows.js";
 import { log } from "../../logging.js";
 
+// eventAt 是事件快照里 pull_request.updated_at；比这个 PR 已处理过的事件更早时，accept 返回 stale。
+export type PullRequestEventMeta = {
+  event: string;
+  action: string;
+  merged?: boolean;
+  mergeCommitSha?: string | null;
+  eventAt?: string;
+};
+
 export interface JobAcceptor {
   accept(
     input: Omit<ReviewJob, "id" | "status">,
-    meta: { event: string; action: string; merged?: boolean; mergeCommitSha?: string | null },
-  ): Promise<{ kind: "accepted" | "duplicate" | "full"; job?: ReviewJob }>;
+    meta: PullRequestEventMeta,
+  ): Promise<{ kind: "accepted" | "duplicate" | "full" | "stale"; job?: ReviewJob }>;
   acceptReply?(
     input: import("./reply.repository.js").ReviewReplyInput,
   ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; job?: ReviewJob }>;
@@ -20,7 +29,7 @@ export interface JobAcceptor {
     branch: string | undefined,
     headSha: string,
   ): Promise<boolean>;
-  cancelReview?(repositoryId: number, prNumber: number): Promise<void>;
+  cancelReview?(repositoryId: number, prNumber: number, eventAt?: string): Promise<void>;
   restoreRepositories?(repositoryIds: number[]): Promise<void>;
   check?(): Promise<void>;
   isStopping?(): boolean;
@@ -52,10 +61,7 @@ export class JobRepository {
   isStopping() {
     return this.stopping;
   }
-  async accept(
-    input: Omit<ReviewJob, "id" | "status">,
-    meta: { event: string; action: string; merged?: boolean; mergeCommitSha?: string | null },
-  ) {
+  async accept(input: Omit<ReviewJob, "id" | "status">, meta: PullRequestEventMeta) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -82,6 +88,17 @@ export class JobRepository {
       if (!repository.rows[0]?.enabled) {
         await client.query("COMMIT");
         return { kind: "accepted" as const };
+      }
+      // 合并是终态，迟到的合并事件照常抽取规则；其余事件比已处理过的更早就忽略，投递记录保留用于去重。
+      if (!meta.merged && (await this.staleEvent(client, input.repositoryId, input.prNumber, meta.eventAt))) {
+        await client.query("COMMIT");
+        log("info", "stale_pull_request_event", {
+          deliveryId: input.deliveryId,
+          repositoryId: input.repositoryId,
+          prNumber: input.prNumber,
+          action: meta.action,
+        });
+        return { kind: "stale" as const };
       }
       if (meta.action === "closed") {
         this.abortReviews(input.repositoryId, input.prNumber, undefined, "cancelled");
@@ -182,9 +199,45 @@ export class JobRepository {
     );
   }
 
-  async cancelReview(repositoryId: number, prNumber: number) {
-    this.abortReviews(repositoryId, prNumber, undefined, "cancelled");
-    await this.requestCancel(this.pool, repositoryId, prNumber, undefined, "cancelled");
+  // eventAt 来自 Webhook：转草稿、关闭这类事件比这个 PR 已处理过的事件更早时不取消。
+  async cancelReview(repositoryId: number, prNumber: number, eventAt?: string) {
+    if (!eventAt) {
+      this.abortReviews(repositoryId, prNumber, undefined, "cancelled");
+      await this.requestCancel(this.pool, repositoryId, prNumber, undefined, "cancelled");
+      return;
+    }
+    let stale: boolean;
+    try {
+      const client = await this.pool.connect();
+      try {
+        stale = await transaction(client, async () => {
+          if (await this.staleEvent(client, repositoryId, prNumber, eventAt)) return true;
+          await this.requestCancel(client, repositoryId, prNumber, undefined, "cancelled");
+          return false;
+        });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      // 数据库不可用时判断不了新旧，照旧先中止本实例上的会话。
+      this.abortReviews(repositoryId, prNumber, undefined, "cancelled");
+      throw error;
+    }
+    if (stale) log("info", "stale_pull_request_event", { repositoryId, prNumber, action: "cancel" });
+    else this.abortReviews(repositoryId, prNumber, undefined, "cancelled");
+  }
+
+  // 记下这个 PR 最近处理的事件时间；已记录的更晚时返回 true。行锁让同一 PR 的并发事件按顺序比较。
+  // 时间只到秒，同一秒内的两个事件都照常处理。
+  private async staleEvent(client: PoolClient, repositoryId: number, prNumber: number, eventAt?: string) {
+    if (!eventAt) return false;
+    const result = await client.query(
+      `INSERT INTO pull_request_events(repository_id,pr_number,last_event_at) VALUES($1,$2,$3)
+       ON CONFLICT (repository_id,pr_number) DO UPDATE SET last_event_at=EXCLUDED.last_event_at
+         WHERE pull_request_events.last_event_at<=EXCLUDED.last_event_at`,
+      [repositoryId, prNumber, eventAt],
+    );
+    return result.rowCount === 0;
   }
 
   async cancelRepository(repositoryId: number) {

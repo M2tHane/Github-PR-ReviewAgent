@@ -161,6 +161,65 @@ test("持久层失败时 webhook 返回 503", async () => {
   }
 });
 
+test("pull_request 事件把快照时间交给持久层，旧事件返回 200 不再重投", async () => {
+  const seen: Array<{ action: string; eventAt?: string }> = [];
+  const cancels: Array<string | undefined> = [];
+  const { server } = createApp(config, {
+    accept: async (_input, meta) => {
+      seen.push({ action: meta.action, eventAt: meta.eventAt });
+      return { kind: "stale" };
+    },
+    cancelReview: async (_repositoryId, _prNumber, eventAt) => {
+      cancels.push(eventAt);
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const post = (event: unknown, delivery: string) => {
+    const body = JSON.stringify(event);
+    return fetch(`http://127.0.0.1:${address.port}/github/webhook`, {
+      method: "POST",
+      headers: {
+        "x-github-event": "pull_request",
+        "x-github-delivery": delivery,
+        "x-hub-signature-256": signature(body),
+      },
+      body,
+    });
+  };
+  try {
+    const stale = await post(
+      {
+        ...payload,
+        action: "synchronize",
+        pull_request: { ...payload.pull_request, updated_at: "2026-11-09T08:00:00Z" },
+      },
+      "stale-sync",
+    );
+    assert.equal(stale.status, 200);
+    assert.deepEqual(await stale.json(), { ignored: true, reason: "stale_event" });
+    assert.deepEqual(seen, [{ action: "synchronize", eventAt: "2026-11-09T08:00:00.000Z" }]);
+    const draft = await post(
+      {
+        ...payload,
+        action: "converted_to_draft",
+        pull_request: { ...payload.pull_request, draft: true, updated_at: "2026-11-09T08:01:00Z" },
+      },
+      "draft",
+    );
+    assert.equal(draft.status, 200);
+    assert.deepEqual(cancels, ["2026-11-09T08:01:00.000Z"]);
+    const invalid = await post(
+      { ...payload, pull_request: { ...payload.pull_request, updated_at: "not a time" } },
+      "bad-time",
+    );
+    assert.equal(invalid.status, 422);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("review comment 只路由人类对已绑定线程的回复", async () => {
   const calls: any[] = [];
   const target = {

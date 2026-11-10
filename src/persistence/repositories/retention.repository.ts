@@ -72,6 +72,15 @@ export class RetentionRepository {
             DELETE FROM agent_sessions WHERE id IN (
               SELECT id FROM agent_sessions WHERE development_task_id IS NOT NULL AND created_at<$1 LIMIT $2)`,
           );
+          // PR 事件时间只用来识别迟到的旧事件（GitHub 只能重投 3 天内的），过了保留期就没用了。
+          await batches(
+            client,
+            BATCH,
+            [cutoff],
+            `
+            DELETE FROM pull_request_events WHERE (repository_id,pr_number) IN (
+              SELECT repository_id,pr_number FROM pull_request_events WHERE last_event_at<$1 LIMIT $2)`,
+          );
           // 投递记录只用于去重；没有任务引用、又过了保留期的才删。
           result.deliveries += await batches(
             client,
@@ -117,6 +126,7 @@ export class RetentionRepository {
           await client.query("DELETE FROM memories WHERE repository_id=$1", [id]);
           await client.query("DELETE FROM decision_clues WHERE repository_id=$1", [id]);
           await client.query("DELETE FROM webhook_deliveries WHERE repository_id=$1", [id]);
+          await client.query("DELETE FROM pull_request_events WHERE repository_id=$1", [id]);
           removed += (await client.query("DELETE FROM repositories WHERE id=$1 AND revoked_at<$2", [id, cutoff]))
             .rowCount!;
         }

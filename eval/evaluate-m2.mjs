@@ -27,7 +27,7 @@ const config = {
     api: process.env.MODEL_API ?? "openai-completions",
     thinkingLevel: process.env.MODEL_THINKING,
   },
-  agentTimeoutMs: 300_000,
+  agentTimeoutMs: 3_600_000,
 };
 const names = (await git("diff", "--name-only", baseSha, headSha)).split("\n");
 const files = await Promise.all(

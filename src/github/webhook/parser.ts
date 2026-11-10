@@ -19,7 +19,8 @@ export function parsePullRequest(value: unknown): PullRequestEvent {
     typeof pr.state !== "string" ||
     typeof pr.base?.sha !== "string" ||
     typeof pr.head?.sha !== "string" ||
-    (pr.head.ref !== undefined && typeof pr.head.ref !== "string")
+    (pr.head.ref !== undefined && typeof pr.head.ref !== "string") ||
+    (pr.updated_at !== undefined && (typeof pr.updated_at !== "string" || !Number.isFinite(Date.parse(pr.updated_at))))
   )
     throw new Error("缺少 pull_request 必需字段");
   if (

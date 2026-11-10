@@ -27,10 +27,12 @@ export async function handlePullRequest(
   const repository = event.repository.full_name.toLowerCase();
   const pr = event.pull_request;
   const closed = event.action === "closed";
+  // 事件快照的时间；补投或人工重投的旧事件靠它识别，不能冲掉更新的状态。
+  const eventAt = pr.updated_at ? new Date(pr.updated_at).toISOString() : undefined;
   if (!closed && (pr.draft || pr.state !== "open") && typeof target !== "function")
-    // 本实例上的会话立即中止；写库失败只影响别的实例，它们发布前还会再核对 PR 状态。
+    // 写库失败时本实例上的会话照样中止；别的实例发布前还会再核对 PR 状态。
     await target
-      .cancelReview?.(event.repository.id, pr.number)
+      .cancelReview?.(event.repository.id, pr.number, eventAt)
       .catch((error) =>
         log("error", "cancel_request_failed", { repositoryId: event.repository.id, prNumber: pr.number }, error),
       );
@@ -62,12 +64,13 @@ export async function handlePullRequest(
         baseSha: pr.base.sha,
         headSha: pr.head.sha,
       },
-      { event: eventName, action: event.action, merged: pr.merged, mergeCommitSha: pr.merge_commit_sha },
+      { event: eventName, action: event.action, merged: pr.merged, mergeCommitSha: pr.merge_commit_sha, eventAt },
     );
   } catch {
     return send(response, 503, { error: "任务持久化失败" });
   }
   if (result.kind === "full") return send(response, 503, { error: "任务队列已满" });
+  if (result.kind === "stale") return send(response, 200, { ignored: true, reason: "stale_event" });
   return send(response, 202, {
     accepted: result.kind === "accepted",
     duplicate: result.kind === "duplicate",

@@ -25,7 +25,7 @@ const config = {
     api: process.env.MODEL_API ?? "openai-completions",
     thinkingLevel: process.env.MODEL_THINKING,
   },
-  agentTimeoutMs: 300_000,
+  agentTimeoutMs: 3_600_000,
 };
 for (const key of ["MODEL_PROVIDER", "MODEL_NAME", "MODEL_API_KEY", "DATABASE_URL"])
   assert(process.env[key], `缺少 ${key}`);

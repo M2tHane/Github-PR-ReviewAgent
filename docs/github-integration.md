@@ -85,7 +85,7 @@ Persist Delivery / Job
 
 GitHub 要求 Webhook 在 10 秒内返回 2XX；项目试用目标为 P95 < 3 秒。
 
-入口回 5xx 或没有响应时 GitHub 不会自己重投。服务每 5 分钟用 App JWT 查一次投递记录，请求 GitHub 重投这些事件：每个事件最多 3 次，只看最近 3 天，4xx 不补；重投仍走本节的入口。规则和限制见 [reliability-security §9](./reliability-security.md#9-漏投递补偿)。
+入口回 5xx 或没有响应时 GitHub 不会自己重投。服务每 5 分钟用 App JWT 查一次投递记录，请求 GitHub 重投这些事件：每个事件最多 3 次，只看最近 3 天，4xx 不补；重投仍走本节的入口。补投或人工重投的旧 `pull_request` 事件比这个 PR 已处理过的事件更早时直接忽略，不会冲掉更新的状态。规则和限制见 [reliability-security §9](./reliability-security.md#9-漏投递补偿)。
 
 ## 5. 事件映射
 

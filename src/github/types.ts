@@ -10,6 +10,7 @@ export interface PullRequestEvent {
     state: string;
     merged?: boolean;
     merge_commit_sha?: string | null;
+    updated_at?: string;
     base: { sha: string };
     head: { sha: string; ref?: string; repo: { full_name: string } | null };
   };

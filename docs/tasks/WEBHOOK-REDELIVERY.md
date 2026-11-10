@@ -11,9 +11,10 @@
 - [x] 入口处理的事件列表改为一份常量 `HANDLED_EVENTS`，入口和补投共用。
 - [x] 启动后跑一次、之后每 5 分钟一次；数据库 advisory lock 保证多实例同一时间只有一个在查。
 - [x] 开关 `WEBHOOK_REDELIVERY_ENABLED`（默认开启），同步 `.env.example`、README 和设计文档。
+- [x] 迟到的旧事件不冲掉新状态（2026-11-09 追加，用户要求修复）：迁移 `010_pull_request_events.sql` 按 PR 记录已处理事件里最晚的 `pull_request.updated_at`；`accept` 和转草稿／关闭触发的 `cancelReview` 遇到更早的事件直接忽略，入口回 200；合并事件不受影响。规则见 [reliability-security §9](../reliability-security.md#9-漏投递补偿)。
 - [ ] 真实 GitHub 联调（见“未验证”）。
 
-没有数据库迁移，没有新增表；次数和时间都从 GitHub 返回的投递记录里算。
+补投本身不加表，次数和时间都从 GitHub 返回的投递记录里算；新旧判断用上面的 `pull_request_events` 表。
 
 ## 验证
 
@@ -26,6 +27,8 @@
 | `DATABASE_URL=<本地库> npm run test:db` | 59 项通过，0 失败，0 跳过；使用临时 schema。含新增的“两个实例同时到点时只有一个拿到锁”。 |
 | `npm run check:docs` | 通过。 |
 | `npm run check:format` | 通过。 |
+
+新旧判断（2026-11-09，合并分支 `feat/integration` 内）：`node --test dist/test/github/webhook.test.js` 15 项通过；`node --test dist/test/persistence/database-pull-request-events.test.js dist/test/persistence/database-workers.test.js dist/test/persistence/database-jobs.test.js`（临时 schema）17 项通过、0 失败、0 跳过。覆盖：旧 `synchronize`／`opened` 不顶掉排队中和运行中的新 head 任务、不为旧 head 建任务；同一秒照常处理；旧非合并 `closed` 不取消重新打开后的 Review；迟到的合并事件仍建规则抽取任务；旧的转草稿不取消、新的照常取消；没有快照时间时保持原规则；入口把时间传给持久层、旧事件回 200、时间格式错误回 422。
 
 测试覆盖：有成功尝试的不重投；最新一次 4xx 不重投；状态码 0／缺失重投；不处理的事件不重投；重投 3 次后放弃；三档间隔的边界（差 1 秒不重投、到点重投）；窗口外不重投；同一事件用最新一次尝试的 id；翻到窗口外停止；10 页上限；单个重投失败不影响其他；空响应体的 202；服务停止时中断。
 

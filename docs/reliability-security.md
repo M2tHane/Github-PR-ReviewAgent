@@ -138,7 +138,7 @@ repository
 
 - 模型服务错误（`ProviderError`）：按服务方说明判断，限流、过载、5xx、网络和流中断可以重试；额度／账单用完、认证失败、参数错误不重试。
 - GitHub（`GitHubApiError`）：429、5xx、带等待时间的 403（二级限流或主限流用尽）重试；其余 4xx 不重试。
-- 网络错误按错误码（ECONNRESET、ETIMEDOUT 等，沿 cause 链查找）；预算不足不重试；整次执行超时（`TimeoutError`）不重试，任务以 `timeout` 结束：超时多半是 PR 太大，重跑结果一样，只会耗尽预算。模型服务自己报的超时属于 `ProviderError`，仍可重试。
+- 网络错误按错误码（ECONNRESET、ETIMEDOUT 等，沿 cause 链查找）；预算不足不重试；整次执行超时（`TimeoutError`，时限 `AGENT_TIMEOUT_MS`，默认 1 小时）不重试，任务以 `timeout` 结束：超时多半是 PR 太大，重跑结果一样，只会耗尽预算。模型服务自己报的超时属于 `ProviderError`，仍可重试。
 - 都不是时才按错误文字兜底匹配。
 
 策略：
@@ -183,6 +183,7 @@ repository
 - **次数与间隔**：每个事件最多重投 3 次，距离它最新一次尝试分别过去 5 分钟、30 分钟、2 小时才发下一次；3 次后仍失败就放弃。次数和时间都从 GitHub 返回的记录里算，本地不存状态。
 - **窗口**：只看最近 3 天的投递（GitHub 只允许重投 3 天内的）；每轮最多翻 10 页（1000 条），没看完时记 `webhook_redelivery_truncated` 日志。
 - **多实例**：用数据库 advisory lock 保证同一时间只有一个实例在查，拿不到锁的跳过本轮。数据库不可用时拿不到锁，也就不重投：那时重投只会再失败，白白用掉次数。
+- **旧事件不冲掉新状态**：重投的事件带的是失败当时的 PR 快照。入口按 PR 记下已处理事件里最晚的 `pull_request.updated_at`（表 `pull_request_events`），更早的事件直接回 200 忽略，记 `stale_pull_request_event` 日志：不顶掉新 head 的 Review，不取消重新打开的 PR，转草稿之类的取消也不生效。合并事件例外，迟到也照常建规则抽取任务（合并是终态）。人工在 GitHub 重投同样适用。这些时间随数据保留期（`DATA_RETENTION_DAYS`）删除，撤销授权的仓库删数据时一起删除。
 - **日志**：一轮里有重投时记一条 `webhook_redelivery` 汇总（重投、失败、放弃的数量），不记录事件内容；单个重投请求失败（例如 GitHub 回 422）记 `webhook_redelivery_request_failed`，不影响其他事件，下一轮重新判断。
 
 限制：
@@ -191,7 +192,8 @@ repository
 - 3 天内投递超过 1000 条时，每轮只看最新的 1000 条，更早的失败不会补。
 - 放弃的事件（重投 3 次仍失败）和 4xx 失败的事件不会自动恢复，需要在 GitHub App 设置的 Advanced 页面查看投递记录、人工重投。
 - 一个实例刚请求重投、GitHub 还没把新的尝试写进投递记录时，另一个实例紧接着查，可能对同一事件再请求一次。入口按 delivery id 去重，不会重复建任务，但会多用掉一次重投次数。
-- 重投的事件带的是失败当时的 PR 快照，入口不区分新旧。同一个 PR 在这期间如果已经有更新的事件被正常接收，迟到的旧 `synchronize` 会把新 head 上还在排队或运行的 Review 标为被取代，旧 head 的任务开始时发现 head 已变也直接结束；新 head 可能因此没有 Review，要等下一次提交。人工重投一直有同样的情况，自动补投只是让它更容易出现。
+- 新旧按 `updated_at` 判断，只精确到秒：同一秒内的两个事件分不出先后，都照常处理。事件里没有 `updated_at` 时也照常处理。
+- `installation`、`installation_repositories` 事件不做新旧判断：迟到的旧“暂停／卸载”仍会停用仓库，需要在管理页重新启用。
 - 尚未做真实 GitHub 联调，见 [任务清单](tasks/WEBHOOK-REDELIVERY.md)。
 
 ## 10. Agent 权限边界

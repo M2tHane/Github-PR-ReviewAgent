@@ -114,7 +114,7 @@ export function loadConfig(env = process.env): Config {
     port: positiveInt(env, "PORT", 3000),
     webhookMaxBytes: positiveInt(env, "WEBHOOK_MAX_BYTES", 1_048_576),
     queueCapacity: positiveInt(env, "QUEUE_CAPACITY", 20),
-    agentTimeoutMs: positiveInt(env, "AGENT_TIMEOUT_MS", 300_000),
+    agentTimeoutMs: positiveInt(env, "AGENT_TIMEOUT_MS", 3_600_000),
     githubClientId: env.GITHUB_CLIENT_ID?.trim() || undefined,
     githubClientSecret: env.GITHUB_CLIENT_SECRET?.trim() || undefined,
     githubOAuthCallbackUrl: env.GITHUB_OAUTH_CALLBACK_URL?.trim() || undefined,
