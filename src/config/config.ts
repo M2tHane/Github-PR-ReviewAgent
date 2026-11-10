@@ -34,6 +34,8 @@ export interface Config {
   dataRetentionDays: number;
   // 卸载 App 或移除仓库后，再等多少天删除该仓库的全部数据（含团队规则），0 表示不删除。
   revokedDataGraceDays: number;
+  // 定时让 GitHub 重投因本服务故障而失败的 Webhook。
+  webhookRedelivery: boolean;
 }
 
 // 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
@@ -123,5 +125,6 @@ export function loadConfig(env = process.env): Config {
     workerConcurrency: positiveInt(env, "WORKER_CONCURRENCY", 2),
     dataRetentionDays: nonNegativeInt(env, "DATA_RETENTION_DAYS", 90),
     revokedDataGraceDays: nonNegativeInt(env, "REVOKED_DATA_GRACE_DAYS", 30),
+    webhookRedelivery: flag(env, "WEBHOOK_REDELIVERY_ENABLED", true),
   };
 }

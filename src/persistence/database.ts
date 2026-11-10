@@ -11,6 +11,7 @@ import { AgentSessionRepository } from "./repositories/agent-session.repository.
 import { HealthRepository } from "./repositories/health.repository.js";
 import { MemoryRepository } from "./repositories/memory.repository.js";
 import { RetentionRepository } from "./repositories/retention.repository.js";
+import { WebhookRedeliveryRepository } from "./repositories/webhook-redelivery.repository.js";
 import { migrate } from "./migrations.js";
 import type { ReviewReplyInput } from "./repositories/reply.repository.js";
 import type { ReviewJob } from "../jobs/types.js";
@@ -30,6 +31,7 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly health = new HealthRepository(this.pool, () => this.isStopping());
   private readonly memories = new MemoryRepository(this.pool);
   private readonly retention = new RetentionRepository(this.pool);
+  private readonly webhookRedelivery = new WebhookRedeliveryRepository(this.pool);
 
   // 每个并发任务会同时占用几条连接（领取、续租、写结果），连接池随并发数放大。
   constructor(
@@ -80,4 +82,5 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly finishHealthReport = this.health.finishHealthReport.bind(this.health);
   readonly insertCandidates = this.memories.insertCandidates.bind(this.memories);
   readonly purgeExpired = this.retention.purgeExpired.bind(this.retention);
+  readonly withWebhookRedeliveryLock = <T>(run: () => Promise<T>) => this.webhookRedelivery.withLock(run);
 }

@@ -9,6 +9,14 @@ import { handleInstallation } from "./events/installation.js";
 import { handleReviewComment } from "./events/review-comment.js";
 import { handlePullRequest } from "./events/pull-request.js";
 
+// 服务实际处理的事件；其余事件验签后直接忽略。漏投递补偿（redelivery.ts）也只补这些。
+export const HANDLED_EVENTS: ReadonlySet<string> = new Set([
+  "pull_request",
+  "pull_request_review_comment",
+  "installation",
+  "installation_repositories",
+]);
+
 export function createApp(
   config: Config,
   target: JobAcceptor | ((job: ReviewJob) => Promise<void>),
@@ -57,11 +65,11 @@ export function createApp(
     } catch {
       return send(response, 400, { error: "JSON 无效" });
     }
+    if (!HANDLED_EVENTS.has(eventName)) return send(response, 200, { ignored: true });
     if (eventName === "installation" || eventName === "installation_repositories")
       return handleInstallation(target, eventName, deliveryId, payload, response);
     if (eventName === "pull_request_review_comment")
       return handleReviewComment(config, target, deliveryId, payload, response);
-    if (eventName !== "pull_request") return send(response, 200, { ignored: true });
     return handlePullRequest(config, target, accept, deliveryId, eventName, payload, response);
   });
   return { server, queue };

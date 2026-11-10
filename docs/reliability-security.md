@@ -175,15 +175,24 @@ repository
 
 ## 9. 漏投递补偿
 
-GitHub 不会自动重投所有失败 Webhook。
+入口回 5xx（服务停止中、数据库不可用）或 GitHub 连不上、等到超时时，GitHub 不会自己重投，这段时间的事件就丢了。服务定时查本 App 的投递记录（`GET /app/hook/deliveries`），让 GitHub 重投（`POST /app/hook/deliveries/{id}/attempts`），两个接口都用 App JWT，不需要额外权限。重投走原来的 Webhook 入口，验签和按 delivery id 去重都不变。实现见 `src/github/webhook/redelivery.ts`。
 
-M1 必须至少具备：
+- **时机**：启动后查一次，之后每 5 分钟一次。`WEBHOOK_REDELIVERY_ENABLED=false` 关闭。
+- **补哪些**：同一个事件的多次尝试按 delivery id（投递记录里的 `guid`）合在一起看。任何一次尝试成功（2xx）就不管；最新一次是 5xx，或状态码为 0／缺失（连不上、超时）才补。只补服务会处理的事件：`pull_request`、`pull_request_review_comment`、`installation`、`installation_repositories`。
+- **不补**：最新一次是 4xx（验签失败、请求体过大、字段无效）的，重投也会再失败。
+- **次数与间隔**：每个事件最多重投 3 次，距离它最新一次尝试分别过去 5 分钟、30 分钟、2 小时才发下一次；3 次后仍失败就放弃。次数和时间都从 GitHub 返回的记录里算，本地不存状态。
+- **窗口**：只看最近 3 天的投递（GitHub 只允许重投 3 天内的）；每轮最多翻 10 页（1000 条），没看完时记 `webhook_redelivery_truncated` 日志。
+- **多实例**：用数据库 advisory lock 保证同一时间只有一个实例在查，拿不到锁的跳过本轮。数据库不可用时拿不到锁，也就不重投：那时重投只会再失败，白白用掉次数。
+- **日志**：一轮里有重投时记一条 `webhook_redelivery` 汇总（重投、失败、放弃的数量），不记录事件内容；单个重投请求失败（例如 GitHub 回 422）记 `webhook_redelivery_request_failed`，不影响其他事件，下一轮重新判断。
 
-- 查看失败投递的方法。
-- 人工重投操作步骤。
-- 服务恢复后检查 GitHub App delivery 记录的能力。
+限制：
 
-自动补偿脚本在持续运行需求明确后再增加。
+- 服务整个停着的时候没有实例在查，恢复后的第一轮才补；停机超过 3 天的事件补不回来。
+- 3 天内投递超过 1000 条时，每轮只看最新的 1000 条，更早的失败不会补。
+- 放弃的事件（重投 3 次仍失败）和 4xx 失败的事件不会自动恢复，需要在 GitHub App 设置的 Advanced 页面查看投递记录、人工重投。
+- 一个实例刚请求重投、GitHub 还没把新的尝试写进投递记录时，另一个实例紧接着查，可能对同一事件再请求一次。入口按 delivery id 去重，不会重复建任务，但会多用掉一次重投次数。
+- 重投的事件带的是失败当时的 PR 快照，入口不区分新旧。同一个 PR 在这期间如果已经有更新的事件被正常接收，迟到的旧 `synchronize` 会把新 head 上还在排队或运行的 Review 标为被取代，旧 head 的任务开始时发现 head 已变也直接结束；新 head 可能因此没有 Review，要等下一次提交。人工重投一直有同样的情况，自动补投只是让它更容易出现。
+- 尚未做真实 GitHub 联调，见 [任务清单](tasks/WEBHOOK-REDELIVERY.md)。
 
 ## 10. Agent 权限边界
 

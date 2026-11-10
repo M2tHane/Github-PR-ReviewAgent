@@ -1,4 +1,5 @@
 import { createApp } from "../github/webhook/handler.js";
+import { REDELIVERY_INTERVAL_MS, redeliverFailedWebhooks } from "../github/webhook/redelivery.js";
 import { loadConfig } from "../config/config.js";
 import { createReviewProcessor } from "../review/review.processor.js";
 import { Database } from "../persistence/database.js";
@@ -74,6 +75,24 @@ export function createApplication() {
       });
   };
 
+  // 漏投递补偿：启动后先查一次，之后每 5 分钟一次。多实例时由数据库锁保证同一时间只有一个在查；
+  // 数据库不可用时拿不到锁也就不重投——那时重投只会再失败，白白用掉次数。
+  let redelivering: Promise<void> | undefined;
+  let redeliveryTimer: ReturnType<typeof setInterval> | undefined;
+  const redeliver = () => {
+    if (redelivering || scheduleAbort.signal.aborted) return;
+    if (!config.webhookRedelivery) return;
+    redelivering = database
+      .withWebhookRedeliveryLock(() => redeliverFailedWebhooks(github, scheduleAbort.signal))
+      .then(() => undefined)
+      .catch((error) => {
+        if (!scheduleAbort.signal.aborted) log("error", "webhook_redelivery_failed", {}, error);
+      })
+      .finally(() => {
+        redelivering = undefined;
+      });
+  };
+
   return {
     async start() {
       await runner.start();
@@ -82,14 +101,17 @@ export function createApplication() {
       pollSchedules();
       purgeTimer = setInterval(purge, 6 * 60 * 60_000);
       purge();
+      redeliveryTimer = setInterval(redeliver, REDELIVERY_INTERVAL_MS);
+      redeliver();
       server.listen(config.port, () => log("info", "listening", { port: config.port }));
     },
     async stop() {
       if (scheduleTimer) clearInterval(scheduleTimer);
       if (purgeTimer) clearInterval(purgeTimer);
+      if (redeliveryTimer) clearInterval(redeliveryTimer);
       scheduleAbort.abort();
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      await Promise.all([closed, runner.stop(), development?.stop(), scheduling, purging]);
+      await Promise.all([closed, runner.stop(), development?.stop(), scheduling, purging, redelivering]);
       await database.close();
     },
   };
