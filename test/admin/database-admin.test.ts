@@ -284,7 +284,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(bootstrap.repositories[0].id, allowedId);
     assert.equal(bootstrap.memories.length, 1);
     assert.equal(bootstrap.memories[0].id, allowedMemory);
-    assert.equal(bootstrap.jobs.length, 1);
+    assert.equal(bootstrap.jobs, undefined, "任务列表不再随首屏下发");
     assert(!JSON.stringify(bootstrap).includes("private-audit-scope"));
     // 执行过程：列表和详情只带摘要；单条接口返回时间线，原始记录可下载；权限跟随任务所属仓库。
     const t0 = Date.parse("2026-11-09T10:00:00Z");
@@ -384,7 +384,9 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(((await response.json()) as any).status, "interrupted");
     await database.pool.query("DELETE FROM agent_sessions WHERE id=$1", [live]);
     response = await fetch(`${origin}/api/jobs`, { headers: { cookie: sessionCookie } });
-    const jobs = (await response.json()) as any[];
+    const jobPage = (await response.json()) as any;
+    assert.deepEqual([jobPage.total, jobPage.page, jobPage.pageSize], [1, 1, 20]);
+    const jobs = jobPage.items as any[];
     assert.equal(jobs.length, 1);
     assert.deepEqual(
       jobs[0].agent_sessions.map((item: any) => [item.id, item.role, item.steps, item.content]),
@@ -393,6 +395,59 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(jobs[0].report_available, true);
     assert.equal(jobs[0].finding_count, 1);
     assert(!JSON.stringify(jobs).includes("private-audit-scope"));
+    // 筛选和翻页在数据库里做；无权限仓库的任务既不出现也不计数。
+    const jobList = async (query: string) => {
+      const result = await fetch(`${origin}/api/jobs?${query}`, { headers: { cookie: sessionCookie } });
+      return { status: result.status, body: (await result.json()) as any };
+    };
+    for (const [query, total, items] of [
+      [`type=PR_REVIEW&status=${jobs[0].status}`, 1, 1],
+      ["type=HEALTH_AUDIT", 0, 0],
+      ["status=failed,timeout,uncertain", 0, 0],
+      [`repositoryId=${allowedId}`, 1, 1],
+      [`repositoryId=${deniedId}`, 0, 0],
+      ["page=2&pageSize=1", 1, 0],
+    ] as const) {
+      const listed = await jobList(query);
+      assert.deepEqual([listed.status, listed.body.total, listed.body.items.length], [200, total, items], query);
+    }
+    for (const query of ["status=bogus", "type=OTHER", "repositoryId=abc", "page=0", "pageSize=101", "pageSize=1.5"])
+      assert.equal((await jobList(query)).status, 422, query);
+    assert.equal((await fetch(`${origin}/api/overview`)).status, 401);
+    response = await fetch(`${origin}/api/overview`, { headers: { cookie: sessionCookie } });
+    const overview = (await response.json()) as any;
+    assert.deepEqual([overview.attention, overview.reviewsThisWeek], [0, 1]);
+    assert.deepEqual(
+      overview.latestReviews.map((item: any) => [item.id, item.finding_count, item.review_result]),
+      [[review.id, 1, undefined]],
+    );
+    assert.equal(overview.quality.findings, 0, "还没发布到 GitHub 的意见不计入");
+    assert(!JSON.stringify(overview).includes("private-audit-scope"));
+    // 需要排查的任务只数近 7 天；意见按回复后的状态统计。
+    const oldFailure = randomUUID(),
+      newFailure = randomUUID();
+    await database.pool.query(
+      `INSERT INTO jobs(id,job_type,repository_id,installation_id,repository,pr_number,target_sha,base_sha,status,created_at)
+       VALUES($1,'PR_REVIEW',$3,1,'owner/allowed',7,'old','base','failed',now()-interval '8 days'),
+             ($2,'REPLY_HANDLE',$3,1,'owner/allowed',7,'new','base','uncertain',now())`,
+      [oldFailure, newFailure, allowedId],
+    );
+    await database.pool.query("UPDATE review_findings SET status='FIXED',binding_status='bound' WHERE id=$1", [
+      stored[0]!.id,
+    ]);
+    response = await fetch(`${origin}/api/overview`, { headers: { cookie: sessionCookie } });
+    const counted = (await response.json()) as any;
+    assert.deepEqual([counted.attention, counted.reviewsThisWeek], [1, 1]);
+    assert.deepEqual([counted.quality.findings, counted.quality.fixed, counted.quality.open], [1, 1, 0]);
+    assert.equal((await jobList("status=failed,timeout,uncertain")).body.total, 2);
+    assert.deepEqual(
+      (await jobList("status=failed,timeout,uncertain&pageSize=1&page=2")).body.items.map((item: any) => item.id),
+      [oldFailure],
+    );
+    await database.pool.query("DELETE FROM jobs WHERE id=ANY($1::uuid[])", [[oldFailure, newFailure]]);
+    await database.pool.query("UPDATE review_findings SET status='OPEN',binding_status='pending' WHERE id=$1", [
+      stored[0]!.id,
+    ]);
     response = await fetch(`${origin}/api/jobs/${review.id}`, { headers: { cookie: sessionCookie } });
     assert.equal(response.status, 200);
     const detail = (await response.json()) as any;
@@ -428,6 +483,8 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       listed.items.some((item: any) => item.id === repeat!.id),
       "单次审查仍能拿到全部问题",
     );
+    response = await fetch(`${origin}/api/overview`, { headers: { cookie: sessionCookie } });
+    assert.equal(((await response.json()) as any).quality.findings, 0, "之前提过的问题不重复计入意见数");
     await database.pool.query("DELETE FROM review_findings WHERE id=$1", [repeat!.id]);
     const extra = Array.from({ length: 53 }, (_, i) => ({ ...finding, path: `src/page-${i}.ts` }));
     await database.saveFindings(review, extra, new Set(extra));

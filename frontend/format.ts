@@ -32,3 +32,10 @@ export const jobLabels: Record<string, string> = {
   DECISION_EXTRACT: "规则提取",
   HEALTH_AUDIT: "健康检查",
 };
+
+// 占比：不足 1% 但不为零时写“<1%”，避免把有数的项显示成 0%。
+export const percentText = (part: number, total: number) => {
+  if (!(total > 0) || !Number.isFinite(part)) return "—";
+  const value = (part / total) * 100;
+  return part > 0 && value < 1 ? "<1%" : `${Math.round(value)}%`;
+};

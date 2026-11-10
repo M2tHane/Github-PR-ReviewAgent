@@ -1,98 +1,40 @@
-import { useState } from "react";
-import { api, messageOf } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
-import { RepositorySettings } from "../features/repositories/repository-settings.js";
-import { DevelopmentSettingsPanel } from "../features/repositories/development-settings.js";
+import { Status } from "../components/common/status-badge.js";
+import { scheduleLabels } from "../features/repositories/repository-settings.js";
+import { numberText } from "../format.js";
 import type { Repository } from "../types.js";
 
-export function RepositoryPage({
-  items,
-  reload,
-  advanced = false,
-}: {
-  items: Repository[];
-  reload: () => Promise<void>;
-  advanced?: boolean;
-}) {
-  const [busy, setBusy] = useState<number | null>(null),
-    [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
-  const [developmentRepository, setDevelopmentRepository] = useState<Repository>();
-  async function save(repo: Repository, form: HTMLFormElement) {
-    const data = new FormData(form),
-      lines = (name: string) =>
-        String(data.get(name) ?? "")
-          .split("\n")
-          .map((x) => x.trim())
-          .filter(Boolean);
-    setBusy(repo.id);
-    setError("");
-    setNotice("");
-    try {
-      await api(`/api/repositories/${repo.id}`, {
-        method: "PATCH",
-        body: JSON.stringify(
-          advanced
-            ? {
-                includePaths: lines("includePaths"),
-                excludePaths: lines("excludePaths"),
-                outputLanguage: data.get("outputLanguage"),
-                budgetTokens: Number(data.get("budgetTokens")),
-              }
-            : { enabled: data.get("enabled") === "on" },
-        ),
-      });
-      await reload();
-      setNotice("仓库设置已保存。");
-    } catch (cause) {
-      setError(messageOf(cause));
-    } finally {
-      setBusy(null);
-    }
-  }
+// 仓库列表只放一行摘要，设置都在各仓库自己的页面里。
+export function RepositoryPage({ items }: { items: Repository[] }) {
   return (
     <section>
       <div className="section-head">
         <div>
-          <h2>{advanced ? "审查策略" : "仓库"}</h2>
-          <p className="muted">
-            {advanced ? "按仓库设置审查范围与资源上限。" : "管理接入的仓库，让团队规则参与下一次审查。"}
-          </p>
+          <h2>仓库</h2>
+          <p className="muted">管理接入的仓库：启停、审查范围、定时健康检查和群内开发都按仓库设置。</p>
         </div>
-        {!advanced && <a href="#settings/policy">审查策略 →</a>}
       </div>
-      {error && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="feedback" role="status">
-          {notice}
-        </p>
-      )}
       {!items.length ? (
         <Empty>当前账号没有可管理的已接入仓库。</Empty>
       ) : (
-        <div className="grid">
+        <div className="settings-list repo-list">
           {items.map((repo) => (
-            <RepositorySettings
-              key={repo.id}
-              repo={repo}
-              advanced={advanced}
-              busy={busy}
-              save={save}
-              manageDevelopment={setDevelopmentRepository}
-            />
+            <a href={`#repositories/${repo.id}`} key={repo.id}>
+              <div>
+                <h3>{repo.fullName}</h3>
+                <p>
+                  {repo.includePaths.length || repo.excludePaths.length
+                    ? `审查范围：${repo.includePaths.length} 条包含、${repo.excludePaths.length} 条排除`
+                    : "审查全部路径"}
+                  {" · "}每次上限 {numberText(repo.budgetTokens)} tokens · 定时健康检查：
+                  {scheduleLabels[repo.healthSchedule]}
+                </p>
+              </div>
+              <Status value={repo.enabled ? "enabled" : "paused"} />
+              <span aria-hidden="true">→</span>
+            </a>
           ))}
         </div>
-      )}
-      {developmentRepository && (
-        <DevelopmentSettingsPanel
-          key={developmentRepository.id}
-          repo={developmentRepository}
-          onClose={() => setDevelopmentRepository(undefined)}
-        />
       )}
     </section>
   );

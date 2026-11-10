@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, messageOf, setCsrf } from "./api/client.js";
 import { AppLayout } from "./components/layout/app-layout.js";
+import { Empty } from "./components/common/empty-state.js";
 import { ThemeSwitch } from "./components/common/theme-switch.js";
 import { HealthPanel } from "./features/health/health-panel.js";
 import { DiscussionPage } from "./features/reviews/discussions.js";
@@ -9,16 +10,23 @@ import { ReviewDetails } from "./features/reviews/review-detail.js";
 import { JobsPage } from "./pages/jobs-page.js";
 import { MemoriesPage } from "./pages/memories-page.js";
 import { OverviewPage } from "./pages/overview-page.js";
+import { ReviewsPage } from "./pages/reviews-page.js";
 import { RepositoryPage } from "./pages/repository-page.js";
+import { RepositorySettingsPage, type RepositoryTab } from "./pages/repository-settings-page.js";
 import { SettingsPage } from "./pages/settings-page.js";
-import type { BootstrapResponse, Job, Memory, Repository as Repo, SessionResponse } from "./types.js";
+import type { BootstrapResponse, Memory, Repository as Repo, SessionResponse } from "./types.js";
+
+// 审查策略已并入各仓库的设置页，旧链接落到仓库列表。
+function currentRoute() {
+  if (location.hash === "#settings/policy") history.replaceState(null, "", "#repositories");
+  return location.hash.slice(1) || "overview";
+}
 
 function App() {
   const [session, setSession] = useState<any>(null),
     [initializing, setInitializing] = useState(true),
-    [route, setRoute] = useState(() => location.hash.slice(1) || "overview");
+    [route, setRoute] = useState(currentRoute);
   const [repos, setRepos] = useState<Repo[]>([]),
-    [jobs, setJobs] = useState<Job[]>([]),
     [memories, setMemories] = useState<Memory[]>([]),
     [error, setError] = useState("");
   const main = useRef<HTMLElement>(null),
@@ -30,7 +38,6 @@ function App() {
       setSession(value.user);
       const data = await api<BootstrapResponse>("/api/bootstrap");
       setRepos(data.repositories);
-      setJobs(data.jobs);
       setMemories(data.memories);
       setError("");
     } catch (cause) {
@@ -42,7 +49,7 @@ function App() {
   }
   useEffect(() => {
     void load().catch(() => {});
-    const changed = () => setRoute(location.hash.slice(1) || "overview");
+    const changed = () => setRoute(currentRoute());
     window.addEventListener("hashchange", changed);
     return () => window.removeEventListener("hashchange", changed);
   }, []);
@@ -53,18 +60,21 @@ function App() {
       main.current?.focus({ preventScroll: true });
       window.scrollTo(0, 0);
     }
-    if (session && ["overview", "settings/runs", "jobs"].includes(route))
-      void api<Job[]>("/api/jobs")
-        .then(setJobs)
-        .catch((cause) => setError(messageOf(cause)));
   }, [route]);
   const rules = route.startsWith("rules") || route === "memories",
     health = route.startsWith("health") || route.startsWith("settings/health"),
     runs = route === "settings/runs" || route === "jobs",
     discussions = route === "settings/discussions" || route === "discussions",
     settings = route.startsWith("settings") || health || runs || discussions;
+  // 审查列表的筛选和页码跟在路由后面：reviews?repo=1&page=2。
+  const [path, search = ""] = route.split("?");
   const review = route.match(/^reviews\/([0-9a-f-]{36})$/i),
-    overview = route === "overview" || Boolean(review);
+    reviews = path === "reviews" || Boolean(review);
+  const repositoryRoute = route.match(/^repositories\/(\d+)(?:\/(health|development|tasks))?$/),
+    repositories = route === "repositories" || Boolean(repositoryRoute),
+    repository = repositoryRoute && repos.find((item) => item.id === Number(repositoryRoute[1]));
+  const updateRepository = (value: Repo) =>
+    setRepos((items) => items.map((item) => (item.id === value.id ? value : item)));
   if (!session)
     return (
       <main className="login">
@@ -90,7 +100,13 @@ function App() {
     );
   return (
     <AppLayout
-      navigation={{ overview, rules, repositories: route === "repositories", settings }}
+      navigation={{
+        overview: !reviews && !rules && !repositories && !settings,
+        reviews,
+        rules,
+        repositories,
+        settings,
+      }}
       login={session.login}
       mainRef={main}
       onLogout={() =>
@@ -120,27 +136,35 @@ function App() {
               reload={load}
               route={route === "memories" ? "rules" : route}
             />
+          ) : repositoryRoute ? (
+            repository ? (
+              <RepositorySettingsPage
+                key={repository.id}
+                repo={repository}
+                tab={(repositoryRoute[2] as RepositoryTab | undefined) ?? "review"}
+                onRepositoryUpdated={updateRepository}
+              />
+            ) : (
+              <Empty>
+                找不到这个仓库，或当前账号没有它的管理权限。<a href="#repositories">返回仓库列表</a>
+              </Empty>
+            )
           ) : route === "repositories" ? (
-            <RepositoryPage items={repos} reload={load} />
-          ) : route === "settings/policy" ? (
-            <RepositoryPage items={repos} reload={load} advanced />
+            <RepositoryPage items={repos} />
           ) : runs ? (
-            <JobsPage items={jobs} />
+            <JobsPage />
           ) : health ? (
-            <HealthPanel
-              repositories={repos}
-              onRepositoryUpdated={(value) =>
-                setRepos((items) => items.map((item) => (item.id === value.id ? value : item)))
-              }
-            />
+            <HealthPanel repositories={repos} />
           ) : discussions ? (
             <DiscussionPage repositories={repos} />
           ) : route === "settings" ? (
             <SettingsPage />
           ) : review ? (
             <ReviewDetails id={review[1]!} />
+          ) : path === "reviews" ? (
+            <ReviewsPage repositories={repos} search={search} />
           ) : (
-            <OverviewPage repositories={repos} memories={memories} jobs={jobs} login={session.login} />
+            <OverviewPage repositories={repos} memories={memories} login={session.login} />
           )}
         </>
       )}

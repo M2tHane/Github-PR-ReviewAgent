@@ -305,6 +305,6 @@ GitHub App → Webhook → Event Dispatcher → Pi PR Review Agent → GitHub CO
 
 ## 管理页资源边界
 
-OAuth state 与 session 按 TTL 自动回收，各有 1000 条容量上限。首次加载通过 `GET /api/bootstrap` 在单次请求内复用仓库授权，每批最多 4 个权限查询，不跨请求缓存权限。
+OAuth state 与 session 按 TTL 自动回收，各有 1000 条容量上限。首次加载通过 `GET /api/bootstrap` 在单次请求内复用仓库授权，每批最多 4 个权限查询，不跨请求缓存权限。任务不随首屏下发：概览的数字、每个 PR 的最近一次审查和近 30 天审查意见的去向由 `GET /api/overview` 在数据库里统计；`GET /api/jobs` 按类型、仓库、状态筛选并分页（每页最多 100 条），返回 `{ items, total, page, pageSize }`。
 
 `GET /api/findings` 返回 `{ items, nextCursor }`，默认每页 50 条，支持 `limit`（1～50）、`repositoryId`、`jobId` 和 `cursor`。签名游标绑定筛选条件，排序保留微秒时间和大整数回复 ID；每页重新鉴权。管理页与 Review 详情都按需加载讨论，详情的 `finding_statuses` 独立于讨论页。

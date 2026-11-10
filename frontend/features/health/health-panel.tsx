@@ -4,23 +4,27 @@ import { Empty } from "../../components/common/empty-state.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
 import type { Job, Repository as Repo } from "../../types.js";
-import { HealthReportView, healthStatuses } from "./health-report.js";
+import { scheduleLabels } from "../repositories/repository-settings.js";
+import {
+  HealthReportView,
+  HealthSectionNav,
+  healthSections,
+  healthStatuses,
+  type SeverityFilter,
+} from "./health-report.js";
 import type { HealthDetail } from "./types.js";
 
 const healthHash = () => location.hash.match(/^#health\/([0-9a-f-]{36})$/i)?.[1] ?? "";
-export function HealthPanel({
-  repositories,
-  onRepositoryUpdated,
-}: {
-  repositories: Repo[];
-  onRepositoryUpdated: (repository: Repo) => void;
-}) {
-  const [repositoryId, setRepositoryId] = useState("");
+export function HealthPanel({ repositories }: { repositories: Repo[] }) {
+  // 仓库设置页带着 ?repo=<id> 过来时直接选中那个仓库。
+  const [repositoryId, setRepositoryId] = useState(() => {
+    const id = new URLSearchParams(location.hash.split("?")[1] ?? "").get("repo") ?? "";
+    return repositories.some((item) => String(item.id) === id) ? id : "";
+  });
   const [items, setItems] = useState<Job[]>([]),
     [selected, setSelected] = useState(healthHash),
     [detail, setDetail] = useState<HealthDetail | null>(null);
-  const [schedule, setSchedule] = useState<Repo["healthSchedule"]>("off"),
-    [page, setPage] = useState(0),
+  const [page, setPage] = useState(0),
     [nextPage, setNextPage] = useState<number | null>(null);
   const [refresh, setRefresh] = useState(0),
     [busy, setBusy] = useState(false),
@@ -28,14 +32,12 @@ export function HealthPanel({
     [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [filter, setFilter] = useState<SeverityFilter>("all");
   const repository = repositories.find((item) => String(item.id) === repositoryId);
   const active = items.find((item) => ["queued", "running"].includes(item.status));
   useEffect(() => {
     if (!repositoryId && !selected && repositories.length) setRepositoryId(String(repositories[0]!.id));
   }, [repositories, repositoryId, selected]);
-  useEffect(() => {
-    setSchedule(repository?.healthSchedule ?? "off");
-  }, [repositoryId, repository?.healthSchedule]);
   useEffect(() => {
     const changed = () => {
       const id = healthHash();
@@ -82,6 +84,7 @@ export function HealthPanel({
       timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     setDetail(null);
+    setFilter("all");
     setLoadingDetail(true);
     history.replaceState(null, "", `#health/${selected}`);
     const load = async () => {
@@ -139,23 +142,6 @@ export function HealthPanel({
       setNotice(value.kind === "duplicate" ? "已打开当前活动任务。" : "健康检查已加入队列。");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "创建任务失败");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const save = async () => {
-    if (!repository) return;
-    setBusy(true);
-    setError("");
-    try {
-      const value = await api<Repo>(`/api/repositories/${repository.id}/health-schedule`, {
-        method: "PATCH",
-        body: JSON.stringify({ schedule }),
-      });
-      onRepositoryUpdated(value);
-      setNotice(schedule === "off" ? "定时检查已关闭。" : "定时检查已保存。");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "保存失败");
     } finally {
       setBusy(false);
     }
@@ -252,45 +238,17 @@ export function HealthPanel({
           </div>
           <div className="health-layout">
             <aside className="health-sidebar">
-              <details className="card">
-                <summary>定时检查设置</summary>
-                <label htmlFor="health-schedule">
-                  运行频率
-                  <select
-                    id="health-schedule"
-                    value={schedule}
-                    disabled={!repository || busy}
-                    onChange={(event) => setSchedule(event.target.value as Repo["healthSchedule"])}
-                  >
-                    <option value="off">关闭</option>
-                    <option value="daily" disabled={!repository?.enabled}>
-                      每日
-                    </option>
-                    <option value="weekly" disabled={!repository?.enabled}>
-                      每周
-                    </option>
-                  </select>
-                </label>
-                <button
-                  className="secondary"
-                  disabled={busy || !repository || (!repository.enabled && schedule !== "off")}
-                  onClick={() => void save()}
-                >
-                  保存频率
-                </button>
-                <p className="muted">默认关闭。启用后首个任务在一个周期后触发，统一按 UTC 计时。</p>
-                {repository?.healthNextRunAt && (
+              {repository && (
+                <section className="card health-schedule">
+                  <h3>定时检查</h3>
                   <p>
-                    下次运行
-                    <br />
-                    <strong>{dateText(repository.healthNextRunAt)}</strong>
-                    <small className="health-utc">
-                      UTC {repository.healthNextRunAt.replace("T", " ").replace(".000Z", "")}
-                    </small>
+                    {scheduleLabels[repository.healthSchedule]}
+                    {repository.healthNextRunAt && ` · 下次 ${dateText(repository.healthNextRunAt)}`}
                   </p>
-                )}
-                {repository?.healthLastError && <p className="error">{repository.healthLastError}</p>}
-              </details>
+                  {repository.healthLastError && <p className="error">{repository.healthLastError}</p>}
+                  <a href={`#repositories/${repository.id}/health`}>修改设置 →</a>
+                </section>
+              )}
               <section className="card health-history">
                 <h3>检查记录</h3>
                 {loadingList && !items.length ? (
@@ -325,6 +283,12 @@ export function HealthPanel({
                   </button>
                 )}
               </section>
+              {detail?.report && healthSections(detail.report, filter).length > 1 && (
+                <section className="card health-toc">
+                  <h3>报告目录</h3>
+                  <HealthSectionNav report={detail.report} filter={filter} className="health-toc-nav" />
+                </section>
+              )}
             </aside>
             <div className="health-detail" aria-busy={loadingDetail}>
               {loadingDetail ? (
@@ -338,6 +302,8 @@ export function HealthPanel({
                   retry={() => void retry()}
                   busy={busy}
                   enabled={repository?.enabled ?? false}
+                  filter={filter}
+                  setFilter={setFilter}
                 />
               ) : (
                 <Empty>选择一条记录查看证据，或运行新的健康检查。</Empty>

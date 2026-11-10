@@ -102,6 +102,7 @@ export type JobRow = {
   created_at: string;
   updated_at: string;
   // 列表接口
+  report_available?: boolean;
   github_review_url?: string | null;
   finding_count?: number;
   new_severity_counts?: Record<string, number>;
@@ -113,4 +114,25 @@ export type JobRow = {
   // 健康检查列表
   has_report?: boolean;
   health_summary?: string | null;
+};
+// 分页的任务列表。
+export type JobPage = { items: JobRow[]; total: number; page: number; pageSize: number };
+// 概览页的统计：都由数据库计算，不依赖任务列表的分页。
+export type Overview = {
+  // 近 7 天失败、超时或发布待核对的任务数。
+  attention: number;
+  reviewsThisWeek: number;
+  // 每个 PR 最近一次审查，最多 8 条。
+  latestReviews: JobRow[];
+  // 近 days 天已发布的新意见，按开发者回复后的状态计数；open 是还没有人回复的。
+  quality: {
+    days: number;
+    reviews: number;
+    findings: number;
+    fixed: number;
+    withdrawn: number;
+    exception: number;
+    discussing: number;
+    open: number;
+  };
 };

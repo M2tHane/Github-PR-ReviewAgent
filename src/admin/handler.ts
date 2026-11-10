@@ -10,7 +10,7 @@ import { HealthRequestError } from "../health/health.scheduler.js";
 import { repository, type Repository, type Session } from "./dto.js";
 import { json, cookies, body } from "./http.js";
 import { DatabaseSessionStore, type SessionStore } from "./session-store.js";
-import { createRepositoryService } from "./repository.service.js";
+import { createRepositoryService, JOB_STATUSES, JOB_TYPES, MAX_PAGE_SIZE } from "./repository.service.js";
 import { createHealthRoutes, isHealthRoute } from "./health.routes.js";
 import { createFindingsRoute } from "./findings.routes.js";
 import { createNotificationMembersRoute } from "./notification-members.routes.js";
@@ -36,7 +36,7 @@ export function createAdminHandler(
   },
 ) {
   const memories = new MemoryService(database);
-  const { allowedRepositories, listJobs } = createRepositoryService(database, github);
+  const { allowedRepositories, listJobs, overview } = createRepositoryService(database, github);
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
   const ruleImportRoute = createRuleImportRoute(database, authorize);
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
@@ -183,11 +183,12 @@ export function createAdminHandler(
         if (membersMatch) return notificationMembersRoute(request, response, Number(membersMatch[1]), membersMatch[2]);
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
           const repositories = await allowedRepositories(user);
-          const [jobs, memoryLists] = await Promise.all([
-            listJobs(repositories.map((item) => item.id)),
-            Promise.all(repositories.map((item) => memories.list(item.id))),
-          ]);
-          return json(response, 200, { repositories, jobs, memories: memoryLists.flat() });
+          const memoryLists = await Promise.all(repositories.map((item) => memories.list(item.id)));
+          return json(response, 200, { repositories, memories: memoryLists.flat() });
+        }
+        if (request.method === "GET" && url.pathname === "/api/overview") {
+          const repositories = await allowedRepositories(user);
+          return json(response, 200, await overview(repositories.map((item) => item.id)));
         }
         if (request.method === "GET" && url.pathname === "/api/repositories")
           return json(response, 200, await allowedRepositories(user));
@@ -225,10 +226,39 @@ export function createAdminHandler(
           return json(response, 200, repository(updated.rows[0]));
         }
         if (request.method === "GET" && url.pathname === "/api/jobs") {
+          const query = url.searchParams;
+          const type = query.get("type") ?? undefined,
+            repositoryId = query.get("repositoryId"),
+            statuses = query.get("status")?.split(",") ?? [],
+            page = Number(query.get("page") ?? 1),
+            pageSize = Number(query.get("pageSize") ?? 20);
+          if (
+            (type !== undefined && !JOB_TYPES.includes(type)) ||
+            (repositoryId !== null && !/^\d{1,15}$/.test(repositoryId)) ||
+            statuses.some((status) => !JOB_STATUSES.includes(status)) ||
+            !Number.isSafeInteger(page) ||
+            page < 1 ||
+            page > 100_000 ||
+            !Number.isSafeInteger(pageSize) ||
+            pageSize < 1 ||
+            pageSize > MAX_PAGE_SIZE
+          )
+            return json(response, 422, { error: "任务筛选或分页参数无效" });
           const repositories = await allowedRepositories(user);
-          const ids = repositories.map((item) => item.id);
-          if (!ids.length) return json(response, 200, []);
-          return json(response, 200, await listJobs(ids));
+          return json(
+            response,
+            200,
+            await listJobs(
+              repositories.map((item) => item.id),
+              {
+                type,
+                repositoryId: repositoryId === null ? undefined : Number(repositoryId),
+                statuses,
+                page,
+                pageSize,
+              },
+            ),
+          );
         }
         const jobMatch = url.pathname.match(/^\/api\/jobs\/([0-9a-f-]+)$/i);
         if (jobMatch && request.method === "GET") {
