@@ -27,6 +27,29 @@ function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
 }
 
+// App Webhook 的一次投递尝试。guid 是事件的 delivery id，重投时不变；id 是这一次尝试。
+export interface WebhookDelivery {
+  id: number;
+  guid: string;
+  delivered_at: string;
+  redelivery: boolean;
+  status: string;
+  status_code?: number | null;
+  event: string;
+  action: string | null;
+}
+
+// 投递记录按 cursor 翻页，下一页的 cursor 只在响应头 Link 的 rel="next" 里。
+function nextCursorOf(response: Response) {
+  const next = /<([^>]+)>;\s*rel="next"/.exec(response.headers.get("link") ?? "")?.[1];
+  if (!next) return undefined;
+  try {
+    return new URL(next).searchParams.get("cursor") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class GitHubClient {
   // 一个挂住的请求会一直占着 Worker 槽位，同仓库的后续任务也跟着排队，所以每个请求都有上限。
   constructor(
@@ -46,7 +69,9 @@ export class GitHubClient {
     try {
       const response = await fetch(url, { ...init, signal });
       check(response);
-      return (await response.json()) as T;
+      // 重投接口成功时响应体可能为空，直接 response.json() 会抛错。
+      const text = await response.text();
+      return (text ? JSON.parse(text) : undefined) as T;
     } catch (error) {
       if (timeout.aborted && !init.signal?.aborted) throw new Error(`GitHub 请求超时：${label}`, { cause: error });
       throw error;
@@ -80,6 +105,44 @@ export class GitHubClient {
     );
     if (!body.token) throw new Error("GitHub installation 响应缺少 token");
     return body.token;
+  }
+
+  // App 级接口用 App JWT 认证，不是 installation token。
+  async listWebhookDeliveries(cursor?: string, signal?: AbortSignal) {
+    const params = new URLSearchParams({ per_page: "100", ...(cursor ? { cursor } : {}) });
+    let nextCursor: string | undefined;
+    const deliveries = await this.fetchJson<WebhookDelivery[]>(
+      `${api}/app/hook/deliveries?${params}`,
+      { signal, headers: this.appHeaders() },
+      "webhook deliveries",
+      (response) => {
+        if (!response.ok) throw new GitHubApiError("/app/hook/deliveries", response.status, retryAfterOf(response));
+        nextCursor = nextCursorOf(response);
+      },
+    );
+    if (!Array.isArray(deliveries)) throw new Error("GitHub Webhook 投递记录响应无效");
+    return { deliveries, nextCursor };
+  }
+
+  // 让 GitHub 把这一次投递尝试重新发一遍；成功返回 202，新的尝试稍后才出现在投递记录里。
+  async redeliverWebhook(attemptId: number, signal?: AbortSignal) {
+    const path = `/app/hook/deliveries/${attemptId}/attempts`;
+    await this.fetchJson<unknown>(
+      `${api}${path}`,
+      { method: "POST", signal, headers: this.appHeaders() },
+      "webhook redelivery",
+      (response) => {
+        if (!response.ok) throw new GitHubApiError(path, response.status, retryAfterOf(response));
+      },
+    );
+  }
+
+  private appHeaders() {
+    return {
+      authorization: `Bearer ${this.jwt()}`,
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+    };
   }
 
   private async request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {

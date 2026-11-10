@@ -255,6 +255,8 @@ https://<your-domain>/github/webhook
 
 GitHub App 安装范围应与 `GITHUB_ALLOWED_REPOSITORIES` 保持一致。
 
+服务停止中或数据库不可用时 Webhook 会失败，GitHub 不会自己重投。服务每 5 分钟查一次 GitHub 的投递记录并请求重投这些事件（`WEBHOOK_REDELIVERY_ENABLED`，默认开启，设为 `false` 关闭；不需要额外的 App 权限）。规则和限制见 [reliability-security §9](docs/reliability-security.md#9-漏投递补偿)。
+
 管理界面使用 GitHub OAuth，并通过 OAuth 权限与 CSRF 校验保护维护者操作。
 
 ## Review 工作流

@@ -141,6 +141,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     workerConcurrency: 1,
     dataRetentionDays: 0,
     revokedDataGraceDays: 0,
+    webhookRedelivery: false,
   } satisfies Config;
   let hasAccess = true;
   const github = {

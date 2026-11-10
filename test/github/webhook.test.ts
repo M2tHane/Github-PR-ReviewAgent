@@ -37,6 +37,7 @@ const config: Config = {
   workerConcurrency: 1,
   dataRetentionDays: 0,
   revokedDataGraceDays: 0,
+  webhookRedelivery: false,
 };
 
 const payload = {
