@@ -36,6 +36,12 @@ export interface Config {
   revokedDataGraceDays: number;
   // 定时让 GitHub 重投因本服务故障而失败的 Webhook。
   webhookRedelivery: boolean;
+  // 以下三项没有 .env 变量，默认值见 service-settings.ts，只能在管理端修改。
+  healthTimeoutMs?: number;
+  webhookRedeliveryIntervalMs?: number;
+  dataPurgeIntervalMs?: number;
+  // 可以在管理端修改服务设置的 GitHub 用户名（小写）；为空时所有人只读。
+  serviceAdmins?: Set<string>;
 }
 
 // 自定义模型服务（OpenAI 兼容网关等）。不填 baseUrl 时使用 Pi 内置的厂商配置。
@@ -126,5 +132,11 @@ export function loadConfig(env = process.env): Config {
     dataRetentionDays: nonNegativeInt(env, "DATA_RETENTION_DAYS", 90),
     revokedDataGraceDays: nonNegativeInt(env, "REVOKED_DATA_GRACE_DAYS", 30),
     webhookRedelivery: flag(env, "WEBHOOK_REDELIVERY_ENABLED", true),
+    serviceAdmins: new Set(
+      (env.SERVICE_ADMINS ?? "")
+        .split(",")
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean),
+    ),
   };
 }

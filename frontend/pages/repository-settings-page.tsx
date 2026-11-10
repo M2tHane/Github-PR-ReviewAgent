@@ -56,7 +56,7 @@ export function RepositorySettingsPage({
         <HealthScheduleForm repo={repo} onSaved={onRepositoryUpdated} />
       </div>
       <div hidden={tab !== "development"}>
-        <DevelopmentForm dev={development} />
+        <DevelopmentForm dev={development} repo={repo} />
       </div>
       <div hidden={tab !== "tasks"}>
         <DevelopmentTasks dev={development} repo={repo} />

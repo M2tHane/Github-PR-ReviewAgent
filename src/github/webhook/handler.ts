@@ -9,11 +9,13 @@ import { verifySignature } from "./signature.js";
 import { handleInstallation } from "./events/installation.js";
 import { handleReviewComment } from "./events/review-comment.js";
 import { handlePullRequest } from "./events/pull-request.js";
+import { handleIssueComment } from "./events/issue-comment.js";
 
 // 服务实际处理的事件；其余事件验签后直接忽略。漏投递补偿（redelivery.ts）也只补这些。
 export const HANDLED_EVENTS: ReadonlySet<string> = new Set([
   "pull_request",
   "pull_request_review_comment",
+  "issue_comment",
   "installation",
   "installation_repositories",
 ]);
@@ -68,6 +70,7 @@ export function createApp(
       return handleInstallation(target, eventName, deliveryId, payload, response);
     if (eventName === "pull_request_review_comment")
       return handleReviewComment(config, target, deliveryId, payload, response);
+    if (eventName === "issue_comment") return handleIssueComment(config, target, payload, response);
     return handlePullRequest(config, target, accept, deliveryId, eventName, payload, response);
   });
   return { server, queue };

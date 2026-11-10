@@ -55,22 +55,29 @@ export function developmentMessage(task: DevelopmentTask) {
   const success = task.status === "succeeded" && task.pr_number;
   const status = success
     ? "AI 开发任务已完成"
-    : task.status === "refused"
-      ? "AI 开发任务已拒绝"
-      : task.status === "uncertain"
-        ? "AI 开发任务发布待核对"
-        : task.status === "cancelled"
-          ? "AI 开发任务已取消"
-          : "AI 开发任务未完成";
-  const url = `https://github.com/${task.repository.split("/").map(encodeURIComponent).join("/")}/pull/${task.pr_number}`;
-  return {
-    msgtype: "markdown" as const,
-    markdown: {
-      content:
-        `**${status}**\n> 项目：${markdownText(task.repository)}\n` +
-        (success
-          ? `> PR：#${task.pr_number} ${markdownText(task.title!)}\n> [查看 PR](${url})`
-          : `> ${markdownText(task.result ?? "请查看管理页任务记录。")}`),
-    },
-  };
+    : task.status === "discussing"
+      ? "AI 开发任务需要先确认"
+      : task.status === "refused"
+        ? "AI 开发任务已拒绝"
+        : task.status === "uncertain"
+          ? "AI 开发任务发布待核对"
+          : task.status === "cancelled"
+            ? "AI 开发任务已取消"
+            : "AI 开发任务未完成";
+  const repository = `https://github.com/${task.repository.split("/").map(encodeURIComponent).join("/")}`;
+  const issue = task.issue_number ? `[issue #${task.issue_number}](${repository}/issues/${task.issue_number})` : "";
+  const lines = [`> 项目：${markdownText(task.repository)}`];
+  if (success) {
+    lines.push(`> PR：#${task.pr_number} ${markdownText(task.title!)}`);
+    if (issue) lines.push(`> 来自 ${issue}`);
+    lines.push(`> [查看 PR](${repository}/pull/${task.pr_number})`);
+  } else if (task.status === "discussing" && issue) {
+    // 需求有没定的地方：去 issue 里讨论，提需求的人回复“开始”后再开发。
+    lines.push(`> ${markdownText(task.result ?? "需求有没定的地方，已开 issue 讨论。")}`);
+    lines.push(`> 去 ${issue} 回复问题，确认后由提需求的人在 issue 里回复“开始”。`);
+  } else {
+    lines.push(`> ${markdownText(task.result ?? "请查看管理页任务记录。")}`);
+    if (issue) lines.push(`> 来自 ${issue}`);
+  }
+  return { msgtype: "markdown" as const, markdown: { content: `**${status}**\n${lines.join("\n")}` } };
 }

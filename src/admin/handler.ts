@@ -18,6 +18,8 @@ import { createNotificationMembersRoute } from "./notification-members.routes.js
 import { createRuleImportRoute } from "./rule-import.routes.js";
 import { createDevelopmentRoute } from "./development.routes.js";
 import { createAgentSessionsRoute } from "./agent-sessions.routes.js";
+import { createServiceSettingsRoute } from "./service-settings.routes.js";
+import { ServiceSettings } from "../config/service-settings.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 
 export interface AdminStores {
@@ -34,6 +36,8 @@ export function createAdminHandler(
     sessions: new DatabaseSessionStore(database.pool, "session", 8 * 60 * 60_000, 1000, config.sessionSecret ?? ""),
     states: new DatabaseSessionStore(database.pool, "oauth_state", 10 * 60_000, 1000, config.sessionSecret ?? ""),
   },
+  // 服务里共用一个实例，改完立即应用到本实例；单独使用管理页（测试）时自己建一个。
+  settings = new ServiceSettings(config, database.pool),
 ) {
   const memories = new MemoryService(database);
   const { allowedRepositories, listJobs, overview } = createRepositoryService(database, github);
@@ -42,6 +46,7 @@ export function createAdminHandler(
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
   const agentSessionsRoute = createAgentSessionsRoute(config, database, authorize);
+  const serviceSettingsRoute = createServiceSettingsRoute(config, settings, allowedRepositories);
   const configured = Boolean(
     config.githubClientId &&
       config.githubClientSecret &&
@@ -181,6 +186,7 @@ export function createAdminHandler(
           return await agentSessionsRoute(request, response, sessionMatch[1]!, Boolean(sessionMatch[2]));
         const membersMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/notification-members(?:\/([^/]+))?$/);
         if (membersMatch) return notificationMembersRoute(request, response, Number(membersMatch[1]), membersMatch[2]);
+        if (url.pathname === "/api/service-settings") return await serviceSettingsRoute(request, response, user);
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
           const repositories = await allowedRepositories(user);
           const memoryLists = await Promise.all(repositories.map((item) => memories.list(item.id)));

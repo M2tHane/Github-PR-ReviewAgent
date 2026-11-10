@@ -220,6 +220,57 @@ test("pull_request 事件把快照时间交给持久层，旧事件返回 200 �
   }
 });
 
+test("issue comment 只把人在 issue（不是 PR）里的新评论交给开发任务", async () => {
+  const seen: unknown[] = [];
+  const { server } = createApp(config, {
+    accept: async () => ({ kind: "accepted" }),
+    acceptIssueComment: async (input) => {
+      seen.push(input);
+      return { kind: "accepted", taskKind: "discuss" };
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const event = {
+    action: "created",
+    installation: { id: 2 },
+    repository: { id: 3, full_name: "owner/repo" },
+    issue: { number: 7, state: "open" },
+    comment: { id: 99, body: "开始", user: { login: "alice", type: "User" } },
+  };
+  const post = (value: unknown) => {
+    const body = JSON.stringify(value);
+    return fetch(`http://127.0.0.1:${address.port}/github/webhook`, {
+      method: "POST",
+      headers: {
+        "x-github-event": "issue_comment",
+        "x-github-delivery": "issue",
+        "x-hub-signature-256": signature(body),
+      },
+      body,
+    });
+  };
+  try {
+    const accepted = await post(event);
+    assert.equal(accepted.status, 202);
+    assert.deepEqual(await accepted.json(), { accepted: true, duplicate: false, task: "discuss" });
+    assert.deepEqual(seen, [{ repositoryId: 3, issueNumber: 7, commentId: 99, login: "alice", body: "开始" }]);
+    for (const ignored of [
+      { ...event, comment: { ...event.comment, user: { login: "app[bot]", type: "Bot" } } },
+      { ...event, issue: { ...event.issue, pull_request: { url: "x" } } },
+      { ...event, issue: { ...event.issue, state: "closed" } },
+      { ...event, action: "edited" },
+      { ...event, repository: { id: 4, full_name: "owner/other" } },
+    ])
+      assert.equal((await post(ignored)).status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal((await post({ ...event, comment: { ...event.comment, id: "x" } })).status, 422);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("review comment 只路由人类对已绑定线程的回复", async () => {
   const calls: any[] = [];
   const target = {

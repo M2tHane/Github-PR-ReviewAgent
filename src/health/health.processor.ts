@@ -79,7 +79,7 @@ export function createHealthProcessor(
     const started = Date.now(),
       controller = new AbortController(),
       signal = controller.signal;
-    const timeoutMs = Math.min(config.agentTimeoutMs, HEALTH_LIMITS.timeoutMs);
+    const timeoutMs = config.healthTimeoutMs ?? HEALTH_LIMITS.timeoutMs;
     const timer = setTimeout(() => controller.abort(new TimeoutError()), timeoutMs);
     database.registerReviewAbort(job, controller);
     let runId: string | undefined, agentUsage: AgentUsage | undefined;

@@ -55,17 +55,18 @@ test("补投判断：只补服务会处理的事件", () => {
   const plan = planRedeliveries(
     [
       attempt(1, "push", 60 * MINUTE, { event: "push", action: null }),
-      attempt(2, "issue-comment", 60 * MINUTE, { event: "issue_comment", action: "created" }),
+      attempt(2, "issues", 60 * MINUTE, { event: "issues", action: "opened" }),
       attempt(3, "pr", 60 * MINUTE),
       attempt(4, "reply", 61 * MINUTE, { event: "pull_request_review_comment", action: "created" }),
       attempt(5, "install", 62 * MINUTE, { event: "installation", action: "deleted" }),
       attempt(6, "repos", 63 * MINUTE, { event: "installation_repositories", action: "removed" }),
+      attempt(7, "issue-comment", 64 * MINUTE, { event: "issue_comment", action: "created" }),
     ],
     now,
   );
   assert.deepEqual(
     plan.redeliver.map((item) => item.attemptId),
-    [6, 5, 4, 3],
+    [7, 6, 5, 4, 3],
   );
 });
 

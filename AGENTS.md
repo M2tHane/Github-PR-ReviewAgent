@@ -79,7 +79,7 @@ PR 分析绑定 repository、PR、base SHA 和 head SHA；M3 健康分析绑定 
 ## Pi 与预算
 
 - Review、Reply、Decision、Health、开发任务各自启动独立的 Pi 进程，结束时连同它启动的命令一起结束。
-- Review 是单 Agent；Java、安全、架构、团队规则冲突的检查方法是服务 Skills，由 Agent 按变更读取。
+- Review 是单 Agent；安全、架构、团队规则冲突的检查方法是服务 Skills，由 Agent 按变更读取。
 - 整个 PR Job 共享总预算；本地模型代理在每次 Provider 请求前持久化预留，超预算不转发，累计包括 cache 在内的实际 usage。
 - 请求失败且没有 usage 回报时保留预留额度，并与实际 token 分开记录。不能把未知消耗当作零。
 - 禁止模型自行配置 provider、凭据、任意路径或 tool list。

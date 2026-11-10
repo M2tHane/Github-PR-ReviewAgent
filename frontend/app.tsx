@@ -14,6 +14,7 @@ import { ReviewsPage } from "./pages/reviews-page.js";
 import { RepositoryPage } from "./pages/repository-page.js";
 import { RepositorySettingsPage, type RepositoryTab } from "./pages/repository-settings-page.js";
 import { SettingsPage } from "./pages/settings-page.js";
+import { ServiceSettingsPage } from "./pages/service-settings-page.js";
 import type { BootstrapResponse, Memory, Repository as Repo, SessionResponse } from "./types.js";
 
 // 审查策略已并入各仓库的设置页，旧链接落到仓库列表。
@@ -159,6 +160,8 @@ function App() {
             <DiscussionPage repositories={repos} />
           ) : route === "settings" ? (
             <SettingsPage />
+          ) : route === "settings/service" ? (
+            <ServiceSettingsPage />
           ) : review ? (
             <ReviewDetails id={review[1]!} />
           ) : path === "reviews" ? (

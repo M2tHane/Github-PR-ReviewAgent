@@ -32,7 +32,8 @@ Pi 只负责收到确定任务后的推理和工具调用。
 | Pull requests | Read & Write | 读取 PR、发布 COMMENT Review、后续线程回复 |
 | Actions / Checks | 不扩大现有授权 | M3 在现有权限下尝试读取；权限不足与无记录分开展示 |
 | Security alerts | 默认不申请 | M3 首版不接入完整安全扫描，不能由依赖清单推导“无漏洞” |
-| Contents Write | 不申请 | 当前无代码写入需求 |
+| Contents Write | 仅群内开发 | 开发任务创建分支和提交，见 [群内开发](./wecom-development.md) |
+| Issues | 仅群内开发：Read & Write | 需求不清楚时开 issue、在 issue 里回复；订阅 Issue comment 事件 |
 
 服务端固定发布 COMMENT，不让模型选择 APPROVE、REQUEST_CHANGES 或 merge。
 
@@ -217,7 +218,7 @@ pull_request_review_comment.created
 
 - 评论属于本 App 创建的行内 Review 线程。
 - 作者是人类，不是本 App 自己。
-- 不把普通 PR 会话区 `issue_comment` 自动当成对 AI 的回应。
+- 不把普通 PR 会话区 `issue_comment` 自动当成对 AI 的回应。`issue_comment` 只用于群内开发开的需求 issue（不是 PR），规则见 [群内开发的需求 issue](./wecom-development.md#需求-issue)。
 
 忽略自身和其他机器人回复，防止循环。
 

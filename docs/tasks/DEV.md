@@ -380,3 +380,34 @@ complex 3 次都指出旧对照里只有专项找到的问题：收款账户不�
 GitHub 上的 Docker image 工作流已用 `gh workflow disable` 停用（状态 `disabled_manually`），合并前推送到 main 也不会再构建。停用前最后一次发布是合并 PR #9 后的 [run 42737697827](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42737697827)。
 
 已用 `gh cache delete --all` 清空 Actions 构建缓存，删除本地 `work/docker/`（约 214 MB 镜像包）。GHCR 上已发布的 `ghcr.io/m2thane/github-pr-reviewagent` 包由用户在网页上删除（当前 gh 登录没有 `read:packages`，无法用 API 复核）。
+
+## 2026-11-10：需求 issue 讨论与开发写法约束
+
+用户要求：需求不清楚时先开 issue 讨论，提需求的人在 issue 里回复“开始”才开发；issue 和 PR 写成大白话、要短；针对模型过度防御、写死参数、不问需求就开工，收紧开发提示词。确认的方案：只在需求不清楚时开 issue；只有提需求的人（经“GitHub 账号关联”映射）回复“开始”才算数；测试仓库 `M2tHane/tuzi-main-service`。
+
+- 实现：迁移 `012_development_issues.sql`（开发任务加 `kind`、`issue_number`，新表 `development_issues`）；Webhook 新增 `issue_comment`，只处理服务开过的、未关闭 issue 里的人类评论。讨论回复用只读工具；“开始”之后的开发任务读 issue 全文，PR 正文带 `Closes #n`，建好后在 issue 里回复 PR 链接。非提需求的人说“开始”、开发中又有新回复等情况，服务直接回固定提示，不调用模型。
+- 写法：commit-pr Skill 改为“怎么写”通则 + PR / issue / issue 回复模板；字数上限 PR 正文 1000、issue 正文 800、issue 回复 500，超出时让模型压缩一次。development Skill 加“先问清楚”“写代码的分寸”（只在边界校验、不写死可配置的值）。java-review Skill 已删除。
+- 需要配置：GitHub App 加 Issues 读写权限并订阅 Issue comment 事件；群成员在管理页「仓库 → 群内开发 → GitHub 账号关联」里关联账号。
+
+### 验证
+
+| 项目 | 结果 |
+| --- | --- |
+| `npm test` | 237 项：165 通过、72 跳过（70 个数据库用例由 test:db 执行，2 个需要 Semgrep）、0 失败。 |
+| `npm run test:db` | 70 项全部通过。 |
+| 其他 | `check:docs`、`check:format` 通过。`npm audit` 未运行（本轮未改依赖）。 |
+
+### 真实模型验收（tuzi/gpt-6.1-sol，`M2tHane/tuzi-main-service` main `089fd36`）
+
+脚本 `work/dev-e2e/issue-flow.mjs`：独立 schema、独立 bot ID，群消息直接写入任务表；issue 评论由 gh 账号 M2tHane 发出，按评论 id 读回后交给 `acceptIssueComment`。没有经过企微收发和真实 Webhook。
+
+| 场景 | 结果 |
+| --- | --- |
+| 需求不清：“令牌列表加个导出功能，方便对账” | 任务 `ba7f8d83` 开 [issue #4](https://github.com/M2tHane/tuzi-main-service/issues/4)，3 个问题各带倾向做法，末尾提示 @m2thane 回复“开始”；143 秒、68,202 tokens。 |
+| issue 内追问额度怎么换算人民币 | 讨论任务 `95b34c1f` 回复公式和默认值（`QuotaPerUnit=500000`、`USDExchangeRate=7.3`，已核对代码一致）并追问一处；248 秒、159,356 tokens；没有群消息。 |
+| 回复“开始” | 开发任务 `1d38f22c` 建 [PR #5](https://github.com/M2tHane/tuzi-main-service/pull/5)（10 个文件），正文 377 字、带 `Closes #4` 和“需要确认”；issue 收到“PR 建好了：#5”；537 秒、1,732,919 tokens（其中 cache 1,648,000）。汇率从系统配置读取，未见多余校验。PR 自述 React 依赖缺失，前端组件测试未运行。 |
+| 需求清楚：“/api/status/static 加 server_time 字段” | 任务 `5825ad23` 不开 issue，直接建 [PR #6](https://github.com/M2tHane/tuzi-main-service/pull/6)：1 行实现加测试，正文 5 段；237 秒、179,436 tokens。 |
+
+验收后修复：PR 建好后，最初开 issue 的任务在管理页仍显示“已开 issue 讨论”。现在 PR 建好时把它改为成功，结果写“issue #n 讨论后已建 PR #m。”，数据库用例覆盖。
+
+未做：企微群收发和 GitHub Webhook 的 `issue_comment` 真实投递未验证（App 订阅 Issue comment 事件前收不到）；本地服务未升级、012 未在主库执行；改动未提交。

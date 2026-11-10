@@ -19,7 +19,7 @@ export class PersistentRunner {
   private heartbeat?: NodeJS.Timeout;
   private polling?: Promise<void>;
   private active = new Map<string, { job: AgentJob; done: Promise<void> }>();
-  private readonly concurrency: number;
+  private concurrency: number;
   private readonly leaseMs: number;
   private readonly heartbeatMs: number;
 
@@ -32,6 +32,11 @@ export class PersistentRunner {
     this.concurrency = Math.max(1, options.concurrency ?? 1);
     this.leaseMs = options.leaseMs ?? LEASE_MS;
     this.heartbeatMs = options.heartbeatMs ?? Math.min(5_000, this.leaseMs / 3);
+  }
+
+  // 管理端改了并发数：调大时下一轮就多领；调小时正在跑的任务不受影响，跑完后按新值领取。
+  setConcurrency(value: number) {
+    this.concurrency = Math.max(1, value);
   }
 
   async start() {

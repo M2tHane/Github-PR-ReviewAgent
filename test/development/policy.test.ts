@@ -3,7 +3,10 @@ import test from "node:test";
 import { createCipheriv, randomBytes } from "node:crypto";
 import {
   enforceProtections,
+  isStartCommand,
+  lengthFeedback,
   parseDevelopmentResult,
+  WRITING_LIMITS,
   parseSettings,
   safePath,
   validBranch,
@@ -66,11 +69,33 @@ test("管理输入拒绝身份伪造、重复成员、无管理员、无效路�
 });
 test("开发结果只含标题和说明，不得夹带身份或改动，refusal 拒绝整个任务", () => {
   const result = { title: "修复", summary: "修复内容", refusal: "" };
-  assert.deepEqual(parseDevelopmentResult(result), { title: "修复", summary: "修复内容" });
+  assert.deepEqual(parseDevelopmentResult(result), { kind: "pr", title: "修复", summary: "修复内容" });
   assert.throws(() => parseDevelopmentResult({ ...result, role: "admin" }));
   assert.throws(() => parseDevelopmentResult({ ...result, changes: [{ path: "file.ts", content: null }] }));
   assert.throws(() => parseDevelopmentResult({ ...result, title: "" }));
   assert.throws(() => parseDevelopmentResult({ ...result, refusal: "缺少明确目标" }), /缺少明确目标/);
+  // 需求要先问清楚：交 issue，标题和正文可以为空；issue 不能夹带别的字段。
+  assert.deepEqual(
+    parseDevelopmentResult({ title: "", summary: "", refusal: "", issue: { title: "导出上限", body: "上限多少？" } }),
+    { kind: "issue", title: "导出上限", body: "上限多少？" },
+  );
+  assert.equal(parseDevelopmentResult({ ...result, issue: null }).kind, "pr");
+  assert.throws(() => parseDevelopmentResult({ ...result, issue: { title: "t", body: "b", labels: ["x"] } }));
+  assert.throws(() => parseDevelopmentResult({ ...result, issue: { title: "", body: "b" } }));
+});
+
+test("字数超上限时让模型压缩；“开始”必须是整条回复", () => {
+  const pr = (length: number) => ({ kind: "pr" as const, title: "t", summary: "字".repeat(length) });
+  assert.equal(lengthFeedback(pr(WRITING_LIMITS.prBody)), undefined);
+  assert.match(lengthFeedback(pr(WRITING_LIMITS.prBody + 1))!, /PR 正文有 1001 字，超过 1000 字的上限/);
+  assert.match(
+    lengthFeedback({ kind: "issue", title: "t", body: "字".repeat(WRITING_LIMITS.issueBody + 1) })!,
+    /issue 正文有 801 字/,
+  );
+  for (const text of ["开始", " 开始。", "开始开发", "开工！", "/start", "/START\n"])
+    assert.equal(isStartCommand(text), true, text);
+  for (const text of ["那就开始吧", "开始前先确认一下", "可以开始了吗？", "start", ""])
+    assert.equal(isStartCommand(text), false, text);
 });
 test("图文从可信回调读取身份，拒绝其他 Bot、私聊、空需求及过量图片", () => {
   const body = {
@@ -182,4 +207,20 @@ test("完成与拒绝消息去掉成员提及并转义用户标题", () => {
   assert(refused.includes("已拒绝"));
   assert(refused.includes("命中保护规则"));
   assert(!refused.includes("查看 PR"));
+  // 需求不清时开 issue：标题不说“已拒绝”，带 issue 链接和“开始”的说明。
+  const question = developmentMessage({
+    ...task,
+    status: "discussing",
+    pr_number: null,
+    issue_number: 7,
+    result: "需求有没定的地方，已开 issue #7 讨论。",
+  }).markdown.content;
+  assert(question.startsWith("**AI 开发任务需要先确认**"));
+  assert(!question.includes("已拒绝"));
+  assert(question.includes("[issue #7](https://github.com/o/r/issues/7)"));
+  assert(question.includes("回复“开始”"));
+  // issue 里“开始”后建好的 PR：带来源 issue。
+  const fromIssue = developmentMessage({ ...task, issue_number: 7 }).markdown.content;
+  assert(fromIssue.includes("> 来自 [issue #7](https://github.com/o/r/issues/7)"));
+  assert(fromIssue.includes("查看 PR"));
 });

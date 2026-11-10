@@ -102,10 +102,44 @@ export function enforceProtections(paths: string[], role: string, protections: P
         );
     }
 }
-// 改动由服务从工作区收集，模型只交 PR 标题和说明；refusal 非空时拒绝整个任务。
-export function parseDevelopmentResult(value: unknown): { title: string; summary: string } {
-  const v = strictObject(value, ["title", "summary", "refusal"], "开发结果");
+// 字数上限与 commit-pr Skill 里写的一致；超了在同一会话里让模型压缩一次。
+export const WRITING_LIMITS = { prBody: 1000, issueBody: 800, issueReply: 500 };
+
+export type DevelopmentResult =
+  | { kind: "pr"; title: string; summary: string }
+  | { kind: "issue"; title: string; body: string };
+
+// 改动由服务从工作区收集，模型只交 PR 标题和说明；需求要先问清楚时交 issue；refusal 非空时拒绝整个任务。
+export function parseDevelopmentResult(value: unknown): DevelopmentResult {
+  const v = strictObject(value, ["title", "summary", "refusal", "issue"], "开发结果");
   if (typeof v.refusal === "string" && v.refusal.trim())
     throw new DevelopmentError(requiredText(v.refusal, "拒绝原因", 1500), "refused");
-  return { title: requiredText(v.title, "PR 标题", 150), summary: requiredText(v.summary, "修改说明", 4000) };
+  if (v.issue !== undefined && v.issue !== null) {
+    const issue = strictObject(v.issue, ["title", "body"], "issue");
+    return {
+      kind: "issue",
+      title: requiredText(issue.title, "issue 标题", 120),
+      body: requiredText(issue.body, "issue 正文", 4000),
+    };
+  }
+  return {
+    kind: "pr",
+    title: requiredText(v.title, "PR 标题", 150),
+    summary: requiredText(v.summary, "修改说明", 4000),
+  };
+}
+
+// 超过字数上限时返回给模型的压缩要求；没超返回 undefined。
+export function lengthFeedback(result: DevelopmentResult) {
+  const [label, text, max] =
+    result.kind === "pr"
+      ? ["PR 正文", result.summary, WRITING_LIMITS.prBody]
+      : ["issue 正文", result.body, WRITING_LIMITS.issueBody];
+  if (text.length <= max) return undefined;
+  return `${label}有 ${text.length} 字，超过 ${max} 字的上限。按 commit-pr Skill 的写法压缩：只留读的人需要知道的，用大白话短句；不要改代码，重新输出完整的 JSON。`;
+}
+
+// issue 里的“开始”指令：整条回复只有这一句（可带标点），避免讨论里顺口提到“开始”就开工。
+export function isStartCommand(body: string) {
+  return /^\s*(开始|开始开发|开工|\/start)\s*[。.!！]?\s*$/i.test(body);
 }

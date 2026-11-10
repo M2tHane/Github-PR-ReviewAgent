@@ -30,6 +30,10 @@ export interface JobAcceptor {
     headSha: string,
   ): Promise<boolean>;
   cancelReview?(repositoryId: number, prNumber: number, eventAt?: string): Promise<void>;
+  acceptIssueComment?(
+    input: { repositoryId: number; issueNumber: number; commentId: number; login: string; body: string },
+    config: Pick<import("../../config/config.js").Config, "allowedRepositories" | "queueCapacity">,
+  ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; taskKind?: "develop" | "discuss" | "notice" }>;
   restoreRepositories?(repositoryIds: number[]): Promise<void>;
   check?(): Promise<void>;
   isStopping?(): boolean;

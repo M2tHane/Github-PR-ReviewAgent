@@ -269,6 +269,25 @@ node --env-file=<主目录>/.env eval/evaluate-m2.mjs work/m2-eval-snapshot <cas
 - 代价：卡住的会话最长占一个 Worker 槽位 1 小时，同一个 PR 的后续任务（新提交的 Review、回复复核）也要等它结束或被新提交取消；token 仍受预算限制。
 - 两个 eval 脚本的时限同步改为 1 小时，回归结果和线上时限一致。
 
+### 6. 合并后的真实模型回归
+
+2026-11-09，分支 `feat/integration`（三个分支合并，加旧事件判断和 1 小时时限），`tuzi` / `gpt-6.1-sol`，顺序运行，不发布 GitHub。命令：`node --env-file=<主目录>/.env eval/evaluate-m2.mjs work/m2-eval-snapshot --runs=3`，security、architecture 第一轮全是上游失败，又各跑 3 次；UX 样本 `evaluate-ux.mjs` 3 轮。日志在主目录 `work/eval-logs/merged-*`。
+
+| 样本 | 成功／运行 | 意见数 | 用时 |
+| --- | --- | --- | --- |
+| complex | 3/3 | 5, 5, 5 | 126–144 秒 |
+| java | 3/3 | 5, 5, 4 | 101–141 秒 |
+| security | 1/6 | 3 | 299 秒；5 次失败都是模型服务回 Upstream request failed，4 次在 1–3 秒内 |
+| architecture | 3/6 | 4, 3, 3 | 74–164 秒；3 次失败同上 |
+| memory | 3/3 | 1, 1, 1（都引用规则 v1） | 39–59 秒 |
+| small | 3/3 | 0 | 25–235 秒 |
+| orders-single | 0/3 | 1 处（同改前） | 2 次跑完、1 次上游失败 |
+| rule-reference | 0/3 | 规则意见没有绑定规则版本（同改前 6 次） | 2 次跑完、1 次上游失败 |
+
+- 这一轮没有超时。complex 比上一轮快很多（上一轮改前 0/8、改后 3/5），是模型服务当时的速度不同，不能说明 1 小时时限的作用；security 成功的那次用了 299 秒，在原来 300 秒时限下会刚好擦线。
+- 失败全部是模型服务直接返回的上游错误，不是审查本身出错。
+- 两个 UX 样本仍然不能起回归作用，原因同第 3 条。
+
 ### 调整后的验证
 
 2026-11-09，真实模型回归结束后在本 worktree 顺序运行，模型和 GitHub 全部用替身：

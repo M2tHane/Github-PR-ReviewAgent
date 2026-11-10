@@ -102,15 +102,22 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
       >
         <div className="drawer-head">
           <p className="eyebrow">项目设置</p>
-          <button type="button" className="secondary" disabled={busy} onClick={onClose} aria-label="关闭通知成员设置">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={onClose}
+            aria-label="关闭 GitHub 账号关联"
+          >
             关闭
           </button>
         </div>
         <div className="drawer-body notification-members">
-          <h2 id="notification-members-title">通知成员</h2>
+          <h2 id="notification-members-title">GitHub 账号关联</h2>
           <p className="notification-repository">{repo.fullName}</p>
           <p className="muted">
-            为这个项目关联 GitHub 账号和企业微信成员 ID。审查结果发布后，在群里 @ PR 作者并发送 PR 链接。
+            把企业微信成员 ID 和 GitHub 账号对应起来。需求 issue 里，只有提需求的人关联的 GitHub
+            账号回复“开始”才会开发。
           </p>
           {loading && <p role="status">正在加载成员…</p>}
           {error && !formOpen && !removing && (
@@ -130,11 +137,6 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
           )}
           {data && !loading && (
             <>
-              {!data.configured && (
-                <p className="health-notice">
-                  服务尚未接入企业微信消息推送。可以先保存成员关联，再由管理员配置群机器人。
-                </p>
-              )}
               <div className="subhead notification-member-toolbar">
                 <h3>
                   成员关联 <span className="muted">{data.members.length}</span>

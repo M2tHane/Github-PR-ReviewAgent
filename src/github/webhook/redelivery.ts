@@ -13,7 +13,6 @@ const MAX_PAGES = 10;
 // 每个事件最多重投 3 次，距离它最新一次尝试分别过去 5 分钟、30 分钟、2 小时才发下一次：
 // 短故障很快补上，长故障不会在几分钟内把次数用完。
 const RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
-export const REDELIVERY_INTERVAL_MS = 5 * 60_000;
 
 export interface RedeliveryPlan {
   // 要请求重投的事件，attemptId 是该事件最新一次尝试的 id；按时间从旧到新。

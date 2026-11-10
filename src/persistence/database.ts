@@ -19,9 +19,12 @@ import type { ReviewJob } from "../jobs/types.js";
 export type { JobAcceptor, ReviewReplyInput };
 
 // Keep the existing Database API while SQL is owned by business repositories.
+const poolSize = (concurrency: number) => 5 + concurrency * 3;
+
 export class Database extends JobRepository implements JobAcceptor {
   private readonly development = new DevelopmentStore(this.pool);
   readonly isDevelopmentPullRequest = this.development.isDevelopmentPullRequest.bind(this.development);
+  readonly acceptIssueComment = this.development.acceptIssueComment.bind(this.development);
   private readonly repositories = new RepositoryRepository(this.pool);
   private readonly publications = new ReviewPublicationRepository(this.pool);
   private readonly findings = new FindingRepository(this.pool);
@@ -39,7 +42,11 @@ export class Database extends JobRepository implements JobAcceptor {
     concurrency = 1,
     private readonly notificationChannel?: string,
   ) {
-    super(new Pool({ connectionString: url, max: 5 + concurrency * 3, connectionTimeoutMillis: 3000 }));
+    super(new Pool({ connectionString: url, max: poolSize(concurrency), connectionTimeoutMillis: 3000 }));
+  }
+  // 并发数在运行中修改时同步连接池上限；调小时已有连接用完归还后才回落。
+  resizePool(concurrency: number) {
+    this.pool.options.max = poolSize(concurrency);
   }
   async close() {
     await this.pool.end();

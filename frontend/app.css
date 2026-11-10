@@ -2293,3 +2293,97 @@ a.stat:hover {
   display: flex;
   margin: 12px 0;
 }
+
+/* ===== 服务设置 ===== */
+.service-settings-group {
+  margin: 0 0 1rem;
+  padding: 0.5rem 1.25rem 0.75rem;
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.service-settings-group legend {
+  padding: 0 0.4rem;
+  font-weight: 600;
+}
+.service-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem);
+  gap: 0.5rem 1.5rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.service-setting:last-child {
+  border-bottom: 0;
+}
+.service-setting-label p {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.service-setting-source {
+  color: var(--muted);
+}
+.service-setting-input {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+  justify-items: start;
+}
+.service-setting-input > input,
+.service-setting-input > select {
+  width: 100%;
+}
+.service-setting-number {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+.service-setting-number span {
+  flex: none;
+  min-width: 2.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.service-settings-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin: 1rem 0 1.5rem;
+}
+.service-settings-audit-title {
+  margin: 1.5rem 0 0.75rem;
+  font-size: 0.95rem;
+}
+.service-settings-audits td:nth-child(2) {
+  max-width: 16rem;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .service-setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* 窄屏下每条修改记录一张小卡片，标签取 data-label。 */
+  .service-settings-audits thead {
+    display: none;
+  }
+  .service-settings-audits tr {
+    display: block;
+    padding: 0.6rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+  }
+  .service-settings-audits td {
+    display: grid;
+    grid-template-columns: 3.5rem minmax(0, 1fr);
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+    border: 0;
+    max-width: none;
+    overflow-wrap: anywhere;
+  }
+  .service-settings-audits td::before {
+    content: attr(data-label);
+    color: var(--muted);
+  }
+}

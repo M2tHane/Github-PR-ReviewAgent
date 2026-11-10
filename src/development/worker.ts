@@ -231,9 +231,11 @@ export class DevelopmentWorker {
                 if (!notification) break;
                 try {
                   await send(async () => {
-                    if (!notification.reply_req_id || !notification.reply_expires_at)
+                    // issue 里“开始”的任务没有群消息可引用，直接发到绑定群；其余任务引用原消息回复。
+                    const push = !notification.reply_req_id && Boolean(notification.issue_number);
+                    if (!push && (!notification.reply_req_id || !notification.reply_expires_at))
                       throw new DevelopmentError("reply_context_missing");
-                    if (notification.reply_expires_at.getTime() <= Date.now())
+                    if (!push && notification.reply_expires_at!.getTime() <= Date.now())
                       throw new DevelopmentError("reply_window_expired");
                     const binding = await this.store.pool.query(
                       `SELECT 1 FROM development_settings s JOIN repositories r ON r.id=s.repository_id
@@ -251,10 +253,13 @@ export class DevelopmentWorker {
                       !this.config.allowedRepositories.has(notification.repository.toLowerCase())
                     )
                       throw new DevelopmentError("repository_or_binding_changed");
+                    const message = developmentMessage(notification);
+                    if (push)
+                      return bot.sendMessage(notification.chat_id, { ...message, chat_type: 2 } as typeof message);
                     return bot.replyStream(
-                      { headers: { req_id: notification.reply_req_id } },
+                      { headers: { req_id: notification.reply_req_id! } },
                       `result-${notification.id}`,
-                      developmentMessage(notification).markdown.content,
+                      message.markdown.content,
                       true,
                     );
                   });

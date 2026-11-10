@@ -5,11 +5,14 @@ import { dateText } from "../../format.js";
 import type { Repository } from "../../types.js";
 import type { DevelopmentSettings } from "../../../src/development/types.js";
 import type { AgentSessionRow } from "../../../src/admin/dto.js";
+import { NotificationMembers } from "./notification-members.js";
 
 type Task = {
   id: string;
   requester: string;
   status: string;
+  kind?: "develop" | "discuss" | "notice";
+  issue_number?: number | null;
   target_branch: string;
   branch: string;
   pr_number: number | null;
@@ -38,6 +41,7 @@ const statuses: Record<string, string> = {
   publishing: "创建 PR 中",
   succeeded: "已完成",
   refused: "已拒绝",
+  discussing: "已开 issue 讨论",
   failed: "失败",
   cancelled: "已取消",
   uncertain: "发布待核对",
@@ -122,8 +126,9 @@ export function useDevelopment(repo: Repository) {
 }
 type Development = ReturnType<typeof useDevelopment>;
 
-export function DevelopmentForm({ dev }: { dev: Development }) {
+export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Repository }) {
   const { settings, configured, error, notice, busy, update, save } = dev;
+  const [linking, setLinking] = useState(false);
   return (
     <div className="card repo-form">
       {error && (
@@ -240,6 +245,12 @@ export function DevelopmentForm({ dev }: { dev: Development }) {
               >
                 添加成员
               </button>
+              <p className="muted">
+                需求不清楚时 AI 会开 issue 讨论，只有提需求的人在 issue 里回复“开始”才会开发。按下面的关联认人：
+                <button type="button" className="text-button" onClick={() => setLinking(true)}>
+                  GitHub 账号关联
+                </button>
+              </p>
             </fieldset>
             <fieldset disabled={busy}>
               <legend>文件保护规则</legend>
@@ -322,6 +333,7 @@ export function DevelopmentForm({ dev }: { dev: Development }) {
           </form>
         </>
       )}
+      {linking && <NotificationMembers repo={repo} onClose={() => setLinking(false)} />}
     </div>
   );
 }
@@ -345,10 +357,22 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
       {!tasks.length && <p className="muted">还没有任务。在绑定群内 @Bot，发送文字，可在同一条消息中附图片。</p>}
       {tasks.map((task) => (
         <article className="card development-task" key={task.id}>
-          <strong>{statuses[task.status]}</strong>
+          <strong>
+            {task.kind === "discuss" ? "issue 讨论回复 · " : task.kind === "notice" ? "issue 提示 · " : ""}
+            {statuses[task.status] ?? task.status}
+          </strong>
           <p>
             {task.requester} · {dateText(task.created_at)}
           </p>
+          {task.issue_number && (
+            <a
+              href={`https://github.com/${repo.fullName}/issues/${task.issue_number}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              issue #{task.issue_number}
+            </a>
+          )}
           {task.result && <p>{task.result}</p>}
           {task.pr_number && (
             <a href={`https://github.com/${repo.fullName}/pull/${task.pr_number}`} target="_blank" rel="noreferrer">
@@ -372,6 +396,7 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
                   sent: "已发送",
                   failed: "失败",
                   uncertain: "结果待核对",
+                  skipped: "不发（只在 issue 里回复）",
                 } as Record<string, string>
               )[task.notification_status]
             }

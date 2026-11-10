@@ -39,7 +39,7 @@ Future PR Review
 每个任务启动一个 Pi agent 进程，单 Agent 完成审查：
 
 - 使用 Pi 内置的读取、搜索、bash 工具和 codegraph 插件理解代码；工作区没有 codegraph 索引时先建索引。
-- Java、安全、架构、团队规则冲突的检查方法写成服务自有的 Skills，Agent 按变更读取。
+- 安全、架构、团队规则冲突的检查方法写成服务自有的 Skills，Agent 按变更读取。
 - 加载服务自己的 AGENTS.md；仓库 AGENTS.md 只取目标分支版本作参考，PR 里的改动不生效。
 - 固定 PR Head SHA 创建临时 Workspace，避免分析过程中代码漂移。
 - Structured Output 约束模型结果，并在发布前进行结构、路径和状态校验。
@@ -205,6 +205,8 @@ SESSION_SECRET
 
 完整配置说明见 [.env.example](.env.example)。
 
+时限、定时任务间隔、数据保留天数、模型名称和思考强度、健康检查开关、并发与开发任务额度，也可以在管理端「设置 → 服务设置」修改，改完最多 30 秒所有实例生效，不用重启；`.env` 里的值是没人改过时的默认值。只有 `SERVICE_ADMINS`（GitHub 用户名，逗号分隔）里的人能改，其他维护者只读。密钥、地址和允许的仓库列表只能改 `.env`。详见 [服务设置](docs/reliability-security.md#服务设置)。
+
 配置智能机器人长连接，并在「仓库 → 选择仓库 → 群内开发」启用群绑定：审查结果成功发布到 GitHub 后，机器人直接向该仓库绑定群发送完成状态和 PR 链接，不 @成员，也不需要 GitHub／企微成员映射或 Message Push Webhook。发送失败不会重新执行 AI 审查。配置、迁移和通知状态见 [企业微信通知](docs/wecom-notifications.md)。
 
 ### 4. 初始化数据库
@@ -239,13 +241,15 @@ npm run dev
 建议权限：
 
 - Metadata: Read
-- Contents: Read
+- Contents: Read（启用群内开发时 Read & Write）
 - Pull requests: Read & Write
+- Issues: Read & Write（群内开发的需求 issue）
 
 订阅事件：
 
 - Pull requests
 - Pull request review comments
+- Issue comment（群内开发的需求 issue）
 
 Webhook：
 
@@ -255,7 +259,7 @@ https://<your-domain>/github/webhook
 
 GitHub App 安装范围应与 `GITHUB_ALLOWED_REPOSITORIES` 保持一致。
 
-服务停止中或数据库不可用时 Webhook 会失败，GitHub 不会自己重投。服务每 5 分钟查一次 GitHub 的投递记录并请求重投这些事件（`WEBHOOK_REDELIVERY_ENABLED`，默认开启，设为 `false` 关闭；不需要额外的 App 权限）。规则和限制见 [reliability-security §9](docs/reliability-security.md#9-漏投递补偿)。
+服务停止中或数据库不可用时 Webhook 会失败，GitHub 不会自己重投。服务每 5 分钟（管理端可改）查一次 GitHub 的投递记录并请求重投这些事件（`WEBHOOK_REDELIVERY_ENABLED`，默认开启，设为 `false` 关闭；不需要额外的 App 权限）。规则和限制见 [reliability-security §9](docs/reliability-security.md#9-漏投递补偿)。
 
 管理界面使用 GitHub OAuth，并通过 OAuth 权限与 CSRF 校验保护维护者操作。
 

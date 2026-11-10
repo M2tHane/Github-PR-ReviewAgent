@@ -66,6 +66,11 @@ async function setup() {
   const sha = git("rev-parse", "HEAD"),
     head = "c".repeat(40);
   const calls: string[] = [];
+  // issue 替身：记下开的 issue、发的评论和 PR 正文；thread 是 GitHub 上已有的评论。
+  const issues: Array<{ title: string; body: string }> = [],
+    issueComments: Array<{ number: number; body: string }> = [],
+    prBodies: string[] = [],
+    thread: Array<{ id: number; body: string; created_at: string; user: { login: string; type: string } }> = [];
   const github = {
     installationToken: async () => "token",
     developmentSnapshot: async () => ({ sha, tree: "b".repeat(40) }),
@@ -76,11 +81,27 @@ async function setup() {
     createDevelopmentBranch: async () => {
       calls.push("branch");
     },
-    createDevelopmentPullRequest: async () => {
+    createDevelopmentPullRequest: async (_token: string, _repository: string, input: { body: string }) => {
       calls.push("pr");
+      prBodies.push(input.body);
       return { number: 42, head: { sha: head } };
     },
     findDevelopmentPullRequest: async () => [] as any[],
+    createIssue: async (_token: string, _repository: string, input: { title: string; body: string }) => {
+      issues.push(input);
+      return { number: 7 };
+    },
+    createIssueComment: async (_token: string, _repository: string, number: number, body: string) => {
+      issueComments.push({ number, body });
+      return { id: issueComments.length };
+    },
+    getIssue: async (_token: string, _repository: string, number: number) => ({
+      number,
+      title: issues[0]?.title ?? "issue",
+      body: issues[0]?.body ?? "",
+      state: "open",
+    }),
+    listIssueComments: async () => thread,
   };
   const enqueue = async (user = "developer", messageId = randomUUID()) => {
     await store.accept(
@@ -143,6 +164,10 @@ async function setup() {
     head,
     calls,
     github,
+    issues,
+    issueComments,
+    prBodies,
+    thread,
     enqueue,
     agent,
     process,
@@ -1057,6 +1082,261 @@ test("开发进行中审查通知仍从同一智能机器人连接直接发绑�
     );
   } finally {
     complete();
+    await worker.stop();
+    await s.cleanup();
+  }
+});
+
+// ---------- 需求 issue ----------
+const issueAnswer = JSON.stringify({
+  title: "",
+  summary: "",
+  refusal: "",
+  issue: {
+    title: "订单导出加上限",
+    body: "**要做的事**：导出加条数上限。\n\n**需要你确认**：\n1. 上限多少？我倾向 1 万。",
+  },
+});
+// 一个替身同时扮演开发和讨论：讨论只读（没有 write 工具），回一句话；开发时按 answers 依次作答。
+function issueAgent(
+  s: Awaited<ReturnType<typeof setup>>,
+  answers: string[],
+  prompts: any[] = [],
+): typeof runAgentSession {
+  const develop = s.agent();
+  return async (input) => {
+    prompts.push(input.prompt);
+    const usage = { ...emptyUsage(), input: 10, output: 5, totalTokens: 15 };
+    if (!input.builtinTools?.includes("write"))
+      return {
+        text: JSON.stringify({ reply: "上限按 1 万做，超出时报错。没问题请回复“开始”。" }),
+        usage,
+        durationMs: 1,
+        model: "test",
+      };
+    const next = answers.shift() ?? answer();
+    if (next !== answer()) {
+      await writeFile(join(input.root, "src/normal.ts"), "export const value = 3;\n");
+      return { text: next, usage, durationMs: 1, model: "test" };
+    }
+    return develop(input);
+  };
+}
+const comment = (s: Awaited<ReturnType<typeof setup>>, id: number, login: string, body: string) =>
+  s.store.acceptIssueComment({ repositoryId: s.repoId, issueNumber: 7, commentId: id, login, body }, s.config);
+
+test("需求不清楚时开 issue、不提交改动；群里回复带 issue 链接和“开始”的说明", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    await s.process(issueAgent(s, [issueAnswer]))(task, new AbortController().signal);
+    const saved = await s.getTask(task.id);
+    assert.equal(saved.status, "discussing");
+    assert.equal(saved.issue_number, 7);
+    assert.equal(saved.title, "订单导出加上限");
+    assert.deepEqual(s.calls, [], "不提交、不建分支和 PR");
+    assert.equal(s.issues[0]!.title, "订单导出加上限");
+    assert.match(
+      s.issues[0]!.body,
+      /需要你确认[\s\S]*---\n确认没问题后，请提需求的人回复“开始”。（提需求的人还没有关联 GitHub 账号/,
+    );
+    const issue = (
+      await s.database.pool.query("SELECT status,origin_task_id FROM development_issues WHERE repository_id=$1", [
+        s.repoId,
+      ])
+    ).rows[0];
+    assert.deepEqual(issue, { status: "discussing", origin_task_id: task.id });
+    assert.equal(saved.notification_status, "pending", "开 issue 的结果照常回复群里");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("issue 讨论：评论排讨论回复，只有提需求的人说“开始”才开发；PR 关闭 issue 并贴回链接", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    const prompts: any[] = [];
+    // 同一个替身：第一次开发时开 issue，之后开发正常改代码。
+    const model = issueAgent(s, [issueAnswer], prompts);
+    const run = (task: any) => s.process(model)(task, new AbortController().signal);
+    const origin = await s.enqueue();
+    await run(origin);
+    await s.database.pool.query(
+      "INSERT INTO repository_notification_members(repository_id,github_login,wecom_userid) VALUES($1,'alice','developer')",
+      [s.repoId],
+    );
+    // 普通评论：排讨论回复；重投的同一条评论不重复排。
+    assert.deepEqual(await comment(s, 101, "bob", "上限多少合适？"), { kind: "accepted", taskKind: "discuss" });
+    assert.deepEqual(await comment(s, 101, "bob", "上限多少合适？"), { kind: "duplicate" });
+    s.thread.push({
+      id: 101,
+      body: "上限多少合适？",
+      created_at: new Date().toISOString(),
+      user: { login: "bob", type: "User" },
+    });
+    const discussion = (await s.store.claim(s.botId))!;
+    assert.equal(discussion.kind, "discuss");
+    await run(discussion);
+    assert.equal((await s.getTask(discussion.id)).status, "succeeded");
+    assert.equal((await s.getTask(discussion.id)).notification_status, "skipped", "讨论回复不发群");
+    assert.deepEqual(s.issueComments.at(-1), { number: 7, body: "上限按 1 万做，超出时报错。没问题请回复“开始”。" });
+    assert.equal(prompts.at(-1).originalRequest, "修改代码");
+    assert.equal(prompts.at(-1).issue.comments[0].author, "bob");
+    assert.deepEqual(prompts.at(-1).requesterLogins, ["alice"]);
+    // 别人说“开始”不算数，回一条提示。
+    assert.deepEqual(await comment(s, 102, "bob", "开始"), { kind: "accepted", taskKind: "notice" });
+    await run((await s.store.claim(s.botId))!);
+    assert.equal(s.issueComments.at(-1)!.body, "只有提需求的 @alice 回复“开始”才会开工。");
+    // 讨论里顺口提到“开始”不算指令。
+    assert.equal((await comment(s, 103, "Alice", "那就开始吧，上限 1 万")).taskKind, "discuss");
+    await s.database.pool.query("DELETE FROM development_tasks WHERE message_id='issue-comment:103'");
+    // 提需求的人（GitHub 账号不区分大小写）说“开始”：排开发任务，issue 进入开发中；这期间的评论回提示。
+    assert.deepEqual(await comment(s, 104, "Alice", "开始！"), { kind: "accepted", taskKind: "develop" });
+    assert.equal((await comment(s, 105, "bob", "再加个导出日志")).taskKind, "notice");
+    const develop = (await s.store.claim(s.botId))!;
+    assert.equal(develop.kind, "develop");
+    assert.equal(develop.issue_number, 7);
+    await run(develop);
+    const done = await s.getTask(develop.id);
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.pr_number, 42);
+    assert.equal(done.notification_status, "pending", "开发结果照常通知群里");
+    assert.match(s.prBodies.at(-1)!, /\n\nCloses #7$/);
+    assert.deepEqual(s.issueComments.at(-1), { number: 7, body: "PR 建好了：#42" });
+    const opened = await s.getTask(origin.id);
+    assert.deepEqual(
+      [opened.status, opened.result],
+      ["succeeded", "issue #7 讨论后已建 PR #42。"],
+      "开 issue 的任务不再显示讨论中",
+    );
+    assert.equal(prompts.at(-1).task, "修改代码");
+    assert.equal(prompts.at(-1).issue.title, "订单导出加上限");
+    // PR 建好后 issue 不再处理新评论。
+    assert.deepEqual(await comment(s, 106, "alice", "开始"), { kind: "ignored" });
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("issue 里开始后仍有没定的地方：把问题贴成评论、回到讨论中；开发失败也贴回原因", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    await s.process(issueAgent(s, [issueAnswer]))(await s.enqueue(), new AbortController().signal);
+    await s.database.pool.query(
+      "INSERT INTO repository_notification_members(repository_id,github_login,wecom_userid) VALUES($1,'alice','developer')",
+      [s.repoId],
+    );
+    await comment(s, 201, "alice", "开始");
+    const again = (await s.store.claim(s.botId))!;
+    await s.process(issueAgent(s, [issueAnswer]))(again, new AbortController().signal);
+    assert.equal((await s.getTask(again.id)).status, "discussing");
+    assert.equal(s.issues.length, 1, "不再开新 issue");
+    assert.match(s.issueComments.at(-1)!.body, /需要你确认/);
+    assert.deepEqual(s.calls, []);
+    const status = async () =>
+      (await s.database.pool.query("SELECT status FROM development_issues WHERE repository_id=$1", [s.repoId])).rows[0]
+        .status;
+    assert.equal(await status(), "discussing");
+    // 命中保护规则被拒绝：原因贴回 issue，可以调整后再说“开始”。
+    await comment(s, 202, "alice", "开始");
+    const refused = (await s.store.claim(s.botId))!;
+    await s.process(s.agent("src/protected.ts"))(refused, new AbortController().signal);
+    assert.equal((await s.getTask(refused.id)).status, "refused");
+    assert.match(s.issueComments.at(-1)!.body, /^这次没有建 PR：已拒绝整个任务[\s\S]*再回复“开始”。$/);
+    assert.equal(await status(), "discussing");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("领取：issue 讨论不等同项目的开发任务，同一个 issue 的讨论一次一条，后面还有新评论时合并回复", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    await s.process(issueAgent(s, [issueAnswer]))(await s.enqueue(), new AbortController().signal);
+    const developing = await s.enqueue();
+    assert.equal(developing.kind, "develop");
+    await comment(s, 301, "bob", "第一条");
+    await comment(s, 302, "bob", "第二条");
+    const first = (await s.store.claim(s.botId))!;
+    assert.equal(first.kind, "discuss", "同项目有开发任务在跑，讨论照样领取");
+    assert.equal(await s.store.claim(s.botId), undefined, "同一个 issue 的讨论不并行");
+    await s.process(issueAgent(s, []))(first, new AbortController().signal);
+    const merged = await s.getTask(first.id);
+    assert.equal(merged.status, "cancelled");
+    assert.match(merged.result, /合并到下一条/);
+    // 服务中断：开发中的 issue 回到讨论中。
+    await s.database.pool.query("UPDATE development_issues SET status='developing' WHERE repository_id=$1", [s.repoId]);
+    await s.store.recover(s.botId);
+    assert.equal(
+      (await s.database.pool.query("SELECT status FROM development_issues WHERE repository_id=$1", [s.repoId])).rows[0]
+        .status,
+      "discussing",
+    );
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("issue 里开始的任务没有群消息可引用：结果直接发到绑定群；讨论回复不发群", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  let bot: InstanceType<typeof WSClient> | undefined;
+  const replies: any[] = [],
+    messages: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { errcode: 0 };
+  });
+  t.mock.method(WSClient.prototype, "sendMessage", async (...args: any[]) => {
+    messages.push(args);
+    return { errcode: 0 };
+  });
+  // 先走一遍开 issue，再由提需求的人说“开始”，并排一条讨论回复。
+  await s.process(issueAgent(s, [issueAnswer]))(await s.enqueue(), new AbortController().signal);
+  await s.database.pool.query("UPDATE development_tasks SET notification_status='sent' WHERE repository_id=$1", [
+    s.repoId,
+  ]);
+  await s.database.pool.query(
+    "INSERT INTO repository_notification_members(repository_id,github_login,wecom_userid) VALUES($1,'alice','developer')",
+    [s.repoId],
+  );
+  await comment(s, 401, "bob", "补充一下");
+  await comment(s, 402, "alice", "开始");
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    if (task.kind === "develop") await s.store.checkpoint(task, { title: "feat: 导出加上限", prNumber: 56 });
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  try {
+    worker.start();
+    await waitFor(async () => messages.length === 1, 10000);
+    assert.equal(messages[0][0], s.settings.chatId);
+    assert.equal(messages[0][1].chat_type, 2);
+    assert.match(messages[0][1].markdown.content, /^\*\*AI 开发任务已完成[\s\S]*来自 \[issue #7\]/);
+    assert.equal(replies.length, 0);
+    await waitFor(
+      async () =>
+        (
+          await s.database.pool.query(
+            "SELECT count(*)::int n FROM development_tasks WHERE repository_id=$1 AND notification_status='skipped' AND status='succeeded'",
+            [s.repoId],
+          )
+        ).rows[0].n === 1,
+    );
+  } finally {
     await worker.stop();
     await s.cleanup();
   }

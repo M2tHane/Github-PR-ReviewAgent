@@ -38,7 +38,11 @@ export type TaskStatus =
   | "refused"
   | "failed"
   | "cancelled"
-  | "uncertain";
+  | "uncertain"
+  // 需求不清楚，已开 issue（或在 issue 里补充提问）讨论。
+  | "discussing";
+// develop：开发并提 PR；discuss：在 issue 里回复讨论；notice：在 issue 里发一条固定提示，不调用模型。
+export type TaskKind = "develop" | "discuss" | "notice";
 export interface DevelopmentTask {
   id: string;
   owner_token: string;
@@ -63,6 +67,8 @@ export interface DevelopmentTask {
   pr_number: number | null;
   title: string | null;
   result: string | null;
+  kind: TaskKind;
+  issue_number: number | null;
 }
 export class DevelopmentError extends Error {
   constructor(

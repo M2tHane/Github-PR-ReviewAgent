@@ -274,6 +274,48 @@ export class GitHubClient {
     return pr;
   }
 
+  // 开发需求的讨论 issue：开 issue、发评论、读正文和全部评论。需要 App 的 Issues 读写权限。
+  async createIssue(token: string, repository: string, input: { title: string; body: string }, signal: AbortSignal) {
+    const issue = await this.request<{ number: number }>(token, `/repos/${repository}/issues`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify(input),
+    });
+    if (!Number.isSafeInteger(issue.number) || issue.number <= 0) throw new Error("issue 创建响应无效");
+    return issue;
+  }
+
+  createIssueComment(token: string, repository: string, number: number, body: string, signal: AbortSignal) {
+    return this.request<{ id: number }>(token, `/repos/${repository}/issues/${number}/comments`, {
+      method: "POST",
+      signal,
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  getIssue(token: string, repository: string, number: number, signal: AbortSignal) {
+    return this.request<{ number: number; title: string; body: string | null; state: string }>(
+      token,
+      `/repos/${repository}/issues/${number}`,
+      { signal },
+    );
+  }
+
+  async listIssueComments(token: string, repository: string, number: number, signal: AbortSignal) {
+    const comments: Array<{ id: number; body: string; created_at: string; user: { login: string; type: string } }> = [];
+    // 最多读 10 页（1000 条）；讨论再长也只需要最近的内容。
+    for (let page = 1; page <= 10; page++) {
+      const batch = await this.request<typeof comments>(
+        token,
+        `/repos/${repository}/issues/${number}/comments?per_page=100&page=${page}`,
+        { signal },
+      );
+      comments.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return comments;
+  }
+
   async findDevelopmentPullRequest(
     token: string,
     repository: string,
