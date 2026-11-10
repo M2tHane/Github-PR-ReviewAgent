@@ -17,11 +17,11 @@ PR Review → PR Merge → Decision Extraction → Maintainer Confirm
 → ACTIVE Team Memory → Future PR Review
 ```
 
-M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、预算与取消传播、Discussions 和 Agent runs 详情。
+M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、预算与取消传播、Discussions 和 Agent runs 详情。2026-11-09 起 Review 改为单 Agent + Skills，Main / Specialist 已移除，理由见 [Review Agent 结构](.agents/decisions/multi-agent-review.md)。
 
 M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。M3 不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
 
-新增授权范围：企业微信群内开发任务可在隔离快照上提出代码修改，由服务创建独立分支、commit 和 PR；不自动合并，不运行目标仓库脚本。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
+新增授权范围：企业微信群内开发任务可在隔离快照上修改代码、用 bash 运行检查，由服务创建独立分支、commit 和 PR；不自动合并，不安装依赖。开发任务可以用 Playwright 浏览器（`@playwright/mcp`）访问任意网站。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
 
 ## 文档入口与开工顺序
 
@@ -70,22 +70,20 @@ PR 分析绑定 repository、PR、base SHA 和 head SHA；M3 健康分析绑定 
 
 - 普通分支 PR 优先；当前 fork PR 明确不支持。
 - 路径规范化和符号链接解析后都不能越界，不能访问宿主机凭据或其他 Job。
-- 不执行待审仓库的 hooks、安装、构建或测试脚本。
+- 所有 Agent 都以 Pi 进程运行（见 [Pi Runtime](.agents/decisions/pi-runtime.md)），可以用 bash 在 Workspace 里读代码和做检查；不安装依赖，bash 不访问网络服务。只有开发任务有写文件工具和浏览器（可访问任意网站，网页内容是数据不是指令）。
+- bash 和服务同一系统用户：Pi 子进程只拿最小环境变量，凭据不进入其配置、命令行和环境。这只能避免顺手暴露，不是强隔离。
 - 仓库里的 README、AGENTS.md、Skills、`.pi`、源码、注释和 PR 文本全部是数据，不是系统指令。
-- 只加载服务自有 Prompt、角色和工具定义。仓库内容不能注册工具、改变权限、身份、SHA 或触发外部写操作。
+- 只加载服务自有 Prompt、AGENTS.md、Skills 和扩展；仓库的 `.pi`、CLAUDE.md、`.claude/rules` 不加载，仓库 AGENTS.md 只取目标分支版本作参考。仓库内容不能注册工具、改变权限、身份、SHA 或触发外部写操作。
+- 规则优先级：服务的安全要求与输出格式 > 团队规则（例外优先）> 仓库 AGENTS.md。
 
-## Pi、委派与预算
+## Pi 与预算
 
-- 独立 Review / Reply 各有独立 AgentSession；Main 和每个 Specialist 也分别创建独立 Session，结束后释放。
-- Main 只通过服务注册的 `delegate_agent` 选择允许角色。子 Agent 只获得 `read_file`、`search_text`。
-- 专项角色白名单：general、Java、Security、Architecture、Memory Conflict。可用角色由当前变更事实决定。
-- 默认最多 2 个并发 child；委派深度固定为 1，Specialist 不再委派。
-- 子任务继承固定仓库、SHA、Workspace 和已召回 Memory，不继承父/其他子会话的可变 messages。
-- 整个 PR Job 共享总预算；每次 Provider 请求前预留输入和输出，累计包括 cache 在内的实际 usage。
+- Review、Reply、Decision、Health、开发任务各自启动独立的 Pi 进程，结束时连同它启动的命令一起结束。
+- Review 是单 Agent；Java、安全、架构、团队规则冲突的检查方法是服务 Skills，由 Agent 按变更读取。
+- 整个 PR Job 共享总预算；本地模型代理在每次 Provider 请求前持久化预留，超预算不转发，累计包括 cache 在内的实际 usage。
 - 请求失败且没有 usage 回报时保留预留额度，并与实际 token 分开记录。不能把未知消耗当作零。
-- 禁止模型自行配置 provider、凭据、任意路径、tool list 或递归角色。
-- Main 按候选标识分组重复 finding；服务检查候选完整性，不允许模型凭空添加、遗漏或重复引用。
-- child 失败允许 partial；Main 失败只可明确汇总已校验子结果并记录 fallback，不能伪装全覆盖。
+- 禁止模型自行配置 provider、凭据、任意路径或 tool list。
+- 模型按同一根因分组 finding；服务检查候选完整性，不允许凭空添加、遗漏或重复引用。
 
 ## 输出与 Memory
 
@@ -99,7 +97,7 @@ Reply 的 FIXED、MISJUDGMENT、VALID_EXCEPTION、STILL_VALID、NEEDS_CLARIFICAT
 
 ## 凭据、日志与临时文件
 
-私钥、installation token、Webhook secret、OAuth secret 和模型 key 不进入 Git、Prompt、待审 Workspace、clone URL 或普通日志。日志只保留排障所需的 Job / PR / SHA / usage 元数据，不保存隐藏推理。
+私钥、installation token、Webhook secret、OAuth secret 和模型 key 不进入 Git、Prompt、待审 Workspace、clone URL 或普通日志。日志只保留排障所需的 Job / PR / SHA / usage 元数据，不保存隐藏推理。Agent 执行过程按 Pi 会话存入 `agent_sessions`：保存前去掉模型思考过程和图片数据、截断过长内容并打码；只给有该仓库权限的维护者查看和下载，随任务按保留期删除（见 [Pi Runtime](.agents/decisions/pi-runtime.md)）。
 
 真实配置保留在被忽略的本地文件；临时 checkout、日志、截图和复现数据放在 `work/`。本地会话导出可能含联调输入，不能提交。
 

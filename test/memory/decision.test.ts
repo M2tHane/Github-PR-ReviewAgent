@@ -11,6 +11,7 @@ import {
   proposalFingerprint,
 } from "../../src/memory/decision.processor.js";
 import { emptyUsage, TimeoutError } from "../../src/review/agent.js";
+import type { PiSessionInput } from "../../src/pi/session.js";
 import type { GitHubClient } from "../../src/github/client.js";
 import type { Database } from "../../src/persistence/database.js";
 import type { Config } from "../../src/config/config.js";
@@ -157,13 +158,14 @@ test("Decision Extractor 走统一会话入口：使用仓库预算、只给只�
       body: "",
       status: "running",
     } as ReviewJob;
-    let received: Record<string, unknown> | undefined;
+    let received: PiSessionInput | undefined;
     await createDecisionProcessor(config, database, github, async (input) => {
       received = input;
       return { text: "[]", durationMs: 1, model: "m", usage: emptyUsage() };
     })(target);
     assert.equal(received?.budgetTokens, 1234);
-    assert.equal(received?.tools, undefined, "默认只有 read_file / search_text");
+    assert.equal(received?.builtinTools, undefined, "默认只读：Pi 的读取、搜索和 bash");
+    assert.equal(received?.bridge, undefined, "不能写入文件");
     assert.match(String(received?.systemPrompt), /Decision Extractor/);
     assert.deepEqual(inserted, [[]]);
     const timedOut = { ...target };

@@ -17,6 +17,8 @@ import { createNotificationMembersRoute } from "./notification-members.routes.js
 
 import { createRuleImportRoute } from "./rule-import.routes.js";
 import { createDevelopmentRoute } from "./development.routes.js";
+import { createAgentSessionsRoute } from "./agent-sessions.routes.js";
+import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 
 export interface AdminStores {
   sessions: SessionStore<Session>;
@@ -39,6 +41,7 @@ export function createAdminHandler(
   const ruleImportRoute = createRuleImportRoute(database, authorize);
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
+  const agentSessionsRoute = createAgentSessionsRoute(config, database, authorize);
   const configured = Boolean(
     config.githubClientId &&
       config.githubClientSecret &&
@@ -173,6 +176,9 @@ export function createAdminHandler(
         if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
         const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development$/);
         if (developmentMatch) return await developmentRoute(request, response, Number(developmentMatch[1]));
+        const sessionMatch = url.pathname.match(/^\/api\/agent-sessions\/([^/]+?)(\/raw)?$/);
+        if (sessionMatch)
+          return await agentSessionsRoute(request, response, sessionMatch[1]!, Boolean(sessionMatch[2]));
         const membersMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/notification-members(?:\/([^/]+))?$/);
         if (membersMatch) return notificationMembersRoute(request, response, Number(membersMatch[1]), membersMatch[2]);
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
@@ -191,16 +197,7 @@ export function createAdminHandler(
           const access = await authorize(request, response, Number(repositoryMatch[1]));
           if (!access) return;
           const value = (await body(request)) as Partial<
-            Pick<
-              Repository,
-              | "enabled"
-              | "includePaths"
-              | "excludePaths"
-              | "outputLanguage"
-              | "budgetTokens"
-              | "reviewMode"
-              | "maxDelegates"
-            >
+            Pick<Repository, "enabled" | "includePaths" | "excludePaths" | "outputLanguage" | "budgetTokens">
           >;
           if (
             (value.enabled !== undefined && typeof value.enabled !== "boolean") ||
@@ -210,14 +207,11 @@ export function createAdminHandler(
               (!Array.isArray(value.excludePaths) || !value.excludePaths.every((x) => typeof x === "string"))) ||
             (value.outputLanguage !== undefined && typeof value.outputLanguage !== "string") ||
             (value.budgetTokens !== undefined &&
-              (!Number.isSafeInteger(value.budgetTokens) || value.budgetTokens! <= 0)) ||
-            (value.reviewMode !== undefined && value.reviewMode !== "single" && value.reviewMode !== "auto") ||
-            (value.maxDelegates !== undefined &&
-              (!Number.isSafeInteger(value.maxDelegates) || value.maxDelegates! < 0 || value.maxDelegates! > 4))
+              (!Number.isSafeInteger(value.budgetTokens) || value.budgetTokens! <= 0))
           )
             return json(response, 422, { error: "仓库配置无效" });
           const updated = await database.pool.query(
-            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),review_mode=COALESCE($7,review_mode),max_delegates=COALESCE($8,max_delegates),updated_at=now() WHERE id=$1 RETURNING *",
+            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),updated_at=now() WHERE id=$1 RETURNING *",
             [
               access.repository.id,
               value.enabled ?? null,
@@ -225,8 +219,6 @@ export function createAdminHandler(
               value.excludePaths ?? null,
               value.outputLanguage ?? null,
               value.budgetTokens ?? null,
-              value.reviewMode ?? null,
-              value.maxDelegates ?? null,
             ],
           );
           if (value.enabled === false) await database.cancelRepository(access.repository.id);
@@ -253,7 +245,16 @@ export function createAdminHandler(
             "SELECT id,status FROM review_findings WHERE job_id=$1 ORDER BY id",
             [jobMatch[1]],
           );
-          return json(response, 200, { ...result.rows[0], agent_runs: runs.rows, finding_statuses: statuses.rows });
+          const agentSessions = await database.pool.query(
+            `SELECT ${SESSION_SUMMARY("s")} summary FROM agent_sessions s WHERE s.job_id=$1 ORDER BY s.started_at`,
+            [jobMatch[1]],
+          );
+          return json(response, 200, {
+            ...result.rows[0],
+            agent_runs: runs.rows,
+            agent_sessions: agentSessions.rows.map((row) => row.summary),
+            finding_statuses: statuses.rows,
+          });
         }
         if (request.method === "GET" && url.pathname === "/api/findings")
           return findingsRoute(request, response, url, user);

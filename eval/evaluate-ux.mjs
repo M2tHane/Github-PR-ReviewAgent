@@ -7,9 +7,8 @@ import { resolve } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { Database } from "../dist/src/persistence/database.js";
 import { MemoryService } from "../dist/src/memory/memory.service.js";
-import { withWorkspace } from "../dist/src/workspace/workspace.js";
+import { readBaseFile, withWorkspace } from "../dist/src/workspace/workspace.js";
 import { runAgentReview } from "../dist/src/review/agent.js";
-import { orchestrateReview } from "../dist/src/review/orchestration.js";
 import { validateMemoryReferences } from "../dist/src/review/review.processor.js";
 import { diffLines, normalizeFindingLocation } from "../dist/src/review/finding.js";
 import { inlineBody, reviewBody, validateDisplay } from "../dist/src/review/presentation.js";
@@ -34,15 +33,6 @@ const cases = [
   {
     name: "orders-single",
     prNumber: 8,
-    mode: "single",
-    clone: resolve("work/e2e-order-api"),
-    base: "3e02a7c59b073547da3c466987d4d8570df31484",
-    head: "0ebd1cc3ca2ac1e4b42bfe2cee9a66a89e8b2713",
-  },
-  {
-    name: "orders-main",
-    prNumber: 8,
-    mode: "main",
     clone: resolve("work/e2e-order-api"),
     base: "3e02a7c59b073547da3c466987d4d8570df31484",
     head: "0ebd1cc3ca2ac1e4b42bfe2cee9a66a89e8b2713",
@@ -50,7 +40,6 @@ const cases = [
   {
     name: "rule-reference",
     prNumber: 9,
-    mode: "single",
     clone: resolve("work/e2e-order-followup"),
     base: "f8d7f03ce2ec5c761b3416fd11992d259b96043b",
     head: "69e69bdf16dd59a6235307deb213e91a13477a08",
@@ -60,7 +49,8 @@ const report = {
   createdAt: new Date().toISOString(),
   repository,
   budgetTokens: 160_000,
-  note: "固定 SHA 的本地真实模型验证；Main 样本显式运行编排，不代表该小 PR 自动触发。没有 Webhook 或 GitHub 发布。",
+  runtime: "pi-single-agent",
+  note: "固定 SHA 的本地真实模型验证（单 Agent + Skills）。没有 Webhook 或 GitHub 发布。",
   cases: [],
 };
 const database = new Database(process.env.DATABASE_URL),
@@ -68,7 +58,7 @@ const database = new Database(process.env.DATABASE_URL),
 await mkdir("work", { recursive: true });
 try {
   for (const sample of cases.filter((sample) => !process.argv[2] || sample.name === process.argv[2])) {
-    const entry = { name: sample.name, mode: sample.mode, baseSha: sample.base, headSha: sample.head, agentRuns: [] };
+    const entry = { name: sample.name, baseSha: sample.base, headSha: sample.head };
     report.cases.push(entry);
     try {
       await withWorkspace(sample.clone, "", sample.base, sample.head, async (root) => {
@@ -105,47 +95,22 @@ try {
           cloneUrl: sample.clone,
         };
         entry.jobId = job.id;
-        const runs = {
-          async startAgentRun(jobId, role, budget, timeoutMs, parentRunId) {
-            const id = randomUUID();
-            entry.agentRuns.push({ id, jobId, role, budget, timeoutMs, parentRunId });
-            return id;
-          },
-          async finishAgentRun(id, value) {
-            Object.assign(
-              entry.agentRuns.find((run) => run.id === id),
-              value,
-            );
-          },
-        };
-        const run =
-          sample.mode === "main"
-            ? await orchestrateReview({
-                config,
-                database: runs,
-                job,
-                root,
-                files,
-                memories: recalled,
-                budgetTokens: report.budgetTokens,
-                maxDelegates: 2,
-                signal: new AbortController().signal,
-              })
-            : await runAgentReview({
-                root,
-                provider: config.modelProvider,
-                modelName: config.modelName,
-                apiKey: config.modelApiKey,
-                endpoint: config.modelEndpoint,
-                timeoutMs: config.agentTimeoutMs,
-                budgetTokens: report.budgetTokens,
-                title: job.title,
-                body: job.body,
-                baseSha: sample.base,
-                headSha: sample.head,
-                changedFiles: files,
-                memories: recalled,
-              });
+        const run = await runAgentReview({
+          root,
+          provider: config.modelProvider,
+          modelName: config.modelName,
+          apiKey: config.modelApiKey,
+          endpoint: config.modelEndpoint,
+          timeoutMs: config.agentTimeoutMs,
+          budgetTokens: report.budgetTokens,
+          title: job.title,
+          body: job.body,
+          baseSha: sample.base,
+          headSha: sample.head,
+          changedFiles: files,
+          memories: recalled,
+          repositoryInstructions: await readBaseFile(root, sample.base, "AGENTS.md"),
+        });
         Object.assign(entry, run);
         validateMemoryReferences(run.result, recalled, repositoryId);
         const allowed = new Set(files.map((file) => file.filename)),
@@ -157,8 +122,7 @@ try {
             normalizeFindingLocation(location, lines);
           }
         }
-        entry.reviewBody = reviewBody(job, run.result, run.orchestration?.partial ?? false);
-        if (run.orchestration?.partial) assert.match(entry.reviewBody, /部分检查未完成|本次审查未完成/);
+        entry.reviewBody = reviewBody(job, run.result);
         entry.inlineBodies = run.result.findings.map((finding, index) =>
           inlineBody(job, { ...finding, id: `local-${index}` }),
         );
@@ -201,7 +165,6 @@ try {
         durationMs: entry.durationMs,
         usage: entry.usage,
         findings: entry.result?.findings.length,
-        partial: entry.orchestration?.partial ?? false,
       }),
     );
   }

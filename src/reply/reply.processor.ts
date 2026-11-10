@@ -3,11 +3,13 @@ import type { Database } from "../persistence/database.js";
 import { GitHubApiError, GitHubClient } from "../github/client.js";
 import type { MemoryService } from "../memory/memory.service.js";
 import { runAgentSession, TimeoutError, type AgentUsage } from "../review/agent.js";
+import { DEFAULT_BUDGET_TOKENS } from "../pi/types.js";
 import type { MemoryRecord } from "../memory/types.js";
 import type { ReplyResult } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 import type { StoredFinding } from "../review/types.js";
 import { readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
+import type { PiSessionInput } from "../pi/session.js";
 import { log } from "../logging.js";
 import { parseModelJson } from "../shared/model-json.js";
 import { remainingBudget } from "../review/review.processor.js";
@@ -100,6 +102,7 @@ async function runReplyAgent(
   binding: Parameters<typeof parseReplyResult>[1],
   budgetTokens: number,
   signal: AbortSignal,
+  onSession?: PiSessionInput["onSession"],
 ) {
   const run = await runAgentSession({
     root,
@@ -112,6 +115,7 @@ async function runReplyAgent(
     signal,
     systemPrompt: SYSTEM_PROMPT,
     prompt: input,
+    onSession,
   });
   try {
     return { ...run, result: parseReplyResult(run.text, binding) };
@@ -209,8 +213,13 @@ export function createReplyProcessor(
           memories: relevantMemories,
         };
         controller.signal.throwIfAborted();
-        const budgetTokens = await remainingBudget(database, job.id, repositoryConfig?.budgetTokens ?? 20_000);
+        const budgetTokens = await remainingBudget(
+          database,
+          job.id,
+          repositoryConfig?.budgetTokens ?? DEFAULT_BUDGET_TOKENS,
+        );
         runId = await database.startAgentRun(job.id, "reply_handler", budgetTokens, config.agentTimeoutMs);
+        const agentRunId = runId;
         const run = await execute(
           config,
           root,
@@ -228,6 +237,7 @@ export function createReplyProcessor(
           binding,
           budgetTokens,
           controller.signal,
+          (session) => database.saveAgentSession({ jobId: job.id, agentRunId, role: "reply_handler" }, session),
         );
         result = run.result;
         agentUsage = run.usage;

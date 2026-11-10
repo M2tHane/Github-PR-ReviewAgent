@@ -3,7 +3,7 @@ import test from "node:test";
 import { createCipheriv, randomBytes } from "node:crypto";
 import {
   enforceProtections,
-  parseChanges,
+  parseDevelopmentResult,
   parseSettings,
   safePath,
   validBranch,
@@ -64,12 +64,13 @@ test("管理输入拒绝身份伪造、重复成员、无管理员、无效路�
     "src/billing/**",
   );
 });
-test("模型不得夹带身份、伪造 URL 或重复改动，删除以 null 表示", () => {
-  const result = { title: "修复", summary: "修复内容", changes: [{ path: "file.ts", content: null }], refusal: "" };
-  assert.equal(parseChanges(result).changes[0].content, null);
-  assert.throws(() => parseChanges({ ...result, role: "admin" }));
-  assert.throws(() => parseChanges({ ...result, changes: [...result.changes, ...result.changes] }));
-  assert.throws(() => parseChanges({ ...result, refusal: "缺少明确目标" }), /缺少明确目标/);
+test("开发结果只含标题和说明，不得夹带身份或改动，refusal 拒绝整个任务", () => {
+  const result = { title: "修复", summary: "修复内容", refusal: "" };
+  assert.deepEqual(parseDevelopmentResult(result), { title: "修复", summary: "修复内容" });
+  assert.throws(() => parseDevelopmentResult({ ...result, role: "admin" }));
+  assert.throws(() => parseDevelopmentResult({ ...result, changes: [{ path: "file.ts", content: null }] }));
+  assert.throws(() => parseDevelopmentResult({ ...result, title: "" }));
+  assert.throws(() => parseDevelopmentResult({ ...result, refusal: "缺少明确目标" }), /缺少明确目标/);
 });
 test("图文从可信回调读取身份，拒绝其他 Bot、私聊、空需求及过量图片", () => {
   const body = {
@@ -151,7 +152,17 @@ test("图像预算保留视觉 token，不把 base64 当正文；机器人配置
   assert(budget.reservedTokens > 32768 && budget.reservedTokens < 60_000);
   assert.equal(loadDevelopmentConfig({}), undefined);
   assert.throws(() => loadDevelopmentConfig({ WECOM_BOT_ID: "bot" }));
-  assert.equal(loadDevelopmentConfig({ WECOM_BOT_ID: "bot", WECOM_BOT_SECRET: "secret" })?.budgetTokens, 160_000);
+  const bot = { WECOM_BOT_ID: "bot", WECOM_BOT_SECRET: "secret" };
+  assert.equal(loadDevelopmentConfig(bot)?.budgetTokens, undefined, "未设置预算时不限制");
+  assert.equal(loadDevelopmentConfig(bot)?.timeoutMs, 3_600_000, "开发任务默认 1 小时");
+  assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "" })?.budgetTokens, undefined);
+  assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "500000" })?.budgetTokens, 500_000);
+  assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "abc" }));
+  assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_TIMEOUT_MS: "1000" }));
+  assert.equal(loadDevelopmentConfig(bot)?.concurrency, 3, "默认最多同时 3 个开发任务");
+  assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_CONCURRENCY: "5" })?.concurrency, 5);
+  for (const value of ["0", "11", "abc", "1.5"])
+    assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_CONCURRENCY: value }));
 });
 test("完成与拒绝消息去掉成员提及并转义用户标题", () => {
   const task = {

@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { emptyUsage } from "../../src/review/agent.js";
+import { sanitizeSession, type RecordedSession } from "../../src/pi/session-record.js";
 import { groupFindings } from "../../src/review/presentation.js";
 import { GitHubApiError } from "../../src/github/client.js";
 import { createApp } from "../../src/github/webhook/handler.js";
@@ -285,9 +286,110 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(bootstrap.memories[0].id, allowedMemory);
     assert.equal(bootstrap.jobs.length, 1);
     assert(!JSON.stringify(bootstrap).includes("private-audit-scope"));
+    // 执行过程：列表和详情只带摘要；单条接口返回时间线，原始记录可下载；权限跟随任务所属仓库。
+    const t0 = Date.parse("2026-11-09T10:00:00Z");
+    const at = (ms: number) => new Date(t0 + ms).toISOString();
+    const raw = [
+      { type: "session", version: 3, id: "s", timestamp: at(0), cwd: "/tmp/workspace" },
+      {
+        type: "message",
+        id: "a",
+        timestamp: at(1000),
+        message: { role: "user", content: [{ type: "text", text: "审查此 PR" }] },
+      },
+      {
+        type: "message",
+        id: "b",
+        timestamp: at(3000),
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "内部思考" },
+            { type: "toolCall", id: "c1", name: "bash", arguments: { command: "go test ./service" } },
+          ],
+          usage: { totalTokens: 1200 },
+          stopReason: "toolUse",
+        },
+      },
+      {
+        type: "message",
+        id: "c",
+        timestamp: at(213_000),
+        message: { role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "ok" }] },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n");
+    const recorded: RecordedSession = {
+      id: randomUUID(),
+      status: "succeeded",
+      startedAt: new Date(t0),
+      durationMs: 215_000,
+      timings: {
+        models: [{ startedAt: t0 + 1000, durationMs: 2000 }],
+        tools: { c1: { startedAt: t0 + 3000, name: "bash", durationMs: 210_000 } },
+      },
+      ...sanitizeSession(raw),
+    };
+    const sessionId = await database.saveAgentSession({ jobId: review.id, role: "general_review" }, recorded);
+    const deniedSession = await database.saveAgentSession(
+      { jobId: deniedReview.id, role: "general_review" },
+      { ...recorded, id: randomUUID() },
+    );
+    response = await fetch(`${origin}/api/agent-sessions/${sessionId}`, { headers: { cookie: sessionCookie } });
+    assert.equal(response.status, 200);
+    const sessionDetail = (await response.json()) as any;
+    assert.deepEqual(
+      sessionDetail.timeline.map((step: any) => [step.kind, step.title, step.durationMs ?? null]),
+      [
+        ["input", "任务输入", null],
+        ["model", "调用 bash", 2000],
+        ["tool", "bash go test ./service", 210_000],
+      ],
+    );
+    assert.equal(sessionDetail.content, undefined);
+    response = await fetch(`${origin}/api/agent-sessions/${sessionId}/raw`, { headers: { cookie: sessionCookie } });
+    assert.equal(response.status, 200);
+    assert.match(
+      response.headers.get("content-disposition") ?? "",
+      /attachment; filename="agent-session-general_review-/,
+    );
+    const downloaded = await response.text();
+    assert.equal(downloaded, recorded.content);
+    assert(downloaded.includes("go test ./service") && !downloaded.includes("内部思考"), "思考过程不保存");
+    for (const path of [`/api/agent-sessions/${deniedSession}`, `/api/agent-sessions/${deniedSession}/raw`]) {
+      response = await fetch(`${origin}${path}`, { headers: { cookie: sessionCookie } });
+      assert.equal(response.status, 403, path);
+    }
+    response = await fetch(`${origin}/api/agent-sessions/not-a-uuid`, { headers: { cookie: sessionCookie } });
+    assert.equal(response.status, 404);
+    // 运行中的记录：超过 2 分钟没更新按已中断展示；正常的显示进行中的服务步骤。
+    const live = await database.saveAgentSession(
+      { jobId: review.id, role: "general_review" },
+      { ...recorded, id: randomUUID(), status: "running", startedAt: new Date(Date.now() - 10_000), durationMs: 1000 },
+    );
+    await database.pool.query("UPDATE agent_sessions SET events=$2 WHERE id=$1", [
+      live,
+      { clone: { name: "准备工作区", startedAt: Date.now() - 9000 } },
+    ]);
+    response = await fetch(`${origin}/api/agent-sessions/${live}`, { headers: { cookie: sessionCookie } });
+    const liveDetail = (await response.json()) as any;
+    assert.equal(liveDetail.status, "running");
+    assert(liveDetail.duration_ms >= 10_000, "进行中按当前时间计算耗时");
+    const clone = liveDetail.timeline.find((step: any) => step.kind === "service");
+    assert.equal(clone.title, "准备工作区");
+    assert.equal(clone.error, false);
+    await database.pool.query("UPDATE agent_sessions SET updated_at=now()-interval '3 minutes' WHERE id=$1", [live]);
+    response = await fetch(`${origin}/api/agent-sessions/${live}`, { headers: { cookie: sessionCookie } });
+    assert.equal(((await response.json()) as any).status, "interrupted");
+    await database.pool.query("DELETE FROM agent_sessions WHERE id=$1", [live]);
     response = await fetch(`${origin}/api/jobs`, { headers: { cookie: sessionCookie } });
     const jobs = (await response.json()) as any[];
     assert.equal(jobs.length, 1);
+    assert.deepEqual(
+      jobs[0].agent_sessions.map((item: any) => [item.id, item.role, item.steps, item.content]),
+      [[sessionId, "general_review", 2, undefined]],
+    );
     assert.equal(jobs[0].report_available, true);
     assert.equal(jobs[0].finding_count, 1);
     assert(!JSON.stringify(jobs).includes("private-audit-scope"));
@@ -295,6 +397,10 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(response.status, 200);
     const detail = (await response.json()) as any;
     assert.deepEqual(detail.finding_statuses, [{ id: stored[0]!.id, status: "OPEN" }]);
+    assert.deepEqual(
+      detail.agent_sessions.map((item: any) => item.id),
+      [sessionId],
+    );
     assert.equal(detail.review_result.findings[0].candidates.length, 2);
     assert.equal(detail.review_result.findings[0].relatedLocations[0].path, "src/b.ts");
     response = await fetch(`${origin}/api/jobs/${deniedReview.id}`, { headers: { cookie: sessionCookie } });

@@ -8,12 +8,14 @@ import { Database } from "../../src/persistence/database.js";
 import { useTestDatabase } from "../helpers/database.js";
 import { DevelopmentStore } from "../../src/development/store.js";
 import { createDevelopmentProcessor } from "../../src/development/processor.js";
-import { repositoryFiles, validateChanges } from "../../src/development/changes.js";
-import { emptyUsage, type runAgentSession } from "../../src/review/agent.js";
+import { collectChanges, repositoryFiles } from "../../src/development/changes.js";
+import { emptyUsage, ProviderError, type runAgentSession } from "../../src/review/agent.js";
 import { gitEnv } from "../../src/workspace/workspace.js";
 import type { Config } from "../../src/config/config.js";
 import type { DevelopmentSettings } from "../../src/development/types.js";
 import { createApp } from "../../src/github/webhook/handler.js";
+
+const answer = (refusal = "") => JSON.stringify({ title: "fix: 修复常量", summary: "修复常量", refusal });
 
 // biome-ignore lint/correctness/useHookAtTopLevel: 这是 node:test 数据库生命周期辅助函数，不是 React Hook。
 const fixture = useTestDatabase();
@@ -49,7 +51,7 @@ async function setup() {
     modelName: "test",
     modelProvider: "test",
     modelApiKey: "test",
-    development: { botId, secret: "unused", budgetTokens: 160000 },
+    development: { botId, secret: "unused", budgetTokens: 160000, timeoutMs: 5000, concurrency: 2 },
   } as Config;
   const root = await mkdtemp(resolve("work/development-test-"));
   await mkdir(join(root, "src"));
@@ -96,29 +98,36 @@ async function setup() {
     );
     return (await store.claim(botId))!;
   };
+  // 模拟 Pi 进程：经扩展桥读文件、申请写入，再直接改工作区里的文件；写入被拒绝时仍写入，模拟用 bash 绕过。
   const agent =
     (path = "src/normal.ts", before?: () => Promise<void>): typeof runAgentSession =>
     async (input) => {
-      await input
-        .tools!.find((t) => t.name === "read_file")!
-        .execute("read", { path } as never, undefined, undefined, undefined as never);
+      await input.bridge!.read!(path, false);
       await before?.();
+      const decision = await input.bridge!.write!(path, "edit");
+      await writeFile(join(input.root, path), "export const value = 2;\n");
+      if (decision.allow) await input.bridge!.written!(path);
       const usage = { ...emptyUsage(), input: 100, output: 50, totalTokens: 150 };
       await input.onUsage?.(usage);
-      return {
-        text: JSON.stringify({
-          title: "修复",
-          summary: "修复常量",
-          changes: [{ path, content: "export const value = 2;\n" }],
-          refusal: "",
-        }),
-        usage,
-        durationMs: 10,
-        model: "test",
-      };
+      return { text: answer(), usage, durationMs: 10, model: "test" };
     };
+  // 同一个 setup 里的任务共用工作区，每次开始前回到快照。
+  const reset = () => {
+    git("checkout", "--quiet", "--", ".");
+    git("clean", "-fdq");
+  };
   const process = (model = agent()) =>
-    createDevelopmentProcessor(config, store, github, model, async (_url, _token, _base, _head, run) => run(root));
+    createDevelopmentProcessor(
+      config,
+      store,
+      github,
+      model,
+      async (_url, _token, _base, _head, run) => {
+        reset();
+        return run(root);
+      },
+      1,
+    );
   const getTask = async (id: string) =>
     (await database.pool.query("SELECT * FROM development_tasks WHERE id=$1", [id])).rows[0];
   return {
@@ -206,12 +215,12 @@ test("开发正常修改并提 PR；图片和团队规则传入模型；任务�
     const model: typeof runAgentSession = async (input) => {
       assert.equal(input.images?.length, 1);
       assert.equal((input.prompt as any).role, "developer");
-      const rules = (input.prompt as { activeTeamRules: Array<{ id: string; version: number; content: string }> })
-        .activeTeamRules;
-      assert.equal(rules.length, 1);
-      assert.equal(rules[0].id, ruleId);
-      assert.equal(rules[0].version, 2);
-      assert.equal(rules[0].content, "金额使用最小货币单位");
+      const prompt = input.prompt as any;
+      assert.deepEqual(
+        prompt.globalTeamRules.map((r: any) => [r.ref, r.title, r.content]),
+        [["R1", "账务精度", "金额使用最小货币单位"]],
+      );
+      assert.deepEqual(prompt.teamRuleIndex, []);
       return s.agent()(input);
     };
     await s.process(model)(task, new AbortController().signal);
@@ -221,11 +230,194 @@ test("开发正常修改并提 PR；图片和团队规则传入模型；任务�
     assert.equal(row.requester, "developer");
     assert.equal(row.usage.totalTokens, 150);
     assert.equal(row.rule_snapshot[0].id, ruleId);
+    assert.equal(row.rule_snapshot[0].version, 2);
+    assert.deepEqual(row.rule_snapshot[0].delivered, { via: "prompt" });
     assert.deepEqual(row.images, []);
     assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
     assert.equal(row.base_sha, s.sha);
     assert.equal(row.target_branch, "dev");
     assert.match(row.branch, /^bot\/development\//);
+  } finally {
+    await s.cleanup();
+  }
+});
+test("按路径规则读写到文件才附加，命令新建的文件补发一次；补发后仍有遗漏则不发布", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    for (const [title, content, scope] of [
+      ["常量命名", "常量使用 camelCase", { paths: ["src/normal.ts"] }],
+      ["账务目录", "金额使用最小货币单位", { paths: ["src/billing/**"] }],
+      ["文档日期", "文档名带日期", { paths: ["docs/**"] }],
+    ] as const)
+      await s.database.pool.query(
+        `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,confidence,status,source_fingerprint)
+        VALUES($1,1,$2,1,'engineering_rule',$3,$4,'团队约定',$5,'{"pullRequestNumber":1}',1,'ACTIVE',$6)`,
+        [randomUUID(), s.repoId, title, content, JSON.stringify(scope), randomUUID()],
+      );
+    const file = async (root: string, path: string, content: string) => {
+      await mkdir(join(root, path, ".."), { recursive: true });
+      await writeFile(join(root, path), content);
+    };
+    // late：补发之后再用命令新建的文件。
+    const model =
+      (late?: string): typeof runAgentSession =>
+      async (input) => {
+        const prompt = input.prompt as any;
+        assert.deepEqual(prompt.globalTeamRules, []);
+        const titles = prompt.teamRuleIndex.map((r: any) => r.title);
+        for (const title of ["常量命名", "文档日期", "账务目录"]) assert(titles.includes(title));
+        const read = (await input.bridge!.read!("src/normal.ts", false)).rules ?? "";
+        assert(read.startsWith(prompt.teamRuleMarker));
+        assert(read.includes("常量使用 camelCase") && !read.includes("金额使用最小货币单位"));
+        assert.equal((await input.bridge!.write!("src/normal.ts", "edit")).allow, true);
+        await file(input.root, "src/normal.ts", "export const value = 2;\n");
+        assert.equal((await input.bridge!.written!("src/normal.ts")).rules, undefined, "同一条规则只给一次");
+        assert.equal((await input.bridge!.write!("src/billing/fee.ts", "write")).allow, true);
+        await file(input.root, "src/billing/fee.ts", "export const fee = 1;\n");
+        assert.match((await input.bridge!.written!("src/billing/fee.ts")).rules ?? "", /金额使用最小货币单位/);
+        // 用命令新建，不经过写入工具。
+        await file(input.root, "docs/guide.md", "# 指南\n");
+        const message = await input.followUp!(answer());
+        assert(message !== undefined && message.startsWith(prompt.teamRuleMarker));
+        assert(message.includes("文档名带日期") && !message.includes("金额使用最小货币单位"));
+        if (late) await file(input.root, late, "late\n");
+        assert.equal(await input.followUp!(answer()), undefined);
+        const usage = { ...emptyUsage(), input: 100, output: 50, totalTokens: 150 };
+        return { text: answer(), usage, durationMs: 10, model: "test" };
+      };
+    const task = await s.enqueue();
+    await s.process(model())(task, new AbortController().signal);
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "succeeded");
+    const delivered = Object.fromEntries(row.rule_snapshot.map((r: any) => [r.title, r.delivered]));
+    assert.deepEqual(delivered, {
+      常量命名: { via: "read", path: "src/normal.ts" },
+      账务目录: { via: "write", path: "src/billing/fee.ts" },
+      文档日期: { via: "follow_up", path: "docs/guide.md" },
+    });
+    assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
+
+    await s.database.pool.query(
+      `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,confidence,status,source_fingerprint)
+      VALUES($1,1,$2,1,'engineering_rule','脚本目录','脚本要可重复执行','团队约定','{"paths":["scripts/**"]}','{"pullRequestNumber":1}',1,'ACTIVE',$3)`,
+      [randomUUID(), s.repoId, randomUUID()],
+    );
+    const missed = await s.enqueue();
+    await s.process(model("scripts/run.sh"))(missed, new AbortController().signal);
+    const failed = await s.getTask(missed.id);
+    assert.equal(failed.status, "failed");
+    assert.match(failed.result, /尚未提供给模型的团队规则.*脚本目录/);
+    assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
+  } finally {
+    await s.cleanup();
+  }
+});
+test("写入前检查：保护范围、覆盖前先读、含打码凭据的文件只能局部编辑", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    const model: typeof runAgentSession = async (input) => {
+      const write = input.bridge!.write!;
+      assert.match((await write("src/protected.ts", "edit")).reason ?? "", /保护规则「核心代码」/);
+      assert.match((await write("src/normal.ts", "write")).reason ?? "", /先用 read/);
+      assert.equal((await write("src/normal.ts", "edit")).allow, true);
+      assert.equal((await write("src/brand-new.ts", "write")).allow, true);
+      await input.bridge!.read!("src/normal.ts", true);
+      assert.match((await write("src/normal.ts", "write")).reason ?? "", /打码/);
+      assert.equal((await write("src/normal.ts", "edit")).allow, true);
+      return { text: answer("只测试写入检查"), usage: emptyUsage(), durationMs: 1, model: "test" };
+    };
+    await s.process(model)(task, new AbortController().signal);
+    assert.equal((await s.getTask(task.id)).status, "refused");
+  } finally {
+    await s.cleanup();
+  }
+});
+test("模型服务临时故障时整个任务重试，用量累加；确定性错误和次数用尽不再重试", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const failing = (message: string): Error =>
+      Object.assign(new ProviderError(message), { usage: { ...emptyUsage(), input: 40, output: 0, totalTokens: 40 } });
+    const flaky = (failures: number, message = "Upstream request failed") => {
+      let calls = 0;
+      const model: typeof runAgentSession = async (input) => {
+        calls++;
+        // 每次尝试结束时交出执行记录。
+        await input.onSession?.({
+          id: randomUUID(),
+          status: calls <= failures ? "failed" : "succeeded",
+          startedAt: new Date(),
+          durationMs: 5,
+          steps: 0,
+          bytes: 0,
+          truncated: false,
+          timings: { models: [], tools: {} },
+          content: "",
+        });
+        if (calls <= failures) {
+          // 失败前已经写了文件：重试必须从干净的工作区重新开始。
+          await writeFile(join(input.root, "src/half-done.ts"), "partial\n");
+          throw failing(message);
+        }
+        return s.agent()(input);
+      };
+      return { model, calls: () => calls };
+    };
+    const retried = flaky(1);
+    const task = await s.enqueue();
+    await s.process(retried.model)(task, new AbortController().signal);
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "succeeded");
+    assert.equal(retried.calls(), 2);
+    assert.equal(row.usage.totalTokens, 190, "失败那次的 40 加上成功那次的 150");
+    assert.deepEqual(
+      (await s.store.list(s.repoId))
+        .find((item) => item.id === task.id)
+        .agent_sessions.map((item: any) => [item.role, item.attempt, item.status]),
+      [
+        ["developer", 1, "failed"],
+        ["developer", 2, "succeeded"],
+      ],
+      "每次尝试各有一份执行记录",
+    );
+    // 服务步骤和 Agent 会话写在同一份记录里：第一次失败在 Agent 阶段，第二次走完全部步骤。
+    const attempts = (
+      await s.database.pool.query(
+        "SELECT attempt,status,error,events FROM agent_sessions WHERE development_task_id=$1 ORDER BY attempt",
+        [task.id],
+      )
+    ).rows;
+    assert.deepEqual(Object.keys(attempts[0].events).sort(), ["snapshot", "workspace"]);
+    assert.match(attempts[0].error, /模型服务临时故障，0\.001 秒后重试：.*Upstream request failed/);
+    assert.deepEqual(Object.keys(attempts[1].events).sort(), [
+      "branch",
+      "changes",
+      "check",
+      "commit",
+      "latest",
+      "pr",
+      "workspace",
+    ]);
+    assert(
+      Object.values(attempts[1].events as Record<string, { ok: boolean; durationMs: number }>).every(
+        (event) => event.ok && event.durationMs >= 0,
+      ),
+    );
+    assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
+
+    const permanent = flaky(1, "401 invalid api key");
+    const denied = await s.enqueue();
+    await s.process(permanent.model)(denied, new AbortController().signal);
+    assert.equal((await s.getTask(denied.id)).status, "failed");
+    assert.equal(permanent.calls(), 1);
+
+    const exhausted = flaky(5);
+    const tired = await s.enqueue();
+    await s.process(exhausted.model)(tired, new AbortController().signal);
+    assert.equal((await s.getTask(tired.id)).status, "failed");
+    assert.equal(exhausted.calls(), 3);
+    assert.equal((await s.getTask(tired.id)).usage.totalTokens, 120);
+    assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
   } finally {
     await s.cleanup();
   }
@@ -358,28 +550,57 @@ test("服务恢复取消未发布任务并隔离旧执行权，发布/发送中�
     await s.cleanup();
   }
 });
-test("最终改动拒绝符号链接、目录别名、空改动；新文件与删除保持正确模式", { skip: !fixture.url }, async () => {
+test("从工作区收集最终改动：认 Agent 自己的提交，忽略 .gitignore 与 .codegraph，拒绝链接、冲突和打码占位符", {
+  skip: !fixture.url,
+}, async () => {
   const s = await setup();
+  const git = (...args: string[]) => execFileSync("git", ["-C", s.root, ...args], { env: gitEnv(), encoding: "utf8" });
+  const reset = () => {
+    git("reset", "--quiet", "--hard", s.sha);
+    git("clean", "-fdqx");
+  };
   try {
     const signal = new AbortController().signal,
-      files = await repositoryFiles(s.root, signal);
-    for (const path of ["outside", "outside/new", "SRC/normal.ts", "src/normal.ts/child"])
-      await assert.rejects(validateChanges(s.root, files, [{ path, content: "evil" }], signal));
-    await assert.rejects(
-      validateChanges(s.root, files, [{ path: "src/normal.ts", content: "export const value = 1;\n" }], signal),
-      /实际变化/,
-    );
-    const changes = await validateChanges(
-      s.root,
-      files,
+      files = await repositoryFiles(s.root, s.sha, signal),
+      collect = () => collectChanges(s.root, s.sha, files, signal);
+    await assert.rejects(collect(), /实际变化/);
+
+    await rm(join(s.root, "src/normal.ts"));
+    await writeFile(join(s.root, "src/new.ts"), "new\n");
+    git("add", "-A");
+    git("-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", "commit", "--quiet", "-m", "agent");
+    await writeFile(join(s.root, "src/after.ts"), "after\n", { mode: 0o755 });
+    await mkdir(join(s.root, ".codegraph"));
+    await writeFile(join(s.root, ".codegraph/codegraph.db"), "db");
+    await writeFile(join(s.root, ".git/info/exclude"), "tmp/\n");
+    await mkdir(join(s.root, "tmp"));
+    await writeFile(join(s.root, "tmp/build.log"), "log");
+    const changes = (await collect()).map(({ path, content, mode }) => [path, content, mode]);
+    assert.deepEqual(changes, [
+      ["src/normal.ts", null, "100644"],
+      ["src/after.ts", "after\n", "100755"],
+      ["src/new.ts", "new\n", "100644"],
+    ]);
+
+    for (const [prepare, message] of [
+      [() => symlink("/etc/hosts", join(s.root, "src/link")), /不能新建符号链接/],
+      [() => rm(join(s.root, "outside")), /符号链接/],
       [
-        { path: "src/normal.ts", content: null },
-        { path: "src/new.ts", content: "new" },
+        async () => {
+          await rm(join(s.root, "src/normal.ts"));
+          await mkdir(join(s.root, "src/normal.ts"));
+          await writeFile(join(s.root, "src/normal.ts/child"), "x");
+        },
+        /不能把文件改成符号链接或目录/,
       ],
-      signal,
-    );
-    assert.equal(changes[0].content, null);
-    assert.equal(changes[1].mode, "100644");
+      [() => writeFile(join(s.root, "src/normal.ts"), "export const value = '[已隐藏的密钥]';\n"), /打码/],
+      [() => writeFile(join(s.root, "src/big.ts"), "x".repeat(200_001)), /过大/],
+      [() => writeFile(join(s.root, "src/bad[1].ts"), "x"), /路径无效/],
+    ] as const) {
+      reset();
+      await prepare();
+      await assert.rejects(collect(), message);
+    }
   } finally {
     await s.cleanup();
   }
@@ -512,6 +733,146 @@ test("智能机器人完成结果引用原消息，无成员提及；重复消�
         (await s.database.pool.query("SELECT notification_status FROM development_tasks WHERE bot_id=$1", [s.botId]))
           .rows[0]?.notification_status === "sent",
     );
+  } finally {
+    await worker.stop();
+    await s.cleanup();
+  }
+});
+
+test("多个项目并行开发，同一项目按发送顺序排队；确认消息带排队位置", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  // 第二个项目绑定另一个群，由同一个智能机器人处理。
+  const other = s.repoId + 500,
+    otherName = `owner/dev-${other}`;
+  await s.database.pool.query("INSERT INTO repositories(id,installation_id,full_name) VALUES($1,1,$2)", [
+    other,
+    otherName,
+  ]);
+  await s.store.saveSettings(other, { ...s.settings, chatId: `group-${other}` }, "maintainer");
+  s.config.allowedRepositories.add(otherName);
+  let bot: InstanceType<typeof WSClient> | undefined;
+  const replies: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  // 任务一直做到测试放行，记录同时在做的任务。
+  const running = new Map<string, () => void>(),
+    started: string[] = [];
+  let peak = 0;
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    started.push(task.prompt);
+    await new Promise<void>((resolve) => running.set(task.prompt, resolve));
+    running.delete(task.prompt);
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  const send = (id: string, chatId: string) =>
+    bot!.emit("message", {
+      headers: { req_id: `request-${id}` },
+      body: {
+        aibotid: s.botId,
+        msgid: id,
+        chatid: chatId,
+        chattype: "group" as const,
+        from: { userid: "developer" },
+        msgtype: "text",
+        text: { content: id },
+      },
+    });
+  const acks = () =>
+    replies.filter((reply) => reply[0].headers?.req_id?.startsWith("request-") && !reply[1].startsWith("result-"));
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    send("A1", s.settings.chatId);
+    await waitFor(async () => acks().length === 1);
+    send("A2", s.settings.chatId);
+    await waitFor(async () => acks().length === 2);
+    send("B1", `group-${other}`);
+    await waitFor(async () => acks().length === 3);
+    assert.deepEqual(
+      acks().map((reply) => reply[2]),
+      ["已收到开发任务。", "已收到开发任务，前面还有 1 个同项目的任务，会按顺序开发。", "已收到开发任务。"],
+    );
+    await waitFor(async () => started.length === 2, 10_000);
+    peak = Math.max(peak, running.size);
+    assert.deepEqual([...started].sort(), ["A1", "B1"], "不同项目同时开始，A2 等 A1");
+    running.get("A1")!();
+    await waitFor(async () => started.length === 3, 10_000);
+    assert.equal(started.at(-1), "A2", "同一项目的下一个任务在前一个结束后开始");
+    assert.equal(peak, 2);
+    running.get("B1")!();
+    running.get("A2")!();
+    await waitFor(
+      async () =>
+        (
+          await s.database.pool.query(
+            "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND notification_status='sent'",
+            [s.botId],
+          )
+        ).rows[0].n === 3,
+      15_000,
+    );
+  } finally {
+    for (const release of running.values()) release();
+    await worker.stop();
+    await s.database.pool.query("DELETE FROM repositories WHERE id=$1", [other]);
+    await s.cleanup();
+  }
+});
+
+test("同时收到多条消息时依次入队，不再要求稍后重发", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  let bot: InstanceType<typeof WSClient> | undefined;
+  const replies: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    for (const id of ["m1", "m2", "m3", "m4"])
+      bot!.emit("message", {
+        headers: { req_id: `request-${id}` },
+        body: {
+          aibotid: s.botId,
+          msgid: id,
+          chatid: s.settings.chatId,
+          chattype: "group" as const,
+          from: { userid: "developer" },
+          msgtype: "text",
+          text: { content: id },
+        },
+      });
+    await waitFor(
+      async () =>
+        (await s.database.pool.query("SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1", [s.botId]))
+          .rows[0].n === 4,
+      20_000,
+    );
+    assert(!replies.some((reply) => String(reply[2]).includes("太多")));
   } finally {
     await worker.stop();
     await s.cleanup();

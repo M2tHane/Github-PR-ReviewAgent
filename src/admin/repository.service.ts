@@ -1,6 +1,7 @@
 import type { Database } from "../persistence/database.js";
 import { GitHubClient } from "../github/client.js";
 import { repository, type Repository, type Session } from "./dto.js";
+import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 
 export function createRepositoryService(database: Database, github: GitHubClient) {
   async function allowedRepositories(user: Session) {
@@ -32,7 +33,8 @@ export function createRepositoryService(database: Database, github: GitHubClient
           ) s) new_severity_counts,
          (SELECT count(*)::int FROM review_findings f WHERE f.job_id=j.id AND f.presentation ? 'repeatOf') repeat_count,
          p.github_review_url,
-         COALESCE((SELECT jsonb_agg(to_jsonb(a) - 'job_id' ORDER BY a.started_at) FROM agent_runs a WHERE a.job_id=j.id),'[]') agent_runs
+         COALESCE((SELECT jsonb_agg(to_jsonb(a) - 'job_id' ORDER BY a.started_at) FROM agent_runs a WHERE a.job_id=j.id),'[]') agent_runs,
+         COALESCE((SELECT jsonb_agg(${SESSION_SUMMARY("s")} ORDER BY s.started_at) FROM agent_sessions s WHERE s.job_id=j.id),'[]') agent_sessions
        FROM jobs j LEFT JOIN review_publications p ON p.job_id=j.id
        WHERE j.repository_id=ANY($1::bigint[]) ORDER BY j.created_at DESC LIMIT 200`,
       [ids],

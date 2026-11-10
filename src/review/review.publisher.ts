@@ -23,8 +23,6 @@ export interface PublicationStore {
         excludePaths: string[];
         outputLanguage: string;
         budgetTokens: number;
-        reviewMode?: "single" | "auto";
-        maxDelegates?: number;
       }
     | undefined
   >;

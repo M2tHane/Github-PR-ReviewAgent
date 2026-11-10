@@ -14,8 +14,6 @@ export type Repository = {
   excludePaths: string[];
   outputLanguage: string;
   budgetTokens: number;
-  reviewMode: "single" | "auto";
-  maxDelegates: number;
   healthSchedule: "off" | "daily" | "weekly";
   healthNextRunAt: string | null;
   healthLastError: string | null;
@@ -31,8 +29,6 @@ export function repository(row: Record<string, unknown>): Repository {
     excludePaths: row.exclude_paths as string[],
     outputLanguage: String(row.output_language),
     budgetTokens: Number(row.budget_tokens),
-    reviewMode: row.review_mode as "single" | "auto",
-    maxDelegates: Number(row.max_delegates),
     healthSchedule: row.health_schedule as Repository["healthSchedule"],
     healthNextRunAt: row.health_next_run_at instanceof Date ? row.health_next_run_at.toISOString() : null,
     healthLastError: row.health_last_error ? String(row.health_last_error) : null,
@@ -70,6 +66,21 @@ export type AgentRunRow = {
   finished_at: string | null;
   duration_ms: number | null;
 };
+// Agent 执行过程（Pi 会话）的摘要；timeline 只在单条详情接口返回。
+export type AgentSessionRow = {
+  id: string;
+  agent_run_id: string | null;
+  role: string;
+  attempt: number;
+  status: "running" | "interrupted" | "succeeded" | "failed" | "timeout" | "cancelled";
+  error: string | null;
+  started_at: string;
+  duration_ms: number;
+  steps: number;
+  bytes: number;
+  truncated: boolean;
+};
+export type AgentSessionDetail = AgentSessionRow & { timeline: import("../pi/session-record.js").SessionStep[] };
 export type JobRow = {
   id: string;
   delivery_id: string | null;
@@ -96,6 +107,7 @@ export type JobRow = {
   new_severity_counts?: Record<string, number>;
   repeat_count?: number;
   agent_runs?: AgentRunRow[];
+  agent_sessions?: AgentSessionRow[];
   // 详情接口
   finding_statuses?: Array<{ id: string; status: string }>;
   // 健康检查列表

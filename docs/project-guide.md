@@ -2,6 +2,8 @@
 
 本文面向知道项目目标、但尚不了解内部实现的读者。依据代码基线 `262d607`，核对日期为 2026-09-16；Pi SDK 说明以本项目安装的 `@earendil-works/pi-coding-agent` **0.85.1** 为准。
 
+> **2026-11-09 运行方式已变更：** Agent 不再在服务进程里用 Pi SDK 运行，改为每个任务启动一个 Pi 进程，直接使用 Pi 的内置工具、服务扩展、AGENTS.md 和 Skills；PR Review 从多 Agent 改为单 Agent + Skills。第 6～8 节和第 3 节第四步描述的是变更前的 SDK 实现，当前做法以 [architecture §3–§7](./architecture.md#3-agent-与任务) 和 [Pi Runtime 决策](../.agents/decisions/pi-runtime.md) 为准。
+
 建议先读第 1～4 节建立整体印象，再读数据库和 Pi 细节；遇到英文状态时查第 10 节。启动配置见 [README](../README.md)。PR 回复、规则提取与多人讨论见第 3～4 节，错误兜底见第 9 节。
 
 ## 1. 先用一句话理解系统
@@ -151,9 +153,10 @@ GitHub 向 `/github/webhook` 发送事件。服务先用原始请求体校验签
 | `memories` | 团队规则及版本 | 规则内容、理由、范围、来源、证据、状态、替代关系和确认人 |
 | `memory_audits` | 规则操作审计 | 谁在何时确认、编辑、忽略、停用或替代了规则，内容如何变化 |
 | `agent_runs` | Agent 执行审计 | 所属 Job、父 run、角色、模型、状态、用量、覆盖限制和耗时 |
+| `agent_sessions` | Agent 执行过程 | 每次运行整理后的 Pi 会话（无思考过程、已打码）和各步耗时；属于 Job 或开发任务，管理页按步骤展示 |
 | `health_reports` | 健康检查报告 | 对应 Job 的结构化报告；可在管理页读取 |
 
-注意：提取器目前没有接入通用的 `agent_runs` 记录链路，不能据此认为每个提取 Job 都有对应 run。OAuth 登录 state 与会话则使用有容量和期限限制的内存存储，服务重启后需要重新登录。
+注意：提取器目前没有接入通用的 `agent_runs` 记录链路，不能据此认为每个提取 Job 都有对应 run；它的执行过程记录在 `agent_sessions`。OAuth 登录 state 与会话则使用有容量和期限限制的内存存储，服务重启后需要重新登录。
 
 ### 表之间如何联系？
 
@@ -163,6 +166,7 @@ GitHub 向 `/github/webhook` 发送事件。服务先用原始请求体校验签
 repository（仓库）
  ├─ delivery（GitHub 事件）→ job（任务）
  │                          ├─ agent_runs（一次或多次模型执行）
+ │                          ├─ agent_sessions（每次执行的步骤记录）
  │                          ├─ review_publication（发布的 Review）
  │                          ├─ findings（具体问题）
  │                          │   ├─ reply_publications（回复复核结果）
@@ -280,7 +284,7 @@ try {
 
 ## 7. 多 Agent 是怎么协作的？
 
-当审查方式为 `auto`（自动）且复杂度达到条件时，使用 Main 协调。复杂度信号包括文件数、变更行数、Java 变更、涉及安全边界、多模块和可能的规则冲突；当前阈值包括至少 4 个文件或估算至少 120 行变更等，完整判断见 [orchestration.ts](../src/review/orchestration.ts)。
+当审查方式为 `auto`（自动）且复杂度达到条件时，使用 Main 协调。复杂度信号包括文件数、变更行数、Java 变更、涉及安全边界、多模块和可能的规则冲突；当前阈值包括至少 4 个文件或估算至少 120 行变更等，完整判断见 Git 历史中的 `75b04f1:src/review/orchestration.ts`（已移除）。
 
 Main 根据任务事实和允许角色调用 `delegate_agent`。服务检查角色、范围、规则引用、深度与剩余预算，再创建独立 child Session（子会话）。
 
@@ -481,7 +485,7 @@ SDK 自动重试与业务 Job 重试是两层机制：通用 Session 关闭自�
 
 | 字段 | 英文值 | 中文 |
 | --- | --- | --- |
-| review_mode（仓库策略） | `single` / `auto` | 单 Agent／按复杂度自动选择 |
+| review_mode（仓库策略，已停用） | `single` / `auto` | 单 Agent／按复杂度自动选择；现在总是单 Agent，列保留 |
 | orchestration mode（实际执行方式） | `single` / `orchestrated` | 单 Agent／主协调加专项 |
 | fallback（降级方式） | `validated_children` | 仅汇总已经校验的子结果 |
 | agent run status | `running` / `succeeded` / `partial` | 执行中／成功／部分完成 |
@@ -534,7 +538,8 @@ App installation token 用来代表服务访问 GitHub；OAuth 用来识别管�
 | 服务怎样启动、连接各处理器 | [src/main.ts](../src/main.ts) |
 | 数据如何持久化与恢复 | [src/persistence/database.ts](../src/persistence/database.ts)、[数据库迁移目录](../migrations/) |
 | Pi Session、工具和审查 | [src/review/review.processor.ts](../src/review/review.processor.ts) |
-| 复杂度和专项协作 | [src/review/orchestration.ts](../src/review/orchestration.ts) |
+| Pi 进程、预算与服务扩展 | [src/pi/session.ts](../src/pi/session.ts)、[src/pi/extension.ts](../src/pi/extension.ts) |
+| 审查与开发 Skills | [agent/skills/](../agent/skills/) |
 | 团队规则的检索与生命周期 | [src/memory/memory.service.ts](../src/memory/memory.service.ts)、[Memory 设计](memory-design.md) |
 | Agent、工具和结构化输出整体设计 | [架构说明](architecture.md) |
 | GitHub 接入、发布与回复 | [GitHub 集成](github-integration.md) |

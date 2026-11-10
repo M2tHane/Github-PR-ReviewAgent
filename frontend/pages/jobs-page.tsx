@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Empty } from "../components/common/empty-state.js";
 import { RunDetails } from "../components/common/run-details.js";
+import { SessionTimeline } from "../components/common/session-timeline.js";
 import { Status } from "../components/common/status-badge.js";
 import { dateText, jobLabels } from "../format.js";
 import type { Job } from "../types.js";
@@ -50,6 +51,7 @@ export function JobsPage({ items }: { items: Job[] }) {
                   <td>
                     {job.last_error && <p className="error">{job.last_error}</p>}
                     <RunDetails runs={job.agent_runs ?? []} />
+                    <SessionTimeline sessions={job.agent_sessions ?? []} />
                     {job.job_type === "HEALTH_AUDIT" ? (
                       <a href={`#health/${job.id}`}>查看健康检查</a>
                     ) : (

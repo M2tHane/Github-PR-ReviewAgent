@@ -46,19 +46,6 @@ export function RepositorySettings({
               <input name="budgetTokens" type="number" min="1" required defaultValue={repo.budgetTokens} />
             </label>
           </div>
-          <div className="row">
-            <label>
-              审查方式
-              <select name="reviewMode" defaultValue={repo.reviewMode}>
-                <option value="single">单角色审查</option>
-                <option value="auto">按复杂度增加专项</option>
-              </select>
-            </label>
-            <label>
-              最多专项数
-              <input name="maxDelegates" type="number" min="0" max="4" required defaultValue={repo.maxDelegates} />
-            </label>
-          </div>
           <details>
             <summary>接入信息</summary>
             <small>GitHub App installation #{repo.installationId}</small>

@@ -30,21 +30,21 @@ ACTIVE Team Memory
 Future PR Review
 ```
 
-项目同时提供仓库级 **Health Audit**，用于在不修改源码、不执行仓库脚本的前提下，对代码库进行只读健康检查。
+项目同时提供仓库级 **Health Audit**，用于在不修改源码的前提下，对代码库进行只读健康检查；以及企业微信群内的开发任务，由 Agent 在临时工作区改代码、服务提 PR。
 
 ## 核心能力
 
-### 1. Multi-Agent PR Review
+### 1. PR Review
 
-根据 PR 复杂度选择不同审查路径：
+每个任务启动一个 Pi agent 进程，单 Agent 完成审查：
 
-- 简单 PR：Single Agent 直接完成 Review。
-- 复杂 PR：Main Agent 按需委派 Specialist，并聚合结果。
-- 支持专项审查角色，例如 General、Java、Security、Architecture、Memory Conflict。
-- 固定 PR Head SHA 创建只读 Workspace，避免分析过程中代码漂移。
+- 使用 Pi 内置的读取、搜索、bash 工具和 codegraph 插件理解代码；工作区没有 codegraph 索引时先建索引。
+- Java、安全、架构、团队规则冲突的检查方法写成服务自有的 Skills，Agent 按变更读取。
+- 加载服务自己的 AGENTS.md；仓库 AGENTS.md 只取目标分支版本作参考，PR 里的改动不生效。
+- 固定 PR Head SHA 创建临时 Workspace，避免分析过程中代码漂移。
 - Structured Output 约束模型结果，并在发布前进行结构、路径和状态校验。
-- 使用共享 Token Budget 控制 Main 与 Specialist 的总消耗。
-- 支持并发委派、Partial Fallback、Finding 去重与同根因聚合。
+- 本地模型代理在每次请求前预留 Token Budget，超预算不发送。
+- Finding 去重与同根因聚合。
 - 可定位问题发布为 GitHub Inline Review；无法可靠定位的问题降级到 Summary。
 
 ### 2. Team Memory
@@ -91,7 +91,7 @@ Memory 具备以下约束：
 - Publication Fingerprint 防止重复发布。
 - PR Review 发布失败或中断时，先查一次 GitHub 上是否已有本次 Review：已有就记为已发布；收到 GitHub 错误响应且查不到才重试；网络中断且查不到时进入 `uncertain`，停下不重发，需要人工处理（管理页只能查看，暂无处理入口）。线程回复暂不自动核对，结果不明时同样进入 `uncertain`。
 - 新 Head、Draft、关闭 PR、仓库暂停等情况会取消过期 Review。
-- Main、Specialist 和 Reply Agent 均不获得 shell、写文件、GitHub 写操作或 Memory Mutation 权限。
+- Review、Reply 和规则提取 Agent 没有写文件工具，所有 Agent 都没有 GitHub 写操作或 Memory Mutation 权限。Pi 子进程不继承服务凭据，模型 key 只在本地代理里。
 
 ### 5. Repository Health Audit
 
@@ -130,13 +130,13 @@ Persistent Worker
   └─ HEALTH_AUDIT
   │
   ▼
-Pi Agent Runtime
+Pi agent 进程（每个任务一个）
   │
-  ├─ Main Agent
-  ├─ Specialist
+  ├─ Review Agent + Skills
   ├─ Reply Agent
   ├─ Decision Extractor
-  └─ Health Agent
+  ├─ Health Agent
+  └─ 开发 Agent（企微群）
   │
   ▼
 GitHub Review / Team Memory / Health Report
@@ -145,7 +145,7 @@ GitHub Review / Team Memory / Health Report
 主要技术栈：
 
 - TypeScript / Node.js 24+
-- Pi Coding Agent
+- Pi Coding Agent（RPC 模式）+ codegraph
 - GitHub App / Webhook / OAuth
 - PostgreSQL
 - React
@@ -158,6 +158,21 @@ GitHub Review / Team Memory / Health Report
 ```bash
 npm ci
 ```
+
+Agent 运行依赖：
+
+| 依赖 | 来源 | 用途 |
+| --- | --- | --- |
+| `@earendil-works/pi-coding-agent` | npm（package.json） | Pi agent，本服务以 RPC 模式为每个任务启动一个进程 |
+| `@colbymchenry/codegraph` | npm（package.json） | 代码知识图谱；按平台安装对应的预编译包（如 `@colbymchenry/codegraph-linux-x64`）。缺少平台包时不会联网下载，任务照常进行，只是不加载 codegraph 工具 |
+| `@playwright/mcp` | npm（package.json） | 开发任务的浏览器工具（Pi 内置 MCP 加载）。浏览器要另外安装：`node node_modules/@playwright/mcp/cli.js install-browser --only-shell chromium`（无界面 Chromium，下载约 100 MB），装在 Playwright 默认目录，或用 `PLAYWRIGHT_BROWSERS_PATH` 指定 |
+| `rg`（ripgrep） | 系统包 | Pi 的 grep 工具。Pi 离线运行，不会自动下载 |
+| `fd`（Debian 包名 `fd-find`，命令 `fdfind`） | 系统包 | Pi 的 find 工具 |
+| `git` | 系统包 | 获取固定提交的工作区 |
+
+Docker 镜像包含除 Playwright 浏览器以外的依赖（项目后续不考虑镜像打包，镜像里没有加浏览器）。本机开发时用系统包管理器安装 `rg`、`fd`，例如 `brew install ripgrep fd`。
+
+每个工作区第一次运行 Agent 时会建 codegraph 索引（大仓库可能需要数十秒、占用数百 MB 临时空间），不跨任务缓存。`codegraph_*` 工具由服务自己的 Pi 扩展提供（`src/pi/codegraph-extension.ts`）：每个 Agent 一个常驻 codegraph 进程，启动时预热，查询固定在当前工作区。
 
 ### 2. 启动 PostgreSQL
 
@@ -359,13 +374,13 @@ ad75aa1e1f1a3604682af068c2c048da23bbbe7a
 
 ```bash
 npm run build
-node --env-file=.env eval/evaluate-m2.mjs /absolute/path/to/fixed-checkout
+node --env-file=.env eval/evaluate-m2.mjs /absolute/path/to/fixed-checkout [case...] [--runs=3]
 ```
 
 结果写入：
 
 ```text
-work/m2-evaluation.json
+work/m2-evaluation-pi.json
 ```
 
 UX / Root Cause / Rule Reference Evaluation：
@@ -379,7 +394,8 @@ node --env-file=.env eval/evaluate-ux.mjs
 ```text
 .
 ├── frontend/          # 管理界面
-├── src/               # 后端与 Agent Runtime
+├── src/               # 后端与 Agent Runtime（src/pi/ 启动和管理 Pi 进程）
+├── agent/             # 服务自有的 Pi AGENTS.md 与 Skills
 ├── migrations/        # PostgreSQL Migration
 ├── eval/              # Agent Evaluation
 ├── test/              # 自动化测试

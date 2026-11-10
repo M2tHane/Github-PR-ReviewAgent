@@ -222,6 +222,7 @@ export function createHealthProcessor(
             mainBudget,
             Math.max(1, timeoutMs - (Date.now() - started)),
           );
+          const mainRunId = runId;
           if (securityPlanned) {
             const securityRun = await database.startAgentRun(
               job.id,
@@ -241,8 +242,15 @@ export function createHealthProcessor(
               budgetTokens: securityBudget,
               signal: securitySignal,
               systemPrompt: SECURITY_AUDIT_PROMPT,
+              // 健康检查按读过的行核对证据，只用服务端的读取工具。
+              builtinTools: [],
               tools: healthTools(selection.files, securityReadLines, securitySignal),
               onUsage: (usage) => database.checkpointAgentUsage(securityRun, usage),
+              onSession: (session) =>
+                database.saveAgentSession(
+                  { jobId: job.id, agentRunId: securityRun, role: "security_auditor" },
+                  session,
+                ),
               prompt: {
                 task: "安全链路分析",
                 outputLanguage: job.scope.outputLanguage,
@@ -266,8 +274,11 @@ export function createHealthProcessor(
             budgetTokens: mainBudget,
             signal,
             systemPrompt: HEALTH_PROMPT,
+            builtinTools: [],
             tools: healthTools(selection.files, readLines, signal),
             onUsage: (usage) => database.checkpointAgentUsage(runId!, usage),
+            onSession: (session) =>
+              database.saveAgentSession({ jobId: job.id, agentRunId: mainRunId, role: "health_auditor" }, session),
             prompt: {
               task: "仓库健康检查",
               outputLanguage: job.scope.outputLanguage,

@@ -119,8 +119,6 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
         excludePaths: [],
         outputLanguage: "zh-CN",
         budgetTokens: 1000,
-        reviewMode: "single" as const,
-        maxDelegates: 0,
       }),
       isRepositoryEnabled: async () => enabled,
       saveFindings: async () => [stored],
@@ -462,8 +460,6 @@ test("同一个问题在新提交上不再发行内评论，总评指回原评�
         excludePaths: [],
         outputLanguage: "zh-CN",
         budgetTokens: 1000,
-        reviewMode: "single" as const,
-        maxDelegates: 0,
       }),
       getOpenFindings: async () => [old],
       saveFindings: async (_job: ReviewJob, findings: Finding[], inline: Set<Finding>) => {

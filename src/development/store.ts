@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { Config } from "../config/config.js";
+import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 import {
   DevelopmentError,
   type DevelopmentSettings,
@@ -140,11 +141,27 @@ export class DevelopmentStore {
       client.release();
     }
   }
+  // 同一项目排在这条消息前面、还没结束的任务数（含正在做的）。
+  async ahead(botId: string, messageId: string): Promise<number> {
+    return (
+      (
+        await this.pool.query(
+          `SELECT count(*)::int n FROM development_tasks me JOIN development_tasks t ON t.repository_id=me.repository_id AND t.id<>me.id
+         WHERE me.bot_id=$1 AND me.message_id=$2 AND t.status IN ('queued','running','publishing')
+           AND (t.status<>'queued' OR (t.created_at,t.id) < (me.created_at,me.id))`,
+          [botId, messageId],
+        )
+      ).rows[0]?.n ?? 0
+    );
+  }
+  // 按发送顺序领取；同一项目已有任务在做时跳过它的后续任务，先做其他项目的。
   async claim(botId: string): Promise<DevelopmentTask | undefined> {
     return (
       await this.pool.query(
         `UPDATE development_tasks SET status='running',owner_token=$2,started_at=now(),updated_at=now() WHERE id=(
-      SELECT id FROM development_tasks WHERE bot_id=$1 AND status='queued' ORDER BY created_at,id LIMIT 1) RETURNING *`,
+      SELECT t.id FROM development_tasks t WHERE t.bot_id=$1 AND t.status='queued'
+        AND NOT EXISTS (SELECT 1 FROM development_tasks r WHERE r.repository_id=t.repository_id AND r.status IN ('running','publishing'))
+      ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`,
         [botId, randomUUID()],
       )
     ).rows[0];
@@ -236,8 +253,10 @@ export class DevelopmentStore {
   async list(repositoryId: number) {
     return (
       await this.pool.query(
-        `SELECT id,requester,status,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,duration_ms,
-      notification_status,notification_error,created_at FROM development_tasks WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,
+        `SELECT t.id,requester,status,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,t.duration_ms,
+      notification_status,notification_error,created_at,
+      COALESCE((SELECT jsonb_agg(${SESSION_SUMMARY("s")} ORDER BY s.started_at) FROM agent_sessions s WHERE s.development_task_id=t.id),'[]') agent_sessions
+      FROM development_tasks t WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [repositoryId],
       )
     ).rows;

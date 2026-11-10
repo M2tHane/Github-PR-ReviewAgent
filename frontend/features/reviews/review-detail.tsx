@@ -7,6 +7,7 @@ import type { Job } from "../../types.js";
 import type { Finding, ReviewResult } from "../../../src/review/types.js";
 import { displayFinding } from "../../../src/review/presentation.js";
 import { RunDetails } from "../../components/common/run-details.js";
+import { SessionTimeline } from "../../components/common/session-timeline.js";
 import { Discussions, DiscussionPaging, useDiscussions } from "./discussions.js";
 import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
 import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
@@ -302,6 +303,7 @@ export function ReviewDetails({ id }: { id: string }) {
           Job {job.id} · Delivery {job.delivery_id ?? "无"}
         </small>
         <RunDetails runs={job.agent_runs ?? []} />
+        <SessionTimeline sessions={job.agent_sessions ?? []} />
       </details>
     </section>
   );

@@ -226,47 +226,37 @@ M1 必须至少具备：
 - Memory 生效条件。
 - GitHub 发布对象。
 - repository / team 归属。
-- delegate_agent 角色白名单。
+- 服务加载的 AGENTS.md、Skills 和扩展。
 
-## 12. Pi ResourceLoader
+## 12. Pi 资源加载
 
-Pi 的默认资源发现能力可能读取工作目录中的上下文、Skills 或扩展配置。
+Pi 默认会从工作目录和 `~/.pi` 发现上下文文件、Skills、扩展和设置。服务启动 Pi 时关闭这些自动发现（见 [Pi Runtime 决策](../.agents/decisions/pi-runtime.md)）：
 
-本系统必须使用受控 ResourceLoader：
-
-- 只加载服务维护的 Agent 定义。
-- 只加载服务维护的 Skills。
-- 只加载服务维护的 Extensions。
-- 不从待审 PR 工作区自动加载可执行扩展。
-
-仓库自己的 `.pi`、AGENTS.md 等只能作为数据读取，不能改变执行能力。
+- Pi 配置目录每次新建，只放服务写入的模型配置和设置。
+- 只加载服务维护的 AGENTS.md、Skills、服务扩展和锁定版本的 codegraph 扩展。
+- 不从工作区加载 `.pi` 扩展、设置、CLAUDE.md 或 `.claude/rules`。
+- 仓库 AGENTS.md 由服务从目标分支读出，作为参考附在系统提示末尾；优先级低于服务要求和团队规则。
 
 ## 13. 工作区隔离
 
-每个 Job 使用独立只读仓库工作区，并绑定固定 SHA。
+每个 Job 使用独立的临时仓库工作区，并绑定固定 SHA。
 
-必须约束：
+文件工具由服务扩展约束：
 
 - 工具根路径。
 - `..` 路径穿越。
-- 符号链接解析。
-- 可读目录白名单。
-- Git 命令白名单。
-- Git hooks。
-- 外部 filter / helper。
+- 符号链接解析（不存在的路径按最近存在的上级目录解析）。
+- 写入只限开发任务，`.git`、`.codegraph` 不可写。
 
-模型不能通过 symlink、Git 配置或命令参数读取宿主机凭据或其他 Job 目录。
+服务自己的 Git 调用禁用 hooks、宿主机全局配置、credential helper 和外部 filter；收集开发改动时再用命令行配置关闭 fsmonitor，因为 Agent 能改 `.git/config`。工作区 Git 配置不保存 token。
 
-初期不执行被审仓库：
+Agent 可以用 bash 在工作区里读代码、运行编译和测试等检查，不安装依赖、不访问网络服务。开发任务另有 Playwright 浏览器（`@playwright/mcp`，Pi 内置 MCP 加载）：无界面 Chromium、内存里的临时配置，可访问任意网站；文件读写限制在工作区，执行任意 Node 代码的 `browser_run_code_unsafe` 不开放，网页内容按数据处理并打码。浏览器的网址白名单不是安全边界，真要限制网络需要容器网络层。bash 的限制：
 
-- build。
-- test script。
-- package install。
-- arbitrary binary。
+- 工作目录是 Workspace；Pi 子进程只拿最小环境变量（PATH、临时 HOME、代理与 CA），不继承数据库、GitHub、企微和模型凭据；模型 key 只在本地代理里。
+- 单条命令有 Pi 自带的超时；任务总时限到达或取消时结束整个进程组。
+- 与服务同一系统用户：以上只能避免顺手暴露，挡不住刻意读取服务进程的文件或环境。
 
-优先使用静态代码分析和已有 CI 结果。
-
-未来如需动态验证，应引入专门执行沙箱：
+需要强隔离（运行不可信代码、限制网络和资源）时，改为每任务一个容器：
 
 - 无宿主机凭据。
 - 受限网络。
@@ -356,26 +346,34 @@ Pull requests Write 只用于 COMMENT Review / 评论。
 
 不需要保留或展示模型内部思维过程。
 
+Agent 执行过程（Pi 会话）保存在 `agent_sessions`，供排查"做了什么、时间花在哪"：
+
+- 保存前去掉模型思考过程和图片数据；单段内容超过 2 万字符截断，整份超过 10 MB 时保留开头和结尾；全部字符串再打码一遍。
+- 会话里仍有源码片段、PR 与任务原文和 Agent 输出，查看和下载都按所属仓库检查 maintain 权限；开发任务的记录另需仓库在服务授权列表内。
+- 运行中有变化时每 5 秒保存一次，至少每 30 秒更新一次时间；超过 2 分钟没更新的 `running` 记录按“已中断”展示（执行它的服务已停止），不改写数据库状态。
+- 保存失败只记日志，不影响任务结果。
+
 ## 18. 生命周期与数据删除
 
 Job 工作区在任务完成后回收。
 
 服务启动后每 6 小时清理一次（多实例时由 advisory lock 保证只有一个在跑，每批最多 500 条）：
 
-- **已结束任务**：保留 `DATA_RETENTION_DAYS` 天（默认 90，0 表示永久保留），连同审查结果、finding、发布记录、线程回复、规则线索和 agent run 一起删除（外键级联）。
+- **已结束任务**：保留 `DATA_RETENTION_DAYS` 天（默认 90，0 表示永久保留），连同审查结果、finding、发布记录、线程回复、规则线索、agent run 和执行过程记录一起删除（外键级联）。
   - PR 相关任务按 PR 整组判断：这个 PR 最近一次活动早于保留期才删，活跃 PR 的全部历史保留，"之前提过的问题"去重和线程回复不会断。
   - 健康检查每个仓库保留最近一份报告。
   - 投递记录没有任务引用、又过了保留期的才删。
+  - 开发任务本身不删，只删过了保留期的执行过程记录。
 - **卸载 App 或移除仓库**：记下 `revoked_at`，再等 `REVOKED_DATA_GRACE_DAYS` 天（默认 30，0 表示不删）删除该仓库的全部数据，包括 Team Memory 和审计记录。暂停安装不算撤销；重新安装或重新加入仓库会取消待删除标记。
 - Team Memory 在仓库仍接入时独立保存，不受任务保留期影响。
 
 ## 19. 预算与资源限制
 
-M2 的 repository budgetTokens 是整个 PR Job 的总量。Main 与 child 在同一 ledger 预留每次 Provider 实际 body 的输入字节估计及输出，完成后按含 cache 的 usage 结算；单次输出最多 16384 tokens。估计包含协议余量，会保守拒绝，不能把额度视为精确 tokenizer 结果。
+repository budgetTokens 是整个 PR Job 的总量（含重试），默认 500,000；同一设置也是健康检查的总预算。Pi 进程审查一个小 PR 实测约 6–9 万 token，旧默认 20,000 会让审查几乎都超预算，迁移 `009_default_budget.sql` 把仍是旧默认值的仓库一并调整。开发任务默认不限 token，可用 `DEVELOPMENT_BUDGET_TOKENS` 设上限；不限时仍持久化每次请求的预留与用量。Pi 的请求经过服务的本地模型代理：代理按实际请求体的输入字节估计加输出上限预留，先持久化预留再转发，并把请求里的输出上限收紧到剩余额度以内；超预算直接拒绝、不转发。完成后按含 cache 的 usage 结算；单次输出最多 16384 tokens。估计包含协议余量，会保守拒绝，不能把额度视为精确 tokenizer 结果。
 
-Provider 已收到请求但未回报 usage 时，保留该次预留额度，并与实际 token 分列。失败和取消的会话也保存用量；共享取消原因不承载可被其他 Session 覆盖的 usage。SDK 自动压缩、自动重试及 Provider 重试关闭。
+Provider 已收到请求但未回报 usage 时，保留该次预留额度，并与实际 token 分列。失败和取消的会话也保存用量。Pi 的上下文压缩和自动重试关闭，重试由任务队列按错误类型决定。
 
-委派深度固定 1、同时最多 2 项；role、focus path、Memory、时间和 token 都由服务检查。Draft、closed、新 head、仓库暂停和受控停止通过 AbortSignal 取消 Main 与 child。Reply 遇到 superseded 则重新绑定当前 head，不丢失人类回复。
+Draft、closed、新 head、仓库暂停和受控停止通过 AbortSignal 结束 Pi 进程组。Reply 遇到 superseded 则重新绑定当前 head，不丢失人类回复。
 
 数据库测试在一次性 schema 运行；测试 Worker 不接触真实 Job 队列。当前验证和限制见 [M2 清单](./tasks/M2.md)。
 
@@ -388,10 +386,8 @@ Health 的文件清单、单文件／总字节、工具返回行数、CI 页数�
 - 最大模型调用次数。
 - 最大 Token / 成本预算。
 - 最大运行时间。
-- 最大并发子任务数。
-- delegate_agent 总预算。
 
-父任务取消必须传播至尚未完成的子任务。
+任务取消必须结束 Pi 进程和它启动的命令。
 
 预算耗尽时：
 
@@ -410,7 +406,7 @@ Health 的文件清单、单文件／总字节、工具返回行数、CI 页数�
 | 服务重启 | 已持久接收任务可恢复 |
 | GitHub 发布响应丢失 | 先核对远端，再决定是否重试 |
 | 模型返回跨仓库 Memory ID | 服务端拒绝 |
-| PR 内容要求“忽略系统规则并运行脚本” | 不改变权限，不执行脚本 |
+| PR 内容要求“忽略系统规则并运行脚本” | 不改变工具权限和输出格式；Agent 只运行与任务相关的检查 |
 | 恶意 symlink 指向宿主机 | 工具层拒绝越界读取 |
-| 模型超时 / 部分专项失败 | Job 显示 partial / failed 与缺失范围 |
+| 模型超时 / 预算耗尽 | Job 显示 failed / timeout，不发布不完整结果 |
 | repository 移除授权 | 停止读取、执行和发布 |

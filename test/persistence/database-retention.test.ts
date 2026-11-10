@@ -83,13 +83,39 @@ test("数据清理：过期 PR 整组删除，活跃 PR、未结束任务和最�
     await delivery("orphan-old", 100);
     await delivery("orphan-new", 1);
 
+    // 执行过程记录：PR 任务的随任务删除；开发任务只删过期的记录，任务本身保留。
+    const session = (owner: { job?: string; run?: string; task?: string }, days: number) =>
+      db.query(
+        "INSERT INTO agent_sessions(id,job_id,agent_run_id,development_task_id,role,status,started_at,duration_ms,steps,bytes,content,created_at) VALUES($1,$2,$3,$4,'r','succeeded',$5,1,0,0,'',$5)",
+        [randomUUID(), owner.job ?? null, owner.run ?? null, owner.task ?? null, ago(days)],
+      );
+    await session({ job: stale, run: parentRun }, 100);
+    await session({ job: activeOld }, 100);
+    const task = randomUUID();
+    await db.query(
+      "INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,settings_version,role,prompt,status,created_at) VALUES($1,'bot','m-retention','c','u',$2,1,'owner/retention','main','pi-dev/retention',1,'developer','p','succeeded',$3)",
+      [task, repo, ago(100)],
+    );
+    await session({ task }, 100);
+    await session({ task }, 3);
+
     assert.deepEqual(await database.purgeExpired({ retentionDays: 0, revokedGraceDays: 0 }, now), {
       jobs: 0,
       deliveries: 0,
       repositories: 0,
+      sessions: 0,
     });
     const result = await database.purgeExpired({ retentionDays: 90, revokedGraceDays: 30 }, now);
-    assert.deepEqual(result, { jobs: 5, deliveries: 2, repositories: 0 });
+    assert.deepEqual(result, { jobs: 5, deliveries: 2, repositories: 0, sessions: 1 });
+    assert.deepEqual(
+      (await db.query("SELECT job_id,development_task_id FROM agent_sessions ORDER BY created_at")).rows,
+      [
+        { job_id: activeOld, development_task_id: null },
+        { job_id: null, development_task_id: task },
+      ],
+      "过期 PR 的记录随任务删除，活跃 PR 和开发任务最近的记录保留",
+    );
+    assert.equal((await db.query("SELECT count(*)::int n FROM development_tasks WHERE id=$1", [task])).rows[0].n, 1);
     const left = new Set((await db.query("SELECT id FROM jobs WHERE repository_id=$1", [repo])).rows.map((r) => r.id));
     assert.deepEqual(
       [...left].sort(),
@@ -152,7 +178,7 @@ test("数据清理：卸载超过宽限期的仓库删除全部数据；暂停�
     await db.query("UPDATE repositories SET revoked_at=$2 WHERE id=$1", [recent, ago(10)]);
     await database.restoreRepositories([reinstalled]);
     const result = await database.purgeExpired({ retentionDays: 0, revokedGraceDays: 30 }, now);
-    assert.deepEqual(result, { jobs: 1, deliveries: 0, repositories: 1 });
+    assert.deepEqual(result, { jobs: 1, deliveries: 0, repositories: 1, sessions: 0 });
     const repos = (await db.query("SELECT id::text FROM repositories WHERE installation_id=5 ORDER BY id")).rows;
     assert.deepEqual(
       repos.map((r) => Number(r.id)),

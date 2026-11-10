@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { emptyUsage } from "../../src/review/agent.js";
+import { DEFAULT_BUDGET_TOKENS } from "../../src/pi/types.js";
 import { groupFindings } from "../../src/review/presentation.js";
 import { GitHubApiError } from "../../src/github/client.js";
 import { createApp } from "../../src/github/webhook/handler.js";
@@ -529,8 +530,12 @@ test("Health 管理 API 使用维护者与 CSRF 边界，重试保持原预算�
     assert.equal(retried.job.id, started.job.id);
     assert.equal(retried.job.windowEnd, started.job.windowEnd);
     await database.finishJob({ ...started.job, status: "failed" });
-    const run = await database.startAgentRun(started.job.id, "health_auditor", 20000, 1000);
-    await database.finishAgentRun(run, { status: "failed", usage: { ...emptyUsage(), unreportedTokens: 20000 } });
+    // 用完仓库默认总预算后不再允许重试。
+    const run = await database.startAgentRun(started.job.id, "health_auditor", DEFAULT_BUDGET_TOKENS, 1000);
+    await database.finishAgentRun(run, {
+      status: "failed",
+      usage: { ...emptyUsage(), unreportedTokens: DEFAULT_BUDGET_TOKENS },
+    });
     assert.equal((await post(`/api/health/${started.job.id}/retry`)).status, 409);
     const all = (await (await fetch(`${origin}/api/health`, { headers })).json()) as any;
     assert.equal(all.items.length, 1);

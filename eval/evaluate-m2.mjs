@@ -1,12 +1,12 @@
-// 固定 M2 样本；只调用模型，不发布 GitHub Review，不执行样本代码。
+// 固定 M2 样本；只调用模型，不发布 GitHub Review。单 Agent + Skills（Pi 进程），每个样本可重复运行多次。
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve, join } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { runAgentReview } from "../dist/src/review/agent.js";
-import { complexityProfile, orchestrateReview, shouldOrchestrate } from "../dist/src/review/orchestration.js";
 import { validateMemoryReferences } from "../dist/src/review/review.processor.js";
+import { readBaseFile } from "../dist/src/workspace/workspace.js";
 
 const exec = promisify(execFile);
 const root = resolve(process.argv[2] ?? "work/m2-eval-snapshot");
@@ -90,22 +90,24 @@ const cases = [
   },
   { name: "small", paths: ["docs/payments.md"] },
 ];
-const selectiveOnly = process.argv.includes("--selective-only");
-const requested = process.argv.slice(3).filter((value) => value !== "--selective-only");
+// --runs=N：每个样本运行 N 次（模型输出有随机性，下结论前至少 3 次）。
+const runs = Number(process.argv.find((value) => value.startsWith("--runs="))?.slice(7) ?? 1);
+const requested = process.argv.slice(3).filter((value) => !value.startsWith("--"));
+// 与生产一致：仓库 AGENTS.md 取目标分支（base）的版本。
+const repositoryInstructions = await readBaseFile(root, baseSha, "AGENTS.md");
 const report = {
   createdAt: now,
   repository: "M2tHane/pi-review-test-repository",
   baseSha,
   headSha,
   budgetTokens: 160_000,
-  note: "固定提交的本地模型对照；memory 场景使用合成 ACTIVE Memory，不写入数据库；不替代真实 webhook 或维护者确认。",
+  runtime: "pi-single-agent",
+  runs,
+  note: "固定提交的本地模型运行；memory 场景使用合成 ACTIVE Memory，不写入数据库；不替代真实 webhook 或维护者确认。",
   cases: [],
 };
-const output = resolve("work/m2-evaluation.json");
-const previous = selectiveOnly ? JSON.parse(await readFile(output, "utf8")) : undefined;
-if (previous && (previous.headSha !== headSha || previous.budgetTokens !== report.budgetTokens))
-  throw new Error("不能复用不同提交或预算的 baseline");
-if (previous) report.cases = previous.cases;
+// 不覆盖迁移前多 Agent 的 work/m2-evaluation.json，便于对比。
+const output = resolve("work/m2-evaluation-pi.json");
 await mkdir(join(output, ".."), { recursive: true });
 for (const sample of cases.filter((sample) => !requested.length || requested.includes(sample.name))) {
   const changedFiles = files.filter((file) => sample.paths.includes(file.filename)),
@@ -125,32 +127,7 @@ for (const sample of cases.filter((sample) => !requested.length || requested.inc
     status: "running",
     cloneUrl: "",
   };
-  const entry = {
-    name: sample.name,
-    paths: sample.paths,
-    syntheticMemories: memories.length > 0,
-    profile: complexityProfile(changedFiles, memories),
-    agentRuns: [],
-  };
-  if (selectiveOnly) {
-    entry.single = previous.cases.find((value) => value.name === sample.name)?.single;
-    if (!entry.single) throw new Error("缺少已记录 baseline: " + sample.name);
-    entry.singleRecordedAt =
-      previous.cases.find((value) => value.name === sample.name)?.singleRecordedAt ?? previous.createdAt;
-  }
-  const database = {
-    async startAgentRun(jobId, role, budget, timeoutMs, parentRunId) {
-      const id = randomUUID();
-      entry.agentRuns.push({ id, jobId, role, budget, timeoutMs, parentRunId });
-      return id;
-    },
-    async finishAgentRun(id, value) {
-      Object.assign(
-        entry.agentRuns.find((run) => run.id === id),
-        value,
-      );
-    },
-  };
+  const entry = { name: sample.name, paths: sample.paths, syntheticMemories: memories.length > 0, runs: [] };
   const validate = (run) => {
     for (const finding of run.result.findings)
       if (finding.path && !sample.paths.includes(finding.path))
@@ -158,51 +135,39 @@ for (const sample of cases.filter((sample) => !requested.length || requested.inc
     validateMemoryReferences(run.result, memories, job.repositoryId);
     return run;
   };
-  for (const mode of selectiveOnly ? ["selective"] : ["single", "selective"]) {
+  for (let attempt = 1; attempt <= runs; attempt++) {
+    let run;
     try {
-      if (mode === "selective" && !shouldOrchestrate(entry.profile, "auto"))
-        entry[mode] = { ...entry.single, mode: "single", reusedBaseline: true };
-      else
-        entry[mode] = validate(
-          mode === "single"
-            ? await runAgentReview({
-                root,
-                provider: config.modelProvider,
-                modelName: config.modelName,
-                apiKey: config.modelApiKey,
-                endpoint: config.modelEndpoint,
-                timeoutMs: config.agentTimeoutMs,
-                budgetTokens: report.budgetTokens,
-                title: job.title,
-                body: job.body,
-                baseSha,
-                headSha,
-                changedFiles,
-                memories,
-              })
-            : await orchestrateReview({
-                config,
-                database,
-                job,
-                root,
-                files: changedFiles,
-                memories,
-                budgetTokens: report.budgetTokens,
-                maxDelegates: 2,
-                signal: new AbortController().signal,
-              }),
-        );
+      run = validate(
+        await runAgentReview({
+          root,
+          provider: config.modelProvider,
+          modelName: config.modelName,
+          apiKey: config.modelApiKey,
+          endpoint: config.modelEndpoint,
+          timeoutMs: config.agentTimeoutMs,
+          budgetTokens: report.budgetTokens,
+          title: job.title,
+          body: job.body,
+          baseSha,
+          headSha,
+          changedFiles,
+          memories,
+          repositoryInstructions,
+        }),
+      );
     } catch (error) {
-      entry[mode] = { error: error.message, usage: error.usage, durationMs: error.durationMs };
+      run = { error: error.message, usage: error.usage, durationMs: error.durationMs };
     }
+    entry.runs.push(run);
     console.log(
       JSON.stringify({
         sample: sample.name,
-        mode,
-        error: entry[mode]?.error,
-        durationMs: entry[mode]?.durationMs,
-        usage: entry[mode]?.usage,
-        findings: entry[mode]?.result?.findings.length,
+        attempt,
+        error: run.error,
+        durationMs: run.durationMs,
+        usage: run.usage,
+        findings: run.result?.findings.length,
       }),
     );
   }
