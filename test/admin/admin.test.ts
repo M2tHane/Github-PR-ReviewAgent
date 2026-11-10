@@ -92,7 +92,7 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     assert.equal(response.status, 200, "缺少聚合加载端点");
     let data: any = await response.json();
     assert.equal(data.repositories.length, 9);
-    assert.deepEqual(data.jobs, []);
+    assert.equal(data.jobs, undefined);
     assert.deepEqual(data.memories, []);
     assert.equal(calls, 9);
     assert(peak > 1 && peak <= 4);

@@ -6,20 +6,28 @@ import { Status } from "../../components/common/status-badge.js";
 import { dateText } from "../../format.js";
 import type { Memory, Repository as Repo } from "../../types.js";
 
-export function ScopeChips({ scope }: { scope: Memory["scope"] }) {
+// limit：列表里只显示前几项，其余收成“+N”，完整内容在规则详情里看。
+export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: number }) {
   const labels: Record<string, string> = { paths: "路径", languages: "语言", modules: "模块", conditions: "条件" };
   const values = Object.entries(scope).flatMap(([kind, items]) => (items ?? []).map((value) => ({ kind, value })));
+  const shown = limit ? values.slice(0, limit) : values,
+    rest = values.length - shown.length;
   return (
-    <span className="scope-chips">
+    <span className={limit ? "scope-chips compact" : "scope-chips"}>
       {values.length ? (
-        values.map(({ kind, value }, i) => (
-          <span className="chip" key={i} title={labels[kind] ?? kind}>
+        shown.map(({ kind, value }, i) => (
+          <span className="chip" key={i} title={limit ? `${labels[kind] ?? kind}：${value}` : (labels[kind] ?? kind)}>
             {kind === "conditions" ? "条件：" : ""}
             {value}
           </span>
         ))
       ) : (
         <span className="chip">整个仓库</span>
+      )}
+      {rest > 0 && (
+        <span className="chip chip-more" title={`还有 ${rest} 项，打开规则查看全部`}>
+          +{rest}
+        </span>
       )}
     </span>
   );

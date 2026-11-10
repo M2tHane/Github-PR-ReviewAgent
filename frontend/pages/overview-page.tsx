@@ -1,73 +1,90 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../api/client.js";
-import { Status, statusLabels } from "../components/common/status-badge.js";
-import { dateText, relativeTime } from "../format.js";
-import type { Job, Memory, Repository as Repo } from "../types.js";
+import { statusLabels } from "../components/common/status-badge.js";
+import { ReviewRow, SeverityLegend } from "../features/reviews/review-row.js";
+import { numberText, percentText, relativeTime } from "../format.js";
+import type { Job, Memory, Overview, Repository as Repo } from "../types.js";
 
-const WEEK_MS = 7 * 86_400_000;
+// 意见回复后的去向；顺序即条形图和图例的顺序。
+const QUALITY_PARTS: Array<[key: "fixed" | "withdrawn" | "exception" | "discussing" | "open", label: string]> = [
+  ["fixed", "已修复"],
+  ["withdrawn", "误判撤回"],
+  ["exception", "认可为例外"],
+  ["discussing", "仍在讨论"],
+  ["open", "没有回应"],
+];
 
-// 和 GitHub 评论一致的三档：必须改 / 建议改 / 可以不改。
-function severityTiers(counts: Record<string, number> | undefined) {
-  const value = counts ?? {};
-  return [
-    { tone: "must", label: "必须改", count: (value.critical ?? 0) + (value.high ?? 0) },
-    { tone: "should", label: "建议改", count: value.medium ?? 0 },
-    { tone: "may", label: "可以不改", count: value.low ?? 0 },
-  ];
-}
-
-function ReviewOutcome({ job }: { job: Job }) {
-  if (!["succeeded", "partial"].includes(job.status)) return <Status value={job.status} />;
-  const tiers = severityTiers(job.new_severity_counts).filter((tier) => tier.count > 0);
-  const repeats = Number(job.repeat_count ?? 0);
-  const partial = job.status === "partial" ? <Status value="partial" /> : null;
-  if (!tiers.length && !repeats) return partial ?? <span className="outcome-clean">没有发现问题</span>;
+function ReviewQuality({ quality }: { quality: Overview["quality"] }) {
+  const parts = QUALITY_PARTS.map(([key, label]) => ({ key, label, count: quality[key] }));
   return (
-    <span className="outcome">
-      {partial}
-      {tiers.map((tier) => (
-        <span className={`sev sev-${tier.tone}`} key={tier.tone} title={`${tier.label} ${tier.count} 个`}>
-          {tier.count}
-          <span className="sr-only"> 个{tier.label}</span>
-        </span>
-      ))}
-      {repeats > 0 && <span className="outcome-repeat">仍未解决 {repeats}</span>}
-    </span>
+    <section className="overview-section">
+      <div className="subhead">
+        <h3>审查质量 · 近 {quality.days} 天</h3>
+        <a href="#settings/discussions">查看讨论</a>
+      </div>
+      {!quality.findings ? (
+        <p className="empty-line">
+          近 {quality.days} 天{quality.reviews ? `完成了 ${numberText(quality.reviews)} 次审查，` : ""}
+          还没有发出审查意见。
+        </p>
+      ) : (
+        <div className="card quality">
+          <p className="quality-lead">
+            {numberText(quality.reviews)} 次审查，发出 <strong>{numberText(quality.findings)}</strong> 条意见
+          </p>
+          <div className="quality-bar" aria-hidden="true">
+            {parts
+              .filter((part) => part.count > 0)
+              .map((part) => (
+                <span className={`quality-${part.key}`} style={{ flexGrow: part.count }} key={part.key} />
+              ))}
+          </div>
+          <dl className="quality-parts">
+            {parts.map((part) => (
+              <div key={part.key}>
+                <dt>
+                  <span className={`quality-dot quality-${part.key}`} aria-hidden="true" />
+                  {part.label}
+                </dt>
+                <dd>
+                  {numberText(part.count)}
+                  <small>{percentText(part.count, quality.findings)}</small>
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="muted quality-note">
+            按开发者在评论里的回复统计。没回复就直接改掉的问题算在“没有回应”里，所以实际修复数只会更多。
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 
 export function OverviewPage({
   repositories,
   memories,
-  jobs,
   login,
 }: {
   repositories: Repo[];
   memories: Memory[];
-  jobs: Job[];
   login: string;
 }) {
   const pending = memories.filter((item) => item.status === "CANDIDATE").length,
     active = memories.filter((item) => item.status === "ACTIVE" || item.activeVersion).length;
-  const failures = jobs.filter((job) => ["failed", "timeout", "uncertain"].includes(job.status));
-  const weekStart = Date.now() - WEEK_MS;
-  const reviewsThisWeek = jobs.filter(
-    (job) => job.job_type === "PR_REVIEW" && new Date(job.created_at).getTime() >= weekStart,
-  ).length;
-  const latestReviews = new Map<string, Job>();
-  for (const job of jobs)
-    if (job.job_type === "PR_REVIEW" && !latestReviews.has(`${job.repository}/${job.pr_number}`))
-      latestReviews.set(`${job.repository}/${job.pr_number}`, job);
-  const reviews = [...latestReviews.values()].slice(0, 8);
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [health, setHealth] = useState<Job[] | null>(null),
     [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
+    const failed = (cause: unknown) => {
+      if (!controller.signal.aborted) setError(messageOf(cause));
+    };
+    void api<Overview>("/api/overview", { signal: controller.signal }).then(setOverview).catch(failed);
     void api<{ items: Job[] }>("/api/health", { signal: controller.signal })
       .then((value) => setHealth(value.items))
-      .catch((cause) => {
-        if (!controller.signal.aborted) setError(messageOf(cause));
-      });
+      .catch(failed);
     return () => controller.abort();
   }, []);
   const latestHealth = new Map<number, Job>();
@@ -86,54 +103,45 @@ export function OverviewPage({
 
       <div className="stats">
         <a className={`stat${pending ? " stat-attention" : ""}`} href="#rules/pending">
-          <strong>{pending}</strong>
+          <strong>{numberText(pending)}</strong>
           <span>待确认的规则</span>
         </a>
-        <a className={`stat${failures.length ? " stat-danger" : ""}`} href="#settings/runs">
-          <strong>{failures.length}</strong>
-          <span>需要排查的任务</span>
+        <a className={`stat${overview?.attention ? " stat-danger" : ""}`} href="#settings/runs">
+          <strong>{overview ? numberText(overview.attention) : "—"}</strong>
+          <span>近 7 天需要排查的任务</span>
         </a>
         <a className="stat" href="#rules">
-          <strong>{active}</strong>
+          <strong>{numberText(active)}</strong>
           <span>生效中的规则</span>
         </a>
-        <div className="stat">
-          <strong>{reviewsThisWeek}</strong>
+        <a className="stat" href="#reviews">
+          <strong>{overview ? numberText(overview.reviewsThisWeek) : "—"}</strong>
           <span>近 7 天 PR 审查</span>
-        </div>
+        </a>
       </div>
 
       <section className="overview-section">
         <div className="subhead">
           <h3>最近 PR 审查</h3>
-          <span className="legend" aria-hidden="true">
-            <span className="sev sev-must">必须改</span>
-            <span className="sev sev-should">建议改</span>
-            <span className="sev sev-may">可以不改</span>
-          </span>
+          <SeverityLegend />
+          <a href="#reviews">查看全部 →</a>
         </div>
-        {!reviews.length ? (
+        {!overview ? (
+          <p className="empty-line" role="status">
+            {error ? "没有读到审查记录。" : "正在加载…"}
+          </p>
+        ) : !overview.latestReviews.length ? (
           <p className="empty-line">还没有审查记录。接入的仓库有新 PR 时会出现在这里。</p>
         ) : (
           <div className="review-list">
-            {reviews.map((job) => (
-              <a className="review-row" href={`#reviews/${job.id}`} key={job.id}>
-                <div className="review-main">
-                  <h4>{job.payload?.title || `PR #${job.pr_number}`}</h4>
-                  <span className="review-meta">
-                    <span className="review-repo">{job.repository}</span>
-                    <span>#{job.pr_number}</span>
-                    <time dateTime={job.created_at} title={dateText(job.created_at)}>
-                      {relativeTime(job.created_at)}
-                    </time>
-                  </span>
-                </div>
-                <ReviewOutcome job={job} />
-              </a>
+            {overview.latestReviews.map((job) => (
+              <ReviewRow job={job} key={job.id} />
             ))}
           </div>
         )}
       </section>
+
+      {overview && <ReviewQuality quality={overview.quality} />}
 
       <section className="overview-section">
         <div className="subhead">

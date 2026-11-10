@@ -3,11 +3,14 @@ import { memorySourceLabel } from "../../src/memory/types.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
+import { Pager } from "../components/common/pager.js";
 import { Status } from "../components/common/status-badge.js";
 import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
 import { dateText } from "../format.js";
 import type { Memory, Repository as Repo } from "../types.js";
 import { shortText } from "../../src/review/presentation.js";
+
+const PAGE_SIZE = 20;
 
 export function MemoriesPage({
   items,
@@ -22,7 +25,8 @@ export function MemoriesPage({
 }) {
   const [filter, setFilter] = useState(route === "rules/pending" ? "CANDIDATE" : "ALL"),
     [repositoryId, setRepositoryId] = useState("ALL"),
-    [search, setSearch] = useState("");
+    [search, setSearch] = useState(""),
+    [page, setPage] = useState(1);
   const [importMode, setImportMode] = useState<"markdown" | "project" | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -50,6 +54,10 @@ export function MemoriesPage({
         .includes(search.trim().toLowerCase()),
   );
   const shown = scoped.filter((item) => matches(item, filter)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // 确认或忽略后列表会变短，页码超出时落到最后一页。
+  const current = Math.min(page, Math.max(1, Math.ceil(shown.length / PAGE_SIZE))),
+    visible = shown.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  useEffect(() => setPage(1), [filter, repositoryId, search]);
   const close = () => {
     location.hash = filter === "CANDIDATE" ? "rules/pending" : "rules";
   };
@@ -288,7 +296,7 @@ export function MemoriesPage({
         </Empty>
       ) : (
         <div className="rule-list">
-          {shown.map((item) => (
+          {visible.map((item) => (
             <article className="rule-row" key={item.id}>
               <div className="rule-line">
                 <a className="rule-open" href={`#rules/${item.id}`}>
@@ -299,7 +307,7 @@ export function MemoriesPage({
                   label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
                 />
               </div>
-              <ScopeChips scope={item.scope} />
+              <ScopeChips scope={item.scope} limit={3} />
               <div className="rule-meta">
                 <span>
                   {repositories.find((repo) => repo.id === item.repositoryId)?.fullName} ·{" "}
@@ -327,6 +335,17 @@ export function MemoriesPage({
             </article>
           ))}
         </div>
+      )}
+      {shown.length > 0 && (
+        <Pager
+          page={current}
+          pageSize={PAGE_SIZE}
+          total={shown.length}
+          onPage={(value) => {
+            setPage(value);
+            document.getElementById("rules-title")?.scrollIntoView();
+          }}
+        />
       )}
       {selected && (
         <RulePanel

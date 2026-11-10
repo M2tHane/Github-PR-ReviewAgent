@@ -459,11 +459,49 @@ legend {
   color: var(--muted);
   font-size: 0.875rem;
 }
-.repository-card > button {
-  margin-top: 1rem;
+/* 仓库列表与单个仓库的设置页 */
+.repo-list > a > div {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.repository-card > .check {
+.repo-list > a > .status {
+  flex: none;
+}
+.repo-settings .section-head {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+.repo-settings .section-head h2 {
+  overflow-wrap: anywhere;
+}
+.repo-settings .section-head > .status {
+  flex: none;
+  margin-top: 0.35rem;
+}
+.repo-form > :first-child {
+  margin-top: 0;
+}
+.repo-form > .check {
   width: fit-content;
+}
+.repo-form-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin-top: 1.25rem;
+}
+.repo-form-foot a {
+  font-size: 0.85rem;
+}
+.health-schedule p {
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+.health-schedule a {
+  font-size: 0.85rem;
 }
 /* 行式列表：卡片容器 + 分隔线 */
 .review-list,
@@ -1026,6 +1064,17 @@ a.stat:hover {
   overflow-wrap: anywhere;
   max-width: 100%;
 }
+/* 列表里的适用范围：每项一行内截断，鼠标停留看全文，完整内容在详情里。 */
+.scope-chips.compact .chip {
+  max-width: min(100%, 26rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scope-chips.compact .chip-more {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 .rule-meta {
   display: flex;
   justify-content: space-between;
@@ -1132,6 +1181,10 @@ a.stat:hover {
 }
 .evidence-list p {
   margin: 0.4rem 0;
+}
+.evidence-list small {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 /* ===== 弹窗与抽屉 ===== */
@@ -1415,12 +1468,66 @@ a.stat:hover {
   grid-row: 1;
   min-width: 0;
 }
+/* 侧栏拉到和报告一样高，目录才能在往下读报告时一直停在右侧。 */
 .health-sidebar {
   grid-column: 2;
   grid-row: 1;
-  display: grid;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
   min-width: 0;
+}
+.health-toc {
+  position: sticky;
+  top: 72px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+}
+.health-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.health-nav button {
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 400;
+  text-align: left;
+}
+.health-nav button:hover {
+  background: var(--surface-2);
+}
+.health-nav button span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+/* 窄屏没有右侧栏，目录改成报告顶部的一排横向滚动按钮。 */
+.health-jump {
+  display: none;
+}
+.health-filter {
+  margin-top: 1.3rem;
+}
+.health-filter .rule-tabs {
+  margin: 0;
+}
+.health-filter p {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+}
+.health-dimension,
+.health-notice,
+.full-health-report {
+  scroll-margin-top: 72px;
 }
 .health-sidebar h3 {
   font-size: 0.95rem;
@@ -1604,6 +1711,37 @@ a.stat:hover {
 .health-finding summary {
   font-size: 0.8rem;
 }
+/* 折叠的意见：箭头放在左侧留白里，展开后正文和标题左对齐。 */
+.health-finding.foldable {
+  padding-left: 2.1rem;
+}
+.health-finding.foldable > summary {
+  position: relative;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+  list-style: none;
+}
+.health-finding.foldable > summary::-webkit-details-marker {
+  display: none;
+}
+.health-finding.foldable > summary::before {
+  content: "▶";
+  position: absolute;
+  left: -1.2rem;
+  top: 0.3rem;
+  color: var(--accent-text);
+  font-size: 0.6rem;
+}
+.health-finding.foldable[open] > summary::before {
+  transform: rotate(90deg);
+}
+.health-finding.foldable > summary h5 {
+  margin-bottom: 0;
+}
+.health-finding.foldable[open] > summary {
+  margin-bottom: 0.5rem;
+}
 .health-finding ul {
   padding-left: 1.2rem;
 }
@@ -1777,6 +1915,194 @@ a.stat:hover {
 .notification-member-form .muted { font-size: 0.85rem; }
 
 /* ===== 响应式 ===== */
+/* ===== 列表筛选与翻页 ===== */
+.list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+/* 下拉框的固有宽度取最长的选项（仓库全名可能很长），所以在 label 上限宽。 */
+.list-filters label {
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: min(100%, 22rem);
+  margin-top: 0;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.review-meta code {
+  font-size: inherit;
+}
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  margin-top: 0.9rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pager-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* ===== 审查质量 ===== */
+.quality-lead {
+  margin: 0 0 0.75rem;
+}
+.quality-lead strong {
+  font-variant-numeric: tabular-nums;
+}
+.quality-bar {
+  display: flex;
+  gap: 2px;
+  height: 0.6rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--line);
+}
+/* 占比再小也留一条可见的色块。 */
+.quality-bar span {
+  flex-basis: 0;
+  min-width: 4px;
+}
+.quality-fixed {
+  background: var(--ok);
+}
+.quality-withdrawn {
+  background: var(--must);
+}
+.quality-exception {
+  background: var(--accent);
+}
+.quality-discussing {
+  background: var(--should);
+}
+.quality-open {
+  background: var(--line-strong);
+}
+.quality-parts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem 1rem;
+  margin: 0.9rem 0 0;
+}
+.quality-parts dt {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.quality-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.quality-parts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.4rem;
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.quality-parts small {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.quality-note {
+  margin: 0.9rem 0 0;
+  font-size: 0.8rem;
+}
+
+/* ===== 运行记录 ===== */
+.run-list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.run-row {
+  padding: 0.85rem 1.1rem;
+  min-width: 0;
+}
+.run-row + .run-row {
+  border-top: 1px solid var(--line);
+}
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+.run-main {
+  flex: 1;
+  min-width: 0;
+}
+.run-main h3 {
+  margin: 0;
+  font-size: 0.925rem;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.run-target {
+  margin-left: 0.5rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.run-main > .muted {
+  font-size: 0.8rem;
+}
+.run-head > a {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+/* 错误信息可能是整段调用栈：换行显示，超过几行在块内滚动。 */
+.run-error {
+  margin: 0.5rem 0 0;
+  max-height: 7.5rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+/* 不在表格里，执行过程用整行宽度。 */
+.run-row .agent-run,
+.run-row .agent-session {
+  min-width: 0;
+  max-width: none;
+}
+.run-row > details,
+.run-row > .session-list {
+  margin-top: 0.5rem;
+}
+@media (max-width: 640px) {
+  .run-head {
+    flex-wrap: wrap;
+  }
+  .run-main {
+    flex-basis: 100%;
+  }
+  .run-target {
+    display: block;
+    margin-left: 0;
+  }
+  .list-filters label {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}
+
 @media (max-width: 900px) {
   .top {
     gap: 1rem;
@@ -1817,6 +2143,23 @@ a.stat:hover {
   }
   .health-detail {
     order: 1;
+  }
+  .health-toc {
+    display: none;
+  }
+  .health-jump {
+    display: flex;
+    flex-direction: row;
+    gap: 0.4rem;
+    margin: 0.9rem 0;
+    overflow-x: auto;
+  }
+  .health-jump button {
+    flex: none;
+    width: auto;
+    border-color: var(--line);
+    background: var(--surface-2);
+    white-space: nowrap;
   }
 }
 @media (max-width: 720px) {

@@ -1,4 +1,11 @@
-import type { DependencyAudit, HealthDimension, SastRecord, SastScan, SecretScan } from "../../../src/health/types.js";
+import type {
+  DependencyAudit,
+  HealthDimension,
+  HealthReport,
+  SastRecord,
+  SastScan,
+  SecretScan,
+} from "../../../src/health/types.js";
 import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
 import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
 import { Status } from "../../components/common/status-badge.js";
@@ -24,9 +31,65 @@ const healthSourceLabels: Record<string, string> = {
   security_audit: "安全链路分析",
   analysis: "分析",
 };
+// 意见等级筛选：和评论里的三档说法一致。
+export type SeverityFilter = "all" | "must" | "should" | "may";
+const severityFilters: Array<[key: SeverityFilter, label: string, levels: string[]]> = [
+  ["all", "全部", ["critical", "high", "medium", "low"]],
+  ["must", "必须改", ["critical", "high"]],
+  ["should", "建议改", ["medium"]],
+  ["may", "可以不改", ["low"]],
+];
+const inFilter = (filter: SeverityFilter, severity: string) =>
+  severityFilters.find(([key]) => key === filter)![2].includes(severity);
+
+// 报告里实际出现的小节：窄屏的页内跳转和宽屏右侧的目录共用。
+export function healthSections(report: HealthReport, filter: SeverityFilter) {
+  const sections: Array<{ id: string; label: string; count?: number }> = [];
+  if (report.missingData.length)
+    sections.push({ id: "health-missing", label: "未覆盖范围", count: report.missingData.length });
+  if (report.secretScan)
+    sections.push({ id: "health-secrets", label: "密钥泄露", count: report.secretScan.records.length });
+  if (report.sastScan)
+    sections.push({ id: "health-sast", label: "代码规则扫描", count: report.sastScan.records.length });
+  if (report.dependencyAudit)
+    sections.push({ id: "health-deps", label: "依赖漏洞", count: report.dependencyAudit.vulnerabilities.length });
+  for (const dimension of Object.keys(healthLabels) as HealthDimension[]) {
+    const count = report.result.findings.filter(
+      (finding) => finding.dimension === dimension && inFilter(filter, finding.severity),
+    ).length;
+    if (count) sections.push({ id: `health-${dimension}`, label: healthLabels[dimension], count });
+  }
+  sections.push({ id: "health-full", label: "完整报告与历史对比" });
+  return sections;
+}
+
+export function HealthSectionNav({
+  report,
+  filter,
+  className,
+}: {
+  report: HealthReport;
+  filter: SeverityFilter;
+  className: string;
+}) {
+  const sections = healthSections(report, filter);
+  // 只有“完整报告”一项时不值得占一块目录。
+  if (sections.length < 2) return null;
+  return (
+    <nav className={`health-nav ${className}`} aria-label="报告目录">
+      {sections.map((section) => (
+        <button key={section.id} onClick={() => document.getElementById(section.id)?.scrollIntoView()}>
+          {section.label}
+          {section.count !== undefined && <span>{numberText(section.count)}</span>}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function SecretScanView({ scan, fileUrl }: { scan: SecretScan; fileUrl: (path: string, line?: number) => string }) {
   return (
-    <section className="health-dimension" aria-label="密钥泄露">
+    <section className="health-dimension" id="health-secrets" aria-label="密钥泄露">
       <h4>
         密钥泄露 <span className="muted">{scan.records.length} 处</span>
       </h4>
@@ -89,7 +152,7 @@ function SastScanView({ scan, fileUrl }: { scan: SastScan; fileUrl: (path: strin
   const main = scan.records.filter((record) => record.severity !== "low"),
     low = scan.records.filter((record) => record.severity === "low");
   return (
-    <section className="health-dimension" aria-label="代码规则扫描">
+    <section className="health-dimension" id="health-sast" aria-label="代码规则扫描">
       <h4>代码规则扫描 {scan.scannedFiles > 0 && <span className="muted">{scan.records.length} 处</span>}</h4>
       <p>
         {scan.status === "disabled"
@@ -126,7 +189,7 @@ function DependencyAuditView({
     others = groups.filter((group) => !isPriorityDependency(group));
   const otherCount = others.reduce((sum, group) => sum + group.records.length, 0);
   return (
-    <section className="health-dimension" aria-label="依赖漏洞">
+    <section className="health-dimension" id="health-deps" aria-label="依赖漏洞">
       <h4>依赖漏洞 {audit.queried > 0 && <span className="muted">{audit.vulnerabilities.length} 个</span>}</h4>
       <p>
         {audit.status === "disabled"
@@ -172,12 +235,16 @@ export function HealthReportView({
   retry,
   busy,
   enabled,
+  filter,
+  setFilter,
 }: {
   detail: HealthDetail;
   choose: (id: string) => void;
   retry: () => void;
   busy: boolean;
   enabled: boolean;
+  filter: SeverityFilter;
+  setFilter: (filter: SeverityFilter) => void;
 }) {
   const { job, report, usage } = detail;
   const remaining = Math.max(
@@ -243,8 +310,9 @@ export function HealthReportView({
             严重
             {priorityVulnerabilities > 0 && ` · ${priorityVulnerabilities} 个依赖需优先升级`}
           </p>
+          <HealthSectionNav report={report} filter={filter} className="health-jump" />
           {report.missingData.length > 0 && (
-            <section className="health-notice" aria-label="缺失数据与覆盖限制">
+            <section className="health-notice" id="health-missing" aria-label="缺失数据与覆盖限制">
               <strong>这些范围尚未完整覆盖</strong>
               <ul>
                 {report.missingData.map((item, index) => (
@@ -259,142 +327,198 @@ export function HealthReportView({
           {report.secretScan && <SecretScanView scan={report.secretScan} fileUrl={sourceUrl} />}
           {report.sastScan && <SastScanView scan={report.sastScan} fileUrl={sourceUrl} />}
           {report.dependencyAudit && <DependencyAuditView audit={report.dependencyAudit} fileUrl={sourceUrl} />}
+          {report.result.findings.length > 0 && (
+            <div className="health-filter">
+              <nav className="rule-tabs" aria-label="按意见等级筛选">
+                {severityFilters.map(([key, label, levels]) => {
+                  const count = report.result.findings.filter((finding) => levels.includes(finding.severity)).length;
+                  return (
+                    <button
+                      key={key}
+                      className={filter === key ? "active" : ""}
+                      aria-pressed={filter === key}
+                      disabled={!count}
+                      onClick={() => setFilter(key)}
+                    >
+                      {label}
+                      <span>{numberText(count)}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+              {filter === "all" && <p className="muted">“必须改”的意见直接展开，其余点标题查看。</p>}
+            </div>
+          )}
           {(Object.keys(healthLabels) as HealthDimension[])
-            .filter((dimension) => report.result.findings.some((finding) => finding.dimension === dimension))
+            .filter((dimension) =>
+              report.result.findings.some(
+                (finding) => finding.dimension === dimension && inFilter(filter, finding.severity),
+              ),
+            )
             .map((dimension) => {
-              const findings = report.result.findings.filter((item) => item.dimension === dimension);
+              const findings = report.result.findings.filter(
+                (item) => item.dimension === dimension && inFilter(filter, item.severity),
+              );
               return (
-                <section className="health-dimension" key={dimension}>
+                <section className="health-dimension" id={`health-${dimension}`} key={dimension}>
                   <h4>
                     {healthLabels[dimension]} <span className="muted">{findings.length} 条意见</span>
                   </h4>
                   {!findings.length ? (
                     <p className="muted">在已检查范围内未产出该维度意见；覆盖限制见上方。</p>
                   ) : (
-                    findings.map((finding) => (
-                      <article
-                        className={`health-finding severity-${finding.severity}`}
-                        key={finding.id}
-                        id={finding.id}
-                      >
-                        <div className="health-finding-labels">
-                          <Status value={finding.severity} />
-                          <span>{healthLabels[finding.dimension]}</span>
-                          {finding.chain && finding.evidenceLevel === "weak" && (
-                            <span className="needs-review">需人工确认：没追到入口</span>
-                          )}
-                        </div>
-                        <h5>{finding.description}</h5>
-                        {finding.chain && (
-                          <ol className="security-chain">
-                            {finding.chain.source && (
+                    findings.map((finding) => {
+                      const head = (
+                        <>
+                          <div className="health-finding-labels">
+                            <Status value={finding.severity} />
+                            <span>{healthLabels[finding.dimension]}</span>
+                            {finding.chain && finding.evidenceLevel === "weak" && (
+                              <span className="needs-review">需人工确认：没追到入口</span>
+                            )}
+                          </div>
+                          <h5>{finding.description}</h5>
+                        </>
+                      );
+                      const body = (
+                        <>
+                          {finding.chain && (
+                            <ol className="security-chain">
+                              {finding.chain.source && (
+                                <li>
+                                  <span className="chain-role">入口</span>
+                                  <a
+                                    href={sourceUrl(finding.chain.source.path, finding.chain.source.line)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {finding.chain.source.path}:{finding.chain.source.line}
+                                  </a>
+                                  <span className="muted">{finding.chain.source.detail}</span>
+                                </li>
+                              )}
+                              {finding.chain.steps.map((step, index) => (
+                                <li key={index}>
+                                  <span className="chain-role">经过</span>
+                                  <a href={sourceUrl(step.path, step.line)} target="_blank" rel="noreferrer">
+                                    {step.path}:{step.line}
+                                  </a>
+                                  <span className="muted">{step.detail}</span>
+                                </li>
+                              ))}
                               <li>
-                                <span className="chain-role">入口</span>
+                                <span className="chain-role chain-sink">危险操作</span>
                                 <a
-                                  href={sourceUrl(finding.chain.source.path, finding.chain.source.line)}
+                                  href={sourceUrl(finding.chain.sink.path, finding.chain.sink.line)}
                                   target="_blank"
                                   rel="noreferrer"
                                 >
-                                  {finding.chain.source.path}:{finding.chain.source.line}
+                                  {finding.chain.sink.path}:{finding.chain.sink.line}
                                 </a>
-                                <span className="muted">{finding.chain.source.detail}</span>
+                                <span className="muted">{finding.chain.sink.detail}</span>
                               </li>
-                            )}
-                            {finding.chain.steps.map((step, index) => (
-                              <li key={index}>
-                                <span className="chain-role">经过</span>
-                                <a href={sourceUrl(step.path, step.line)} target="_blank" rel="noreferrer">
-                                  {step.path}:{step.line}
-                                </a>
-                                <span className="muted">{step.detail}</span>
+                              <li className="chain-missing">
+                                <span className="chain-role">缺少</span>
+                                {finding.chain.missingControl}
                               </li>
-                            ))}
-                            <li>
-                              <span className="chain-role chain-sink">危险操作</span>
-                              <a
-                                href={sourceUrl(finding.chain.sink.path, finding.chain.sink.line)}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {finding.chain.sink.path}:{finding.chain.sink.line}
-                              </a>
-                              <span className="muted">{finding.chain.sink.detail}</span>
-                            </li>
-                            <li className="chain-missing">
-                              <span className="chain-role">缺少</span>
-                              {finding.chain.missingControl}
-                            </li>
-                          </ol>
-                        )}
-                        <p>
-                          <strong>建议：</strong>
-                          {finding.suggestion}
-                        </p>
-                        <details>
-                          <summary>查看影响与依据</summary>
-                          <p>{finding.impact}</p>
-                          <ul>
-                            {finding.references.map((reference, index) => (
-                              <li key={index}>
-                                {reference.kind === "code" ? (
-                                  <a href={sourceUrl(reference.path, reference.line)} target="_blank" rel="noreferrer">
-                                    {reference.path}:{reference.line}
-                                  </a>
-                                ) : reference.kind === "memory" ? (
-                                  <code>
-                                    {reference.id} v{reference.version}
-                                  </code>
-                                ) : reference.kind === "sast" ? (
-                                  (() => {
-                                    const record = report.sastScan?.records.find((item) => item.id === reference.id);
-                                    return record ? (
-                                      <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
-                                        规则扫描 · {record.label} · {record.path}:{record.line}
-                                      </a>
-                                    ) : (
-                                      <code>{reference.id}</code>
-                                    );
-                                  })()
-                                ) : reference.kind === "secret" ? (
-                                  (() => {
-                                    const record = report.secretScan?.records.find((item) => item.id === reference.id);
-                                    return record ? (
-                                      <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
-                                        {record.label} · {record.path}:{record.line}
-                                      </a>
-                                    ) : (
-                                      <code>{reference.id}</code>
-                                    );
-                                  })()
-                                ) : reference.kind === "vulnerability" ? (
-                                  <a
-                                    href={`https://osv.dev/vulnerability/${encodeURIComponent(reference.id)}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    依赖漏洞 · {reference.id}
-                                  </a>
-                                ) : (
-                                  <a
-                                    href={report.sources.find((source) => source.id === reference.sourceId)?.url}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                  >
-                                    CI 来源 · {reference.sourceId}
-                                  </a>
-                                )}
-                                <p>{reference.detail}</p>
-                              </li>
-                            ))}
-                          </ul>
+                            </ol>
+                          )}
+                          <p>
+                            <strong>建议：</strong>
+                            {finding.suggestion}
+                          </p>
+                          <details>
+                            <summary>查看影响与依据</summary>
+                            <p>{finding.impact}</p>
+                            <ul>
+                              {finding.references.map((reference, index) => (
+                                <li key={index}>
+                                  {reference.kind === "code" ? (
+                                    <a
+                                      href={sourceUrl(reference.path, reference.line)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {reference.path}:{reference.line}
+                                    </a>
+                                  ) : reference.kind === "memory" ? (
+                                    <code>
+                                      {reference.id} v{reference.version}
+                                    </code>
+                                  ) : reference.kind === "sast" ? (
+                                    (() => {
+                                      const record = report.sastScan?.records.find((item) => item.id === reference.id);
+                                      return record ? (
+                                        <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+                                          规则扫描 · {record.label} · {record.path}:{record.line}
+                                        </a>
+                                      ) : (
+                                        <code>{reference.id}</code>
+                                      );
+                                    })()
+                                  ) : reference.kind === "secret" ? (
+                                    (() => {
+                                      const record = report.secretScan?.records.find(
+                                        (item) => item.id === reference.id,
+                                      );
+                                      return record ? (
+                                        <a href={sourceUrl(record.path, record.line)} target="_blank" rel="noreferrer">
+                                          {record.label} · {record.path}:{record.line}
+                                        </a>
+                                      ) : (
+                                        <code>{reference.id}</code>
+                                      );
+                                    })()
+                                  ) : reference.kind === "vulnerability" ? (
+                                    <a
+                                      href={`https://osv.dev/vulnerability/${encodeURIComponent(reference.id)}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      依赖漏洞 · {reference.id}
+                                    </a>
+                                  ) : (
+                                    <a
+                                      href={report.sources.find((source) => source.id === reference.sourceId)?.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      CI 来源 · {reference.sourceId}
+                                    </a>
+                                  )}
+                                  <p>{reference.detail}</p>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        </>
+                      );
+                      // “全部”里只展开必须改的意见；选了具体等级就是要逐条看，全部展开。
+                      return filter === "all" && !inFilter("must", finding.severity) ? (
+                        <details
+                          className={`health-finding foldable severity-${finding.severity}`}
+                          key={finding.id}
+                          id={finding.id}
+                        >
+                          <summary>{head}</summary>
+                          {body}
                         </details>
-                      </article>
-                    ))
+                      ) : (
+                        <article
+                          className={`health-finding severity-${finding.severity}`}
+                          key={finding.id}
+                          id={finding.id}
+                        >
+                          {head}
+                          {body}
+                        </article>
+                      );
+                    })
                   )}
                 </section>
               );
             })}
-          <details className="full-health-report">
+          <details className="full-health-report" id="health-full">
             <summary>查看完整报告与历史对比</summary>
             <p>
               固定快照：
