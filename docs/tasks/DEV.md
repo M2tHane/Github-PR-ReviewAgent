@@ -422,3 +422,5 @@ GitHub 上的 Docker image 工作流已用 `gh workflow disable` 停用（状态
 - 验证：`npm test` 238 项（169 通过、0 失败）；`npm run test:db` 70 项通过；`check:docs`、`check:format` 通过。新增用例：缓存环境变量指到共享目录，后台 `sleep 60` 在会话结束后被结束。
 - 真实模型（tuzi/gpt-6.1-sol，`M2tHane/tuzi-main-service` main `089fd36`）：需求“令牌列表加一列最近使用……本地跑起来用浏览器看效果”。先开 [issue #7](https://github.com/M2tHane/tuzi-main-service/issues/7)（2 个编号问题带推荐，按新格式）；回复“开始”后任务 `e61f6c92` 建 [PR #8](https://github.com/M2tHane/tuzi-main-service/pull/8)，641 秒、2,362,684 tokens（cache 2,275,584）。会话记录显示：`bun install --frozen-lockfile`、Go 定向测试、`bun test`、Vite 构建；用仓库自带的本地预览脚本起后端 3180 / 前端 5180（SQLite 合成数据），curl 登录，浏览器打开登录页和令牌页核对“从未使用”和排序，最后自己停服务。结束后 3180、5180 无监听、无残留进程。缓存 2.0 GB（bun 1.1 GB、Go 构建缓存 953 MB；该仓库 Go 依赖在 vendor 里）。
 - 本地服务已重启到新构建；改动未提交。
+
+2026-11-10 追加（用户要求）：只有改到界面时才用浏览器验证。依据是 PR #8 的会话：38 轮里浏览器调用 22 次，每轮都要把之前的对话整段再发一次。development Skill 和开发提示词改为：改了接口用 curl 验证；只改后端、脚本或配置时，不启动前端，也不打开浏览器。查外部网页资料的用法不变。真实模型效果未验证。
