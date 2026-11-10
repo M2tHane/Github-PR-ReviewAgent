@@ -11,7 +11,7 @@ type Task = {
   id: string;
   requester: string;
   status: string;
-  kind?: "develop" | "discuss" | "notice";
+  kind?: "develop" | "discuss" | "notice" | "revise";
   issue_number?: number | null;
   target_branch: string;
   branch: string;
@@ -35,6 +35,12 @@ function editable(settings: DevelopmentSettings): EditableSettings {
   };
 }
 type Response = { settings?: DevelopmentSettings; configured: boolean; tasks: Task[] };
+const kindLabels: Record<NonNullable<Task["kind"]>, string> = {
+  develop: "",
+  discuss: "issue 讨论回复 · ",
+  notice: "提示 · ",
+  revise: "PR 评论处理 · ",
+};
 const statuses: Record<string, string> = {
   queued: "等待执行",
   running: "开发中",
@@ -358,7 +364,7 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
       {tasks.map((task) => (
         <article className="card development-task" key={task.id}>
           <strong>
-            {task.kind === "discuss" ? "issue 讨论回复 · " : task.kind === "notice" ? "issue 提示 · " : ""}
+            {kindLabels[task.kind ?? "develop"]}
             {statuses[task.status] ?? task.status}
           </strong>
           <p>

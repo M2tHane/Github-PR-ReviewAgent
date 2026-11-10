@@ -71,6 +71,10 @@ async function setup() {
     issueComments: Array<{ number: number; body: string }> = [],
     prBodies: string[] = [],
     thread: Array<{ id: number; body: string; created_at: string; user: { login: string; type: string } }> = [];
+  // PR 替身：PR 状态、PR 对话里的评论，以及推送到分支的提交。
+  const pull = { state: "open", ref: "" },
+    prComments: Array<{ id: number; body: string; created_at: string; user: { login: string; type: string } }> = [],
+    pushes: string[] = [];
   const github = {
     installationToken: async () => "token",
     developmentSnapshot: async () => ({ sha, tree: "b".repeat(40) }),
@@ -102,6 +106,26 @@ async function setup() {
       state: "open",
     }),
     listIssueComments: async () => thread,
+    getPullRequest: async (_token: string, _repository: string, number: number) => ({
+      number,
+      title: "fix: 修复常量",
+      body: prBodies.at(-1) ?? "",
+      state: pull.state,
+      draft: false,
+      merged: false,
+      merged_at: null,
+      merge_commit_sha: null,
+      base: { sha },
+      head: { sha: head, ref: pull.ref },
+      user: { id: 1, login: "bot" },
+    }),
+    updateDevelopmentBranch: async (_token: string, _repository: string, branch: string, commit: string) => {
+      calls.push("push");
+      pushes.push(`${branch}@${commit}`);
+    },
+    getConversationComments: async () => prComments.map((c) => ({ ...c, html_url: "", user: { id: 2, ...c.user } })),
+    getReviewComments: async () => [],
+    getReviews: async () => [],
   };
   const enqueue = async (user = "developer", messageId = randomUUID()) => {
     await store.accept(
@@ -168,6 +192,9 @@ async function setup() {
     issueComments,
     prBodies,
     thread,
+    pull,
+    prComments,
+    pushes,
     enqueue,
     agent,
     process,
@@ -1338,6 +1365,131 @@ test("issue 里开始的任务没有群消息可引用：结果直接发到绑�
     );
   } finally {
     await worker.stop();
+    await s.cleanup();
+  }
+});
+
+// 开发 PR 下的一条评论（替身同时记到 GitHub 的评论列表里，处理时能读到）。
+const prComment = async (s: Awaited<ReturnType<typeof setup>>, id: number, login: string, body: string) => {
+  if (!s.prComments.some((c) => c.id === id))
+    s.prComments.push({ id, body, created_at: new Date().toISOString(), user: { login, type: "User" } });
+  return s.store.acceptPullRequestComment(
+    { repositoryId: s.repoId, prNumber: 42, source: "comment", commentId: id, login, body },
+    s.config,
+  );
+};
+// 处理 PR 评论的模型替身：change 时改文件，其余只回复。
+const revisionAgent =
+  (result: object, prompts: any[] = [], path = "src/normal.ts"): typeof runAgentSession =>
+  async (input) => {
+    prompts.push(input.prompt);
+    if ((result as { action: string }).action === "change") {
+      await input.bridge!.read!(path, false);
+      const decision = await input.bridge!.write!(path, "edit");
+      await writeFile(join(input.root, path), "export const value = 3;\n");
+      if (decision.allow) await input.bridge!.written!(path);
+    }
+    const usage = { ...emptyUsage(), input: 100, output: 20, totalTokens: 120 };
+    return { text: JSON.stringify({ reply: "", commitMessage: "", ...result }), usage, durationMs: 10, model: "test" };
+  };
+
+test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知群；只回答时不推送不通知；重投去重，非开发 PR 忽略", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    const origin = await s.enqueue();
+    await s.process()(origin, new AbortController().signal);
+    const branch = (await s.getTask(origin.id)).branch;
+    s.pull.ref = branch;
+    assert.deepEqual(await prComment(s, 201, "carol", "把 value 改成 3"), { kind: "accepted", taskKind: "revise" });
+    assert.deepEqual(await prComment(s, 201, "carol", "把 value 改成 3"), { kind: "duplicate" });
+    assert.deepEqual(
+      await s.store.acceptPullRequestComment(
+        { repositoryId: s.repoId, prNumber: 99, source: "comment", commentId: 299, login: "carol", body: "改一下" },
+        s.config,
+      ),
+      { kind: "ignored" },
+      "不是开发 PR",
+    );
+    const revise = (await s.store.claim(s.botId))!;
+    assert.deepEqual(
+      [revise.kind, revise.branch, revise.pr_number, revise.role, revise.requester],
+      ["revise", branch, 42, "developer", "developer"],
+      "评论人不是群成员：按开发身份，通知仍发给原来的群",
+    );
+    const prompts: any[] = [];
+    const reply = "value 改成 3 了，相关测试通过。";
+    await s.process(revisionAgent({ action: "change", reply, commitMessage: "fix: value 改为 3" }, prompts))(
+      revise,
+      new AbortController().signal,
+    );
+    const changed = await s.getTask(revise.id);
+    assert.equal(changed.status, "succeeded", changed.result);
+    assert.equal(changed.notification_status, "pending", "改了代码才通知群里");
+    assert.equal(changed.title, "fix: value 改为 3");
+    assert.deepEqual(s.pushes, [`${branch}@${s.head}`], "推到原来的开发分支");
+    assert.deepEqual(s.issueComments.at(-1), { number: 42, body: `${reply}\n\n提交：${s.head.slice(0, 7)}` });
+    assert.equal(prompts[0].originalRequest, "修改代码");
+    assert.deepEqual(
+      prompts[0].pullRequest.comments.map((c: any) => [c.author, c.new, c.body]),
+      [["carol", true, "把 value 改成 3"]],
+    );
+    // 只是提问：回答，不推送、不通知；上次处理之前的评论不再算新评论。
+    await prComment(s, 202, "carol", "为什么不用常量？");
+    const question = (await s.store.claim(s.botId))!;
+    await s.process(revisionAgent({ action: "reply", reply: "项目里同类值都直接写在这里。" }, prompts))(
+      question,
+      new AbortController().signal,
+    );
+    const answered = await s.getTask(question.id);
+    assert.deepEqual([answered.status, answered.notification_status], ["succeeded", "skipped"]);
+    assert.equal(s.pushes.length, 1);
+    assert.deepEqual(s.issueComments.at(-1), { number: 42, body: "项目里同类值都直接写在这里。" });
+    assert.deepEqual(
+      prompts[1].pullRequest.comments.map((c: any) => c.new),
+      [false, true],
+    );
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("PR 评论：连发几条只处理最后一条；评论人关联管理员时按管理员身份；PR 关闭后排队的评论取消", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    const origin = await s.enqueue();
+    await s.process()(origin, new AbortController().signal);
+    s.pull.ref = (await s.getTask(origin.id)).branch;
+    await s.database.pool.query(
+      "INSERT INTO repository_notification_members(repository_id,github_login,wecom_userid) VALUES($1,'boss','admin')",
+      [s.repoId],
+    );
+    await prComment(s, 301, "carol", "按钮挪到右边");
+    await prComment(s, 302, "Boss", "还是放左边吧");
+    const first = (await s.store.claim(s.botId))!;
+    await s.process(revisionAgent({ action: "none" }))(first, new AbortController().signal);
+    assert.equal((await s.getTask(first.id)).status, "cancelled", "后面还有评论，合并到下一条");
+    assert.equal(s.issueComments.length, 0);
+    const second = (await s.store.claim(s.botId))!;
+    assert.deepEqual([second.role, second.requester], ["admin", "admin"]);
+    await s.process(revisionAgent({ action: "none" }))(second, new AbortController().signal);
+    const ignored = await s.getTask(second.id);
+    assert.deepEqual([ignored.status, ignored.notification_status], ["succeeded", "skipped"], ignored.result);
+    assert.equal(s.issueComments.length, 0, "不需要处理时不回复");
+    // PR 合并：排队的评论取消，不再领取。
+    await prComment(s, 303, "carol", "再改一下文案");
+    await s.store.closePullRequest(s.repoId, 42);
+    assert.equal(await s.store.claim(s.botId), undefined);
+    const closed = (
+      await s.database.pool.query(
+        "SELECT status,notification_status FROM development_tasks WHERE message_id='pr-comment:303'",
+      )
+    ).rows[0];
+    assert.deepEqual([closed.status, closed.notification_status], ["cancelled", "skipped"]);
+  } finally {
     await s.cleanup();
   }
 });

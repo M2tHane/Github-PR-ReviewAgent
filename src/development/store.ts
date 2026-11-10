@@ -8,6 +8,7 @@ import {
   type DevelopmentSettings,
   type DevelopmentTask,
   type GroupRequest,
+  type PullRequestCommentInput,
   type TaskStatus,
 } from "./types.js";
 
@@ -156,14 +157,16 @@ export class DevelopmentStore {
     );
   }
   // 按发送顺序领取。开发任务同一项目一个一个来，先做其他项目的；issue 讨论只读代码，不等开发任务，
-  // 但同一个 issue 的讨论回复一次只跑一条，避免同时回两遍。
+  // 但同一个 issue 的讨论回复一次只跑一条，避免同时回两遍；同一个 PR 的评论修改也一次一条。
   async claim(botId: string): Promise<DevelopmentTask | undefined> {
     return (
       await this.pool.query(
         `UPDATE development_tasks SET status='running',owner_token=$2,started_at=now(),updated_at=now() WHERE id=(
       SELECT t.id FROM development_tasks t WHERE t.bot_id=$1 AND t.status='queued'
         AND NOT EXISTS (SELECT 1 FROM development_tasks r WHERE r.repository_id=t.repository_id AND r.status IN ('running','publishing')
-          AND (CASE WHEN t.kind='develop' THEN r.kind='develop' ELSE r.kind<>'develop' AND r.issue_number=t.issue_number END))
+          AND (CASE WHEN t.kind='develop' THEN r.kind='develop'
+            WHEN t.kind='revise' THEN r.kind='revise' AND r.pr_number=t.pr_number
+            ELSE r.kind IN ('discuss','notice') AND r.issue_number=t.issue_number END))
       ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`,
         [botId, randomUUID()],
       )
@@ -283,6 +286,150 @@ export class DevelopmentStore {
     }
   }
 
+  // 开发 PR 下的一条新评论（PR 对话、代码行评论或 review 正文）。有仓库权限的人的每条评论都排一个 revise 任务，
+  // Agent 读完再决定改代码、回复还是不处理。按评论 id 去重；不是开发 PR、PR 已关闭由调用方或这里忽略。
+  async acceptPullRequestComment(
+    input: PullRequestCommentInput,
+    config: Pick<Config, "allowedRepositories" | "queueCapacity">,
+  ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; taskKind?: "revise" | "notice" }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(4897040)");
+      const origin = (
+        await client.query(
+          `SELECT bot_id,chat_id,requester,installation_id,repository,target_branch,branch FROM development_tasks
+          WHERE repository_id=$1 AND pr_number=$2 AND kind='develop' ORDER BY created_at LIMIT 1`,
+          [input.repositoryId, input.prNumber],
+        )
+      ).rows[0];
+      if (!origin || !config.allowedRepositories.has(origin.repository.toLowerCase())) {
+        await client.query("COMMIT");
+        return { kind: "ignored" };
+      }
+      const messageId = `pr-${input.source}:${input.commentId}`;
+      if (
+        (
+          await client.query("SELECT 1 FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
+            origin.bot_id,
+            messageId,
+          ])
+        ).rowCount
+      ) {
+        await client.query("COMMIT");
+        return { kind: "duplicate" };
+      }
+      const settings = (
+        await client.query(
+          `SELECT s.version,s.members FROM development_settings s JOIN repositories r ON r.id=s.repository_id
+          WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s`,
+          [input.repositoryId, origin.chat_id],
+        )
+      ).rows[0];
+      // 评论人关联的成员是管理员时按管理员身份（可以改管理员专属的保护文件），其余人按开发身份。
+      const mapped = (
+        await client.query(
+          "SELECT wecom_userid FROM repository_notification_members WHERE repository_id=$1 AND github_login=lower($2)",
+          [input.repositoryId, input.login],
+        )
+      ).rows.map((row) => String(row.wecom_userid));
+      const admin = (settings?.members as DevelopmentSettings["members"] | undefined)?.find(
+        (m) => m.role === "admin" && mapped.includes(m.userid),
+      );
+      const kind = settings ? "revise" : "notice";
+      const count = (
+        await client.query(
+          "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND status IN ('queued','running','publishing')",
+          [origin.bot_id],
+        )
+      ).rows[0].n;
+      if (count >= config.queueCapacity) throw new DevelopmentError("开发任务队列已满", "refused");
+      await client.query(
+        `INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,
+        settings_version,role,prompt,images,status,kind,pr_number,notification_status)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'[]','queued',$14,$15,$16)`,
+        [
+          randomUUID(),
+          origin.bot_id,
+          messageId,
+          origin.chat_id,
+          admin?.userid ?? origin.requester,
+          input.repositoryId,
+          origin.installation_id,
+          origin.repository,
+          origin.target_branch,
+          origin.branch,
+          settings?.version ?? 0,
+          admin ? "admin" : "developer",
+          settings ? input.body : "这个仓库的群内开发已关闭，PR 里的评论不会再处理。",
+          kind,
+          input.prNumber,
+          // 改了代码才通知群里，由处理结果决定；提示只在 PR 里出现。
+          kind === "revise" ? "pending" : "skipped",
+        ],
+      );
+      await client.query("COMMIT");
+      return { kind: "accepted", taskKind: kind };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // 开发 PR 关闭或合并：任务到此结束。还在排队或正在跑的评论修改全部取消；正在跑的会在下一次权限检查时
+  // 发现执行权没了，结束 Agent 和它启动的进程，删掉工作区。已经在推送提交的不打断。
+  async closePullRequest(repositoryId: number, prNumber: number) {
+    await this.pool.query(
+      `UPDATE development_tasks SET status='cancelled',result='PR 已关闭，评论不再处理。',owner_token=NULL,images='[]',
+      notification_status=CASE WHEN notification_status='pending' THEN 'skipped' ELSE notification_status END,updated_at=now()
+      WHERE repository_id=$1 AND pr_number=$2 AND kind IN ('revise','notice') AND status IN ('queued','running')`,
+      [repositoryId, prNumber],
+    );
+  }
+
+  // 同一个 PR 后面还有排队的评论修改时，这一条不用跑：后面那条会读到全部评论。
+  async laterRevision(task: DevelopmentTask) {
+    return Boolean(
+      (
+        await this.pool.query(
+          `SELECT 1 FROM development_tasks WHERE repository_id=$1 AND pr_number=$2 AND kind='revise' AND status='queued'
+          AND (created_at,id) > ((SELECT created_at FROM development_tasks WHERE id=$3),$3::uuid) LIMIT 1`,
+          [task.repository_id, task.pr_number, task.id],
+        )
+      ).rowCount,
+    );
+  }
+
+  // 上一次处理完这个 PR 评论的开始时间；之后的评论算新评论。
+  async lastRevisionAt(task: DevelopmentTask): Promise<Date | undefined> {
+    return (
+      (
+        await this.pool.query(
+          `SELECT max(started_at) at FROM development_tasks WHERE repository_id=$1 AND pr_number=$2 AND kind='revise'
+        AND status='succeeded' AND id<>$3`,
+          [task.repository_id, task.pr_number, task.id],
+        )
+      ).rows[0]?.at ?? undefined
+    );
+  }
+
+  // 最初在群里提的需求原文。
+  async pullRequestOrigin(task: DevelopmentTask): Promise<string> {
+    return (
+      (
+        await this.pool.query(
+          `SELECT t.prompt,i.prompt issue_prompt FROM development_tasks t
+          LEFT JOIN development_issues di ON di.repository_id=t.repository_id AND di.issue_number=t.issue_number
+          LEFT JOIN development_tasks i ON i.id=di.origin_task_id
+          WHERE t.repository_id=$1 AND t.pr_number=$2 AND t.kind='develop' ORDER BY t.created_at LIMIT 1`,
+          [task.repository_id, task.pr_number],
+        )
+      ).rows.map((row) => String(row.issue_prompt ?? row.prompt))[0] ?? ""
+    );
+  }
+
   // 提需求的人（企微成员）在这个仓库关联的 GitHub 账号，来自管理页的成员关联。
   async requesterLogins(repositoryId: number, requester: string, client: Pool | PoolClient = this.pool) {
     return (
@@ -349,8 +496,8 @@ export class DevelopmentStore {
         `SELECT s.protections FROM development_settings s JOIN repositories r ON r.id=s.repository_id
       WHERE s.repository_id=$1 AND s.version=$2 AND s.chat_id=$3 AND s.target_branch=$4 AND s.enabled AND r.enabled
       AND EXISTS (SELECT 1 FROM development_tasks t WHERE t.id=$9 AND t.owner_token=$10 AND t.status IN ('running','publishing'))
-      AND r.revoked_at IS NULL AND r.installation_id=$5 AND r.full_name=$6 AND EXISTS (
-        SELECT 1 FROM jsonb_array_elements(s.members) m WHERE m->>'userid'=$7 AND m->>'role'=$8)`,
+      AND r.revoked_at IS NULL AND r.installation_id=$5 AND r.full_name=$6 AND ($11 OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(s.members) m WHERE m->>'userid'=$7 AND m->>'role'=$8))`,
         [
           task.repository_id,
           task.settings_version,
@@ -362,6 +509,8 @@ export class DevelopmentStore {
           task.role,
           task.id,
           task.owner_token,
+          // PR 评论的发起人可以不是群成员：按开发身份处理时不要求是成员。
+          task.kind === "revise" && task.role === "developer",
         ],
       )
     ).rows[0];
@@ -378,6 +527,13 @@ export class DevelopmentStore {
     await this.pool.query(
       "UPDATE development_tasks SET status=$2,result=$3,images='[]',duration_ms=(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer,updated_at=now() WHERE id=$1 AND owner_token=$4",
       [task.id, status, result, task.owner_token],
+    );
+  }
+  // 不在群里通知：讨论回复、没改代码的 PR 评论处理等。
+  async skipNotification(task: DevelopmentTask) {
+    await this.pool.query(
+      "UPDATE development_tasks SET notification_status='skipped' WHERE id=$1 AND owner_token=$2 AND notification_status='pending'",
+      [task.id, task.owner_token],
     );
   }
   async checkpoint(

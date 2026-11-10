@@ -170,7 +170,7 @@ export class GitHubClient {
       merged_at: string | null;
       merge_commit_sha: string | null;
       base: { sha: string };
-      head: { sha: string };
+      head: { sha: string; ref: string };
       user: { id: number; login: string };
     }>(token, `/repos/${repository}/pulls/${number}`, { signal });
   }
@@ -206,7 +206,7 @@ export class GitHubClient {
     if (info.id !== repositoryId) throw new Error("开发仓库归属无效");
     const ref = await this.request<{ object: { sha: string } }>(
       token,
-      `/repos/${repository}/git/ref/heads/${encodeURIComponent(branch)}`,
+      `/repos/${repository}/git/ref/heads/${branchPath(branch)}`,
       { signal },
     );
     if (!/^[a-f0-9]{40}$/.test(ref.object?.sha)) throw new Error("开发分支 SHA 无效");
@@ -255,6 +255,15 @@ export class GitHubClient {
       method: "POST",
       signal,
       body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }),
+    });
+  }
+
+  // 开发 PR 按评论修改后推进分支；不强推，分支已有别的新提交时 GitHub 返回 422。
+  updateDevelopmentBranch(token: string, repository: string, branch: string, sha: string, signal: AbortSignal) {
+    return this.request(token, `/repos/${repository}/git/refs/heads/${branchPath(branch)}`, {
+      method: "PATCH",
+      signal,
+      body: JSON.stringify({ sha, force: false }),
     });
   }
 
@@ -365,6 +374,7 @@ export class GitHubClient {
       id: number;
       html_url: string;
       body: string;
+      created_at: string;
       user: { id: number; login: string; type: string };
     }>(token, `/repos/${repository}/issues/${number}/comments`);
   }
@@ -375,6 +385,7 @@ export class GitHubClient {
       body: string;
       state: string;
       commit_id: string;
+      submitted_at?: string;
       user: { id: number; login: string; type: string };
     }>(token, `/repos/${repository}/pulls/${number}/reviews`);
   }
@@ -469,3 +480,6 @@ export class GitHubClient {
     return value.permissions?.admin === true || value.permissions?.maintain === true;
   }
 }
+
+// 分支名里的 / 是路径分隔，逐段编码（bot/development/<id> 整体编码成 %2F 时 GitHub 找不到分支）。
+const branchPath = (branch: string) => branch.split("/").map(encodeURIComponent).join("/");

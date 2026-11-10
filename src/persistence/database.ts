@@ -25,6 +25,8 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly development = new DevelopmentStore(this.pool);
   readonly isDevelopmentPullRequest = this.development.isDevelopmentPullRequest.bind(this.development);
   readonly acceptIssueComment = this.development.acceptIssueComment.bind(this.development);
+  readonly acceptPullRequestComment = this.development.acceptPullRequestComment.bind(this.development);
+  readonly closeDevelopmentPullRequest = this.development.closePullRequest.bind(this.development);
   private readonly repositories = new RepositoryRepository(this.pool);
   private readonly publications = new ReviewPublicationRepository(this.pool);
   private readonly findings = new FindingRepository(this.pool);

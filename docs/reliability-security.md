@@ -189,7 +189,7 @@ repository
 入口回 5xx（服务停止中、数据库不可用）或 GitHub 连不上、等到超时时，GitHub 不会自己重投，这段时间的事件就丢了。服务定时查本 App 的投递记录（`GET /app/hook/deliveries`），让 GitHub 重投（`POST /app/hook/deliveries/{id}/attempts`），两个接口都用 App JWT，不需要额外权限。重投走原来的 Webhook 入口，验签和按 delivery id 去重都不变。实现见 `src/github/webhook/redelivery.ts`。
 
 - **时机**：启动后查一次，之后每 5 分钟一次（管理端可改，见[服务设置](#服务设置)）。`WEBHOOK_REDELIVERY_ENABLED=false` 关闭。
-- **补哪些**：同一个事件的多次尝试按 delivery id（投递记录里的 `guid`）合在一起看。任何一次尝试成功（2xx）就不管；最新一次是 5xx，或状态码为 0／缺失（连不上、超时）才补。只补服务会处理的事件：`pull_request`、`pull_request_review_comment`、`issue_comment`、`installation`、`installation_repositories`。
+- **补哪些**：同一个事件的多次尝试按 delivery id（投递记录里的 `guid`）合在一起看。任何一次尝试成功（2xx）就不管；最新一次是 5xx，或状态码为 0／缺失（连不上、超时）才补。只补服务会处理的事件：`pull_request`、`pull_request_review_comment`、`pull_request_review`、`issue_comment`、`installation`、`installation_repositories`。
 - **不补**：最新一次是 4xx（验签失败、请求体过大、字段无效）的，重投也会再失败。
 - **次数与间隔**：每个事件最多重投 3 次，距离它最新一次尝试分别过去 5 分钟、30 分钟、2 小时才发下一次；3 次后仍失败就放弃。次数和时间都从 GitHub 返回的记录里算，本地不存状态。
 - **窗口**：只看最近 3 天的投递（GitHub 只允许重投 3 天内的）；每轮最多翻 10 页（1000 条），没看完时记 `webhook_redelivery_truncated` 日志。

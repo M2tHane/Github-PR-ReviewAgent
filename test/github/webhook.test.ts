@@ -340,6 +340,109 @@ test("review comment 只路由人类对已绑定线程的回复", async () => {
   }
 });
 
+test("开发 PR 下有仓库权限的人的评论、代码行评论和 review 总评交给开发任务；PR 关闭时取消", async () => {
+  const seen: any[] = [],
+    closed: unknown[] = [],
+    replies: unknown[] = [];
+  const { server } = createApp(config, {
+    accept: async () => ({ kind: "accepted" }),
+    acceptIssueComment: async () => ({ kind: "ignored" }),
+    acceptReply: async (input: any) => {
+      replies.push(input);
+      return { kind: "ignored" };
+    },
+    // 只有 PR 4 是开发 PR。
+    acceptPullRequestComment: async (input) => {
+      seen.push(input);
+      return input.prNumber === 4 ? { kind: "accepted", taskKind: "revise" } : { kind: "ignored" };
+    },
+    closeDevelopmentPullRequest: async (repositoryId, prNumber) => {
+      closed.push([repositoryId, prNumber]);
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const post = (event: string, value: unknown) => {
+    const body = JSON.stringify(value);
+    return fetch(`http://127.0.0.1:${address.port}/github/webhook`, {
+      method: "POST",
+      headers: { "x-github-event": event, "x-github-delivery": event, "x-hub-signature-256": signature(body) },
+      body,
+    });
+  };
+  const user = { id: 5, login: "carol", type: "User" };
+  const conversation = {
+    action: "created",
+    repository: { id: 3, full_name: "owner/repo" },
+    issue: { number: 4, state: "open", pull_request: { url: "x" } },
+    comment: { id: 21, body: "按钮挪到右边", author_association: "COLLABORATOR", user },
+  };
+  const inline = {
+    action: "created",
+    installation: { id: 2 },
+    repository: { id: 3, full_name: "owner/repo" },
+    pull_request: { number: 4, state: "open", base: { sha: "base" }, head: { sha: "head" } },
+    comment: { id: 22, body: "这里改成常量", path: "src/a.ts", line: 3, author_association: "MEMBER", user },
+  };
+  const review = {
+    action: "submitted",
+    repository: { id: 3, full_name: "owner/repo" },
+    pull_request: { number: 4, state: "open" },
+    review: { id: 23, body: "整体可以，文案再短一点", author_association: "OWNER", user },
+  };
+  try {
+    assert.equal((await post("issue_comment", conversation)).status, 202);
+    assert.equal((await post("pull_request_review_comment", inline)).status, 202);
+    assert.equal((await post("pull_request_review", review)).status, 202);
+    assert.deepEqual(
+      seen.map((input) => [input.source, input.commentId, input.login, input.body]),
+      [
+        ["comment", 21, "carol", "按钮挪到右边"],
+        ["review_comment", 22, "carol", "（评论在 src/a.ts:3）\n这里改成常量"],
+        ["review", 23, "carol", "整体可以，文案再短一点"],
+      ],
+    );
+    // 没有仓库权限、机器人、PR 已关闭、空 review 都不交给开发任务。
+    for (const [event, value] of [
+      ["issue_comment", { ...conversation, comment: { ...conversation.comment, author_association: "NONE" } }],
+      ["issue_comment", { ...conversation, comment: { ...conversation.comment, user: { ...user, type: "Bot" } } }],
+      ["pull_request_review_comment", { ...inline, pull_request: { ...inline.pull_request, state: "closed" } }],
+      ["pull_request_review", { ...review, review: { ...review.review, body: "" } }],
+    ] as const)
+      assert.equal((await post(event, value)).status, 200);
+    assert.equal(seen.length, 3);
+    // 不是开发 PR 的代码行评论照旧交给审查回复处理。
+    const other = {
+      ...inline,
+      pull_request: { ...inline.pull_request, number: 5 },
+      comment: {
+        ...inline.comment,
+        in_reply_to_id: 1,
+        created_at: "2026-11-10T00:00:00Z",
+        html_url: "u",
+        commit_id: "head",
+      },
+    };
+    assert.equal((await post("pull_request_review_comment", other)).status, 200);
+    assert.equal(replies.length, 1);
+    await post("pull_request", {
+      ...payload,
+      action: "closed",
+      pull_request: {
+        ...payload.pull_request,
+        state: "closed",
+        merged: true,
+        merge_commit_sha: "c".repeat(40),
+        updated_at: "2026-11-10T00:00:00Z",
+      },
+    });
+    assert.deepEqual(closed, [[3, 4]]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 function job(deliveryId: string, headSha = deliveryId): Omit<ReviewJob, "id" | "status"> {
   return {
     deliveryId,

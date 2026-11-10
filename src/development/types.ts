@@ -41,8 +41,9 @@ export type TaskStatus =
   | "uncertain"
   // 需求不清楚，已开 issue（或在 issue 里补充提问）讨论。
   | "discussing";
-// develop：开发并提 PR；discuss：在 issue 里回复讨论；notice：在 issue 里发一条固定提示，不调用模型。
-export type TaskKind = "develop" | "discuss" | "notice";
+// develop：开发并提 PR；discuss：在 issue 里回复讨论；notice：在 issue 或 PR 里发一条固定提示，不调用模型；
+// revise：开发 PR 下有新评论，读评论后按需在同一分支上改代码、在 PR 里回复。
+export type TaskKind = "develop" | "discuss" | "notice" | "revise";
 export interface DevelopmentTask {
   id: string;
   owner_token: string;
@@ -69,6 +70,15 @@ export interface DevelopmentTask {
   result: string | null;
   kind: TaskKind;
   issue_number: number | null;
+}
+// 开发 PR 下的一条评论：PR 对话里的评论（comment）、代码行上的评论（review_comment）或 review 的正文（review）。
+export interface PullRequestCommentInput {
+  repositoryId: number;
+  prNumber: number;
+  source: "comment" | "review_comment" | "review";
+  commentId: number;
+  login: string;
+  body: string;
 }
 export class DevelopmentError extends Error {
   constructor(

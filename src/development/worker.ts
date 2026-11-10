@@ -231,8 +231,10 @@ export class DevelopmentWorker {
                 if (!notification) break;
                 try {
                   await send(async () => {
-                    // issue 里“开始”的任务没有群消息可引用，直接发到绑定群；其余任务引用原消息回复。
-                    const push = !notification.reply_req_id && Boolean(notification.issue_number);
+                    // issue 里“开始”的任务和 PR 评论修改没有群消息可引用，直接发到绑定群；其余任务引用原消息回复。
+                    const push =
+                      !notification.reply_req_id &&
+                      (Boolean(notification.issue_number) || notification.kind === "revise");
                     if (!push && (!notification.reply_req_id || !notification.reply_expires_at))
                       throw new DevelopmentError("reply_context_missing");
                     if (!push && notification.reply_expires_at!.getTime() <= Date.now())

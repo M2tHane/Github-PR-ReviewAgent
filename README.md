@@ -249,7 +249,8 @@ npm run dev
 
 - Pull requests
 - Pull request review comments
-- Issue comment（群内开发的需求 issue）
+- Pull request reviews（群内开发：开发 PR 的 review 总评）
+- Issue comment（群内开发：需求 issue 和开发 PR 对话里的评论）
 
 Webhook：
 

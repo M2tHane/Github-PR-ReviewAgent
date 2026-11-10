@@ -21,7 +21,7 @@ M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、�
 
 M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。M3 不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
 
-新增授权范围：企业微信群内开发任务可在隔离快照上修改代码、用 bash 运行检查，由服务创建独立分支、commit 和 PR；不自动合并。开发任务可以安装依赖（下载缓存跨任务共享）、照项目 README 在本地启动服务并用浏览器验证（用户 2026-11-10 决定），结束时服务结束工作区里留下的进程。开发任务可以用 Playwright 浏览器（`@playwright/mcp`）访问任意网站。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
+新增授权范围：企业微信群内开发任务可在隔离快照上修改代码、用 bash 运行检查，由服务创建独立分支、commit 和 PR；开发 PR 下有仓库权限的人评论后，服务可在同一分支追加提交（不强推，用户 2026-11-10 决定）；不自动合并。开发任务可以安装依赖（下载缓存跨任务共享）、照项目 README 在本地启动服务并用浏览器验证（用户 2026-11-10 决定），结束时服务结束工作区里留下的进程。开发任务可以用 Playwright 浏览器（`@playwright/mcp`）访问任意网站。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
 
 ## 文档入口与开工顺序
 

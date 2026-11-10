@@ -65,7 +65,7 @@ async function setup(t: TestContext) {
     merged_at: null,
     merge_commit_sha: null,
     base: { sha: "base" },
-    head: { sha: "head123456" },
+    head: { sha: "head123456", ref: "feature" },
     user: { id: 77, login: "UnmappedAuthor" },
   };
   const github = { installationToken: async () => "fake-token", getPullRequest: async () => pr };

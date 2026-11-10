@@ -67,7 +67,7 @@ export async function collectChanges(root: string, sha: string, files: Map<strin
     const content = await readFile(join(root, path), { signal });
     result.push({ path, content: textOf(path, content), mode: stat.mode & 0o111 ? "100755" : "100644" });
   }
-  if (!result.length) throw new DevelopmentError("代码没有产生实际变化，无需创建 PR。", "refused");
+  if (!result.length) throw new NoChangesError();
   if (result.length > MAX_FILES)
     throw new DevelopmentError(`改动了 ${result.length} 个文件，超过 ${MAX_FILES} 个的上限：请缩小需求范围。`);
   await checkChanges(root, files, result, signal);
@@ -138,5 +138,12 @@ async function untracked(root: string, sha: string, signal: AbortSignal) {
     return stdout.split("\0").filter(Boolean);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// 工作区和快照相比没有任何改动。
+export class NoChangesError extends DevelopmentError {
+  constructor() {
+    super("代码没有产生实际变化，无需创建 PR。", "refused");
   }
 }

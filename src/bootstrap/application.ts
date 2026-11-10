@@ -1,5 +1,6 @@
 import { createApp } from "../github/webhook/handler.js";
 import { redeliverFailedWebhooks } from "../github/webhook/redelivery.js";
+import { removeStaleTaskDirectories } from "../workspace/cleanup.js";
 import { loadConfig } from "../config/config.js";
 import {
   DEFAULT_PURGE_INTERVAL_MS,
@@ -72,9 +73,14 @@ export function createApplication() {
   };
 
   // 数据清理：启动后先跑一次，之后按间隔（默认 6 小时，管理端可改）。多实例时由数据库锁保证同一时间只有一个在跑。
+  // 同时清理本机上中断任务留下的临时目录：超过最长任务时限加 10 分钟还没变化的，不可能还在用。
   let purging: Promise<void> | undefined;
   const purge = () => {
     if (purging || scheduleAbort.signal.aborted) return;
+    const longest = Math.max(config.agentTimeoutMs, config.development?.timeoutMs ?? 0, config.healthTimeoutMs ?? 0);
+    void removeStaleTaskDirectories(longest + 10 * 60_000)
+      .then((removed) => removed && log("info", "stale_task_directories_removed", { removed }))
+      .catch((error) => log("error", "stale_task_directories_failed", {}, error));
     if (!config.dataRetentionDays && !config.revokedDataGraceDays) return;
     purging = database
       .purgeExpired({ retentionDays: config.dataRetentionDays, revokedGraceDays: config.revokedDataGraceDays })

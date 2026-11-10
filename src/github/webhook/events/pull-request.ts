@@ -36,6 +36,13 @@ export async function handlePullRequest(
       .catch((error) =>
         log("error", "cancel_request_failed", { repositoryId: event.repository.id, prNumber: pr.number }, error),
       );
+  // 开发 PR 关闭或合并：任务结束，取消还没处理完的评论修改（正在跑的连同工作区一起结束）。
+  if (closed && typeof target !== "function")
+    await target
+      .closeDevelopmentPullRequest?.(event.repository.id, pr.number)
+      .catch((error) =>
+        log("error", "development_close_failed", { repositoryId: event.repository.id, prNumber: pr.number }, error),
+      );
   if (
     (!actions.has(event.action) && !closed) ||
     (!closed && (pr.draft || pr.state !== "open" || pr.head.repo?.full_name !== event.repository.full_name)) ||

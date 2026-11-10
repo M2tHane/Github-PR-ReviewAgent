@@ -179,7 +179,7 @@ export function createDiscussionProcessor(
   };
 }
 
-// 固定提示：谁能说“开始”、开发中的回复不会用上等。不调用模型。
+// 固定提示：谁能说“开始”、开发中的回复不会用上、群内开发已关闭等。不调用模型。
 export function createNoticeProcessor(
   store: DevelopmentStore,
   github: Pick<GitHubClient, "installationToken" | "createIssueComment">,
@@ -187,8 +187,10 @@ export function createNoticeProcessor(
   return async (task: DevelopmentTask, signal: AbortSignal) => {
     try {
       const token = await github.installationToken(Number(task.installation_id), signal);
-      await github.createIssueComment(token, task.repository, task.issue_number!, task.prompt, signal);
-      await store.finish(task, "succeeded", `已在 issue #${task.issue_number} 回复提示。`);
+      // issue 里的提示发到 issue，开发 PR 里的发到 PR。
+      const number = task.issue_number ?? task.pr_number!;
+      await github.createIssueComment(token, task.repository, number, task.prompt, signal);
+      await store.finish(task, "succeeded", `已在 #${number} 回复提示。`);
     } catch (error) {
       log("error", "development_notice_failed", { taskId: task.id, repository: task.repository }, error);
       await store.finish(task, "failed", "issue 提示发送失败。");

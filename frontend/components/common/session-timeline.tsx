@@ -13,6 +13,8 @@ const roleLabels: Record<string, string> = {
   health_auditor: "健康检查",
   security_auditor: "安全链路分析",
   developer: "开发",
+  discussion: "issue 讨论",
+  revision: "PR 评论修改",
 };
 const kindLabels: Record<Step["kind"], string> = {
   service: "服务",

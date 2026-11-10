@@ -34,6 +34,7 @@ Pi 只负责收到确定任务后的推理和工具调用。
 | Security alerts | 默认不申请 | M3 首版不接入完整安全扫描，不能由依赖清单推导“无漏洞” |
 | Contents Write | 仅群内开发 | 开发任务创建分支和提交，见 [群内开发](./wecom-development.md) |
 | Issues | 仅群内开发：Read & Write | 需求不清楚时开 issue、在 issue 里回复；订阅 Issue comment 事件 |
+| 开发 PR 的评论 | 仅群内开发 | 订阅 Issue comment、Pull request review comment、Pull request review；有仓库权限的人在开发 PR 下评论后，服务在同一分支追加提交（不强推）并在 PR 里回复 |
 
 服务端固定发布 COMMENT，不让模型选择 APPROVE、REQUEST_CHANGES 或 merge。
 

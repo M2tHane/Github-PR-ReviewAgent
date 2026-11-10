@@ -4,6 +4,7 @@ import type { JobAcceptor } from "../../../persistence/database.js";
 import type { ReviewJob } from "../../../jobs/types.js";
 import { send } from "../http.js";
 import { parseReviewComment } from "../parser.js";
+import { acceptPullRequestComment } from "./pull-request-comment.js";
 
 export async function handleReviewComment(
   config: Config,
@@ -12,9 +13,38 @@ export async function handleReviewComment(
   payload: unknown,
   response: ServerResponse,
 ) {
-  if (typeof target === "function" || !("acceptReply" in target) || typeof target.acceptReply !== "function")
-    return send(response, 200, { ignored: true });
+  if (typeof target === "function") return send(response, 200, { ignored: true });
   const raw = payload as any;
+  // 开发 PR 上代码行的评论（含回复）交给开发任务；其余照旧只处理对本 App 审查意见的回复。
+  if (
+    raw?.action === "created" &&
+    Number.isSafeInteger(raw?.repository?.id) &&
+    typeof raw?.repository?.full_name === "string" &&
+    config.allowedRepositories.has(raw.repository.full_name.toLowerCase()) &&
+    Number.isSafeInteger(raw?.pull_request?.number) &&
+    Number.isSafeInteger(raw?.comment?.id) &&
+    typeof raw?.comment?.body === "string" &&
+    typeof raw?.comment?.user?.login === "string" &&
+    (await acceptPullRequestComment(
+      config,
+      target,
+      {
+        repositoryId: raw.repository.id,
+        prNumber: raw.pull_request.number,
+        source: "review_comment",
+        commentId: raw.comment.id,
+        login: raw.comment.user.login,
+        body: codeComment(raw.comment),
+        association: raw.comment.author_association,
+        open: raw.pull_request.state === "open",
+        authorType: raw.comment.user.type,
+      },
+      response,
+    ))
+  )
+    return;
+  if (!("acceptReply" in target) || typeof target.acceptReply !== "function")
+    return send(response, 200, { ignored: true });
   if (
     raw?.action !== "created" ||
     raw?.pull_request?.draft === true ||
@@ -48,4 +78,13 @@ export async function handleReviewComment(
         duplicate: result.kind === "duplicate",
         jobId: result.job?.id,
       });
+}
+
+// 代码行评论带上位置，Agent 不用再去查评论落在哪一行。
+function codeComment(comment: { path?: unknown; line?: unknown; body: string }) {
+  const where =
+    typeof comment.path === "string"
+      ? `${comment.path}${Number.isSafeInteger(comment.line) ? `:${comment.line}` : ""}`
+      : "";
+  return where ? `（评论在 ${where}）\n${comment.body}` : comment.body;
 }

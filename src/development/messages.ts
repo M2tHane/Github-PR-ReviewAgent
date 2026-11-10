@@ -54,7 +54,9 @@ export function parseGroupMessage(
 export function developmentMessage(task: DevelopmentTask) {
   const success = task.status === "succeeded" && task.pr_number;
   const status = success
-    ? "AI 开发任务已完成"
+    ? task.kind === "revise"
+      ? "AI 已按 PR 评论修改"
+      : "AI 开发任务已完成"
     : task.status === "discussing"
       ? "AI 开发任务需要先确认"
       : task.status === "refused"
@@ -68,7 +70,7 @@ export function developmentMessage(task: DevelopmentTask) {
   const issue = task.issue_number ? `[issue #${task.issue_number}](${repository}/issues/${task.issue_number})` : "";
   const lines = [`> 项目：${markdownText(task.repository)}`];
   if (success) {
-    lines.push(`> PR：#${task.pr_number} ${markdownText(task.title!)}`);
+    lines.push(`> ${task.kind === "revise" ? "新提交" : "PR"}：#${task.pr_number} ${markdownText(task.title!)}`);
     if (issue) lines.push(`> 来自 ${issue}`);
     lines.push(`> [查看 PR](${repository}/pull/${task.pr_number})`);
   } else if (task.status === "discussing" && issue) {
