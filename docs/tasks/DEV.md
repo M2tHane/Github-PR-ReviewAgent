@@ -379,4 +379,4 @@ complex 3 次都指出旧对照里只有专项找到的问题：收款账户不�
 
 GitHub 上的 Docker image 工作流已用 `gh workflow disable` 停用（状态 `disabled_manually`），合并前推送到 main 也不会再构建。停用前最后一次发布是合并 PR #9 后的 [run 42737697827](https://github.com/M2tHane/Github-PR-ReviewAgent/actions/runs/42737697827)。
 
-已用 `gh cache delete --all` 清空 Actions 构建缓存，删除本地 `work/docker/`（约 214 MB 镜像包）。GHCR 上已发布的 `ghcr.io/m2thane/github-pr-reviewagent` 包未删除：当前 gh 登录没有 `read:packages`、`delete:packages` 权限。
+已用 `gh cache delete --all` 清空 Actions 构建缓存，删除本地 `work/docker/`（约 214 MB 镜像包）。GHCR 上已发布的 `ghcr.io/m2thane/github-pr-reviewagent` 包由用户在网页上删除（当前 gh 登录没有 `read:packages`，无法用 API 复核）。
