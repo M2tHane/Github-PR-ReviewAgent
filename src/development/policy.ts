@@ -103,7 +103,7 @@ export function enforceProtections(paths: string[], role: string, protections: P
     }
 }
 // 字数上限与 commit-pr Skill 里写的一致；超了在同一会话里让模型压缩一次。
-export const WRITING_LIMITS = { prBody: 1000, issueBody: 800, issueReply: 500 };
+export const WRITING_LIMITS = { prBody: 1000, issueBody: 3000, issueReply: 1500 };
 
 export type DevelopmentResult =
   | { kind: "pr"; title: string; summary: string }

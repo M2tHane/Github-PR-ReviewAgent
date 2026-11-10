@@ -411,3 +411,5 @@ GitHub 上的 Docker image 工作流已用 `gh workflow disable` 停用（状态
 验收后修复：PR 建好后，最初开 issue 的任务在管理页仍显示“已开 issue 讨论”。现在 PR 建好时把它改为成功，结果写“issue #n 讨论后已建 PR #m。”，数据库用例覆盖。
 
 未做：企微群收发和 GitHub Webhook 的 `issue_comment` 真实投递未验证（App 订阅 Issue comment 事件前收不到）；本地服务未升级、012 未在主库执行；改动未提交。
+
+2026-11-10 追加（用户要求）：issue 里一次问完全部要定的问题，每个带编号和推荐做法；提需求的人只回复有异议的编号，没提到的按推荐做。改了 development / commit-pr Skill、讨论回复和开发的提示词、issue 末尾的服务说明；字数上限调为 issue 正文 1500、issue 回复 800（随后按用户要求再调到 3000、1500）。`npm test` 168 通过、0 失败；`npm run test:db` 70 项通过；本地服务已重启。真实模型效果未验证。

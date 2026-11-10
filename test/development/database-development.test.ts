@@ -1138,7 +1138,7 @@ test("需求不清楚时开 issue、不提交改动；群里回复带 issue 链�
     assert.equal(s.issues[0]!.title, "订单导出加上限");
     assert.match(
       s.issues[0]!.body,
-      /需要你确认[\s\S]*---\n确认没问题后，请提需求的人回复“开始”。（提需求的人还没有关联 GitHub 账号/,
+      /需要你确认[\s\S]*---\n有异议的回复编号说明，没提到的按推荐做。确认后请提需求的人回复“开始”。（提需求的人还没有关联 GitHub 账号/,
     );
     const issue = (
       await s.database.pool.query("SELECT status,origin_task_id FROM development_issues WHERE repository_id=$1", [

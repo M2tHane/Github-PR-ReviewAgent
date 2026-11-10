@@ -90,7 +90,7 @@ test("字数超上限时让模型压缩；“开始”必须是整条回复", ()
   assert.match(lengthFeedback(pr(WRITING_LIMITS.prBody + 1))!, /PR 正文有 1001 字，超过 1000 字的上限/);
   assert.match(
     lengthFeedback({ kind: "issue", title: "t", body: "字".repeat(WRITING_LIMITS.issueBody + 1) })!,
-    /issue 正文有 801 字/,
+    /issue 正文有 3001 字/,
   );
   for (const text of ["开始", " 开始。", "开始开发", "开工！", "/start", "/START\n"])
     assert.equal(isStartCommand(text), true, text);
