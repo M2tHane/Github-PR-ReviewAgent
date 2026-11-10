@@ -159,6 +159,10 @@ test("图像预算保留视觉 token，不把 base64 当正文；机器人配置
   assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "500000" })?.budgetTokens, 500_000);
   assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "abc" }));
   assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_TIMEOUT_MS: "1000" }));
+  assert.equal(loadDevelopmentConfig(bot)?.concurrency, 3, "默认最多同时 3 个开发任务");
+  assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_CONCURRENCY: "5" })?.concurrency, 5);
+  for (const value of ["0", "11", "abc", "1.5"])
+    assert.throws(() => loadDevelopmentConfig({ ...bot, DEVELOPMENT_CONCURRENCY: value }));
 });
 test("完成与拒绝消息去掉成员提及并转义用户标题", () => {
   const task = {

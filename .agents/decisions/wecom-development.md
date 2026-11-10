@@ -18,7 +18,7 @@
 
 ## Constraints
 
-- Review／Reply／Decision／Health 没有写文件工具；开发 Agent 不安装依赖、不访问网络服务，服务不自动合并。
+- Review／Reply／Decision／Health 没有写文件工具；开发 Agent 不安装依赖，bash 不访问网络服务；它可以用 Playwright 浏览器访问任意网站（用户 2026-11-09 决定），服务不自动合并。
 - 开发 Agent 运行的检查结果只写在 PR 正文里作参考，不代替仓库 CI。
 - 开发任务默认不限 token、时限 1 小时；模型服务临时故障时整个任务从头重试，开始发布后不重试。
 - 成员身份只取可信企微回调，设置写入需要 GitHub 维护权限和 CSRF。

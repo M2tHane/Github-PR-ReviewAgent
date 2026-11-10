@@ -1,6 +1,7 @@
 import { readBaseFile, readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
 import { GitHubClient } from "../github/client.js";
 import { BudgetError, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
+import { DEFAULT_BUDGET_TOKENS } from "../pi/types.js";
 import type { Config } from "../config/config.js";
 import type { ReviewJob } from "../jobs/types.js";
 import type { ReviewResult } from "./types.js";
@@ -53,7 +54,11 @@ export function createReviewProcessor(
       return;
     }
     if (files.length === 0) throw new Error("PR 没有可审查文件");
-    const budgetTokens = await remainingBudget(publications, job.id, repositoryConfig?.budgetTokens ?? 20_000);
+    const budgetTokens = await remainingBudget(
+      publications,
+      job.id,
+      repositoryConfig?.budgetTokens ?? DEFAULT_BUDGET_TOKENS,
+    );
     const controller = new AbortController(),
       timer = setTimeout(() => controller.abort(new TimeoutError()), config.agentTimeoutMs);
     const database = publications as import("../persistence/database.js").Database | undefined;
@@ -83,6 +88,7 @@ export function createReviewProcessor(
         // 仓库 AGENTS.md 取目标分支版本：PR 里改动的说明不能影响对这个 PR 的审查。
         const repositoryInstructions = await readBaseFile(root, job.baseSha, "AGENTS.md");
         singleRunId = await database?.startAgentRun?.(job.id, "general_review", budgetTokens, config.agentTimeoutMs);
+        const agentRunId = singleRunId;
         const review = await execute({
           root,
           provider: config.modelProvider,
@@ -102,6 +108,8 @@ export function createReviewProcessor(
           budgetTokens,
           repositoryInstructions,
           signal: controller.signal,
+          onSession: (session) =>
+            database?.saveAgentSession?.({ jobId: job.id, agentRunId, role: "general_review" }, session),
         });
         agentUsage = review.usage;
         controller.signal.throwIfAborted();

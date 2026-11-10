@@ -17,6 +17,8 @@ import { createNotificationMembersRoute } from "./notification-members.routes.js
 
 import { createRuleImportRoute } from "./rule-import.routes.js";
 import { createDevelopmentRoute } from "./development.routes.js";
+import { createAgentSessionsRoute } from "./agent-sessions.routes.js";
+import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 
 export interface AdminStores {
   sessions: SessionStore<Session>;
@@ -39,6 +41,7 @@ export function createAdminHandler(
   const ruleImportRoute = createRuleImportRoute(database, authorize);
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
+  const agentSessionsRoute = createAgentSessionsRoute(config, database, authorize);
   const configured = Boolean(
     config.githubClientId &&
       config.githubClientSecret &&
@@ -173,6 +176,9 @@ export function createAdminHandler(
         if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
         const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development$/);
         if (developmentMatch) return await developmentRoute(request, response, Number(developmentMatch[1]));
+        const sessionMatch = url.pathname.match(/^\/api\/agent-sessions\/([^/]+?)(\/raw)?$/);
+        if (sessionMatch)
+          return await agentSessionsRoute(request, response, sessionMatch[1]!, Boolean(sessionMatch[2]));
         const membersMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/notification-members(?:\/([^/]+))?$/);
         if (membersMatch) return notificationMembersRoute(request, response, Number(membersMatch[1]), membersMatch[2]);
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
@@ -239,7 +245,16 @@ export function createAdminHandler(
             "SELECT id,status FROM review_findings WHERE job_id=$1 ORDER BY id",
             [jobMatch[1]],
           );
-          return json(response, 200, { ...result.rows[0], agent_runs: runs.rows, finding_statuses: statuses.rows });
+          const agentSessions = await database.pool.query(
+            `SELECT ${SESSION_SUMMARY("s")} summary FROM agent_sessions s WHERE s.job_id=$1 ORDER BY s.started_at`,
+            [jobMatch[1]],
+          );
+          return json(response, 200, {
+            ...result.rows[0],
+            agent_runs: runs.rows,
+            agent_sessions: agentSessions.rows.map((row) => row.summary),
+            finding_statuses: statuses.rows,
+          });
         }
         if (request.method === "GET" && url.pathname === "/api/findings")
           return findingsRoute(request, response, url, user);

@@ -52,8 +52,12 @@ export default function serviceExtension(pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     let content = event.content as Array<TextPart | { type: string }>;
     let redacted = false;
-    // codegraph 工具同样返回源码片段，和读取工具一样打码。
-    if (REDACT_TOOLS.has(event.toolName) || event.toolName.startsWith("codegraph_"))
+    // codegraph 返回源码片段、浏览器返回网页内容，和读取工具一样打码。
+    if (
+      REDACT_TOOLS.has(event.toolName) ||
+      event.toolName.startsWith("codegraph_") ||
+      event.toolName.startsWith("mcp__")
+    )
       content = content.map((part) => {
         if (part.type !== "text") return part;
         const text = redactSecrets((part as TextPart).text);

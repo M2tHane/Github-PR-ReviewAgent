@@ -29,6 +29,9 @@ export function addUsage(total: AgentUsage, usage: Partial<AgentUsage>) {
   );
 }
 
+// 仓库没有单独设置时，每个审查类任务（含重试）的 token 总预算。Pi 进程审查一个小 PR 实测约 7–9 万。
+export const DEFAULT_BUDGET_TOKENS = 500_000;
+
 export class BudgetError extends Error {
   constructor(message = "Agent 总 Token 预算不足，未发送后续模型请求") {
     super(message);

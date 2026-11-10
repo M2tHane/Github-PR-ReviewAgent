@@ -129,6 +129,7 @@ export function createDecisionProcessor(
             discussions,
             decisionClues,
           },
+          onSession: (session) => database.saveAgentSession({ jobId: job.id, role: "decision_extractor" }, session),
         });
       } catch (error) {
         if (error instanceof TimeoutError) job.status = "timeout";

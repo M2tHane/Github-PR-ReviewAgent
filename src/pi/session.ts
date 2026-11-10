@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -11,9 +12,11 @@ import { redactSecrets } from "../health/secrets.js";
 import { log } from "../logging.js";
 import { BRIDGE_PREFIX, type ServiceExtensionConfig } from "./extension.js";
 import { KEY_PLACEHOLDER, startModelProxy } from "./model-proxy.js";
+import { sanitizeSession, type RecordedSession, type SessionTimings } from "./session-record.js";
 import {
   addUsage,
   BudgetError,
+  DEFAULT_BUDGET_TOKENS,
   emptyUsage,
   ProviderError,
   requestTokenBudget,
@@ -27,8 +30,18 @@ const SERVICE_EXTENSION = fileURLToPath(new URL("./extension.js", import.meta.ur
 // 服务自有的 AGENTS.md 与 Skills，随服务发布，不来自待处理仓库。
 export const AGENT_RESOURCES = fileURLToPath(new URL("../../../agent/", import.meta.url));
 const CODEGRAPH_PACKAGE = dirname(require.resolve("@colbymchenry/codegraph/package.json"));
-const CODEGRAPH_EXTENSION = require.resolve("@vndv/pi-codegraph/extensions/codegraph.ts");
+// 服务自己的 codegraph 工具扩展：每个 Pi 进程一个常驻 codegraph，避免每次查询重新加载索引。
+const CODEGRAPH_EXTENSION = fileURLToPath(new URL("./codegraph-extension.js", import.meta.url));
 const BIN_DIR = join(CODEGRAPH_PACKAGE, "..", "..", ".bin");
+const PLAYWRIGHT_MCP = join(dirname(require.resolve("@playwright/mcp/package.json")), "cli.js");
+// 浏览器装在服务用户的 Playwright 默认目录；Pi 的 HOME 是临时目录，必须显式告诉 Playwright。
+const PLAYWRIGHT_BROWSERS =
+  process.env.PLAYWRIGHT_BROWSERS_PATH ||
+  (process.platform === "darwin"
+    ? join(homedir(), "Library", "Caches", "ms-playwright")
+    : join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "ms-playwright"));
+// 直接执行任意 Node 代码，等同于在服务机器上运行脚本，不开放。
+const HIDDEN_BROWSER_TOOLS = ["browser_run_code_unsafe"];
 const PASS_THROUGH = [
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
@@ -38,7 +51,8 @@ const PASS_THROUGH = [
   "http_proxy",
 ];
 // codegraph 平台包缺失时不从网上下载，直接失败，任务照常进行。
-const CODEGRAPH_ENV = { CODEGRAPH_NO_DOWNLOAD: "1" };
+// 不启动共享守护进程：它脱离 Pi 的进程组，任务结束后还会空转 5 分钟；查询由每个 Pi 进程自己的常驻 codegraph 处理。
+const CODEGRAPH_ENV = { CODEGRAPH_NO_DOWNLOAD: "1", CODEGRAPH_NO_DAEMON: "1" };
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
 export const WRITE_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"];
 
@@ -71,8 +85,13 @@ export interface PiSessionInput {
   skills?: string[];
   repositoryInstructions?: string;
   codegraph?: boolean;
+  // 开启 Playwright 浏览器（@playwright/mcp），可访问任意网站；目前只给开发任务。
+  browser?: boolean;
   bridge?: SessionBridge;
   onUsage?: (usage: AgentUsage) => Promise<void>;
+  // 交出整理后的 Pi 会话记录：开始时、运行中（有新步骤时每 5 秒，至少每 30 秒）和结束时（含失败、超时、取消）。
+  // 同一次运行的 id 不变；保存失败只记日志，不影响任务。
+  onSession?: (session: RecordedSession) => unknown;
   // 调用方复核模型结果；返回消息时在同一会话再问一轮，共用预算、超时和取消。
   followUp?: (text: string) => string | undefined | Promise<string | undefined>;
 }
@@ -81,7 +100,7 @@ export async function runPiSession(input: PiSessionInput) {
   input.signal?.throwIfAborted();
   const started = Date.now(),
     usage = emptyUsage(),
-    budget = input.budgetTokens ?? 20_000;
+    budget = input.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
   let budgetError: BudgetError | undefined,
     rejection: Error | undefined,
     timedOut = false,
@@ -89,6 +108,13 @@ export async function runPiSession(input: PiSessionInput) {
     requestSent = false,
     stderr = "";
   let checkpoint = Promise.resolve();
+  let outcome: Pick<RecordedSession, "status" | "error"> = { status: "succeeded" };
+  const timings: SessionTimings = { models: [], tools: {} };
+  let modelStarted: number | undefined;
+  const sessionId = randomUUID();
+  let recording = Promise.resolve(),
+    changed = false,
+    savedAt = 0;
   const persistUsage = (pending = 0) => {
     if (!input.onUsage) return checkpoint;
     const snapshot = { ...usage, unreportedTokens: usage.unreportedTokens + pending };
@@ -97,6 +123,8 @@ export async function runPiSession(input: PiSessionInput) {
     return checkpoint;
   };
   const runDir = await mkdtemp(join(tmpdir(), "pi-run-"));
+  // Playwright 的本地 socket 路径有长度限制，macOS 的临时目录太长，单独放在 /tmp。
+  const socketDir = input.browser ? await mkdtemp("/tmp/pi-pw-") : undefined;
   let child: ChildProcess | undefined;
   let proxy: Awaited<ReturnType<typeof startModelProxy>> | undefined;
   const timer = setTimeout(
@@ -110,6 +138,34 @@ export async function runPiSession(input: PiSessionInput) {
     if (child?.pid && child.exitCode === null) killGroup(child.pid, "SIGTERM");
   };
   input.signal?.addEventListener("abort", stop, { once: true });
+  // 按顺序保存，结束时的最后一次不会被较早的定时保存覆盖。
+  const saveSession = (final: boolean) => {
+    if (!input.onSession) return recording;
+    savedAt = Date.now();
+    changed = false;
+    recording = recording.then(async () => {
+      try {
+        // 运行中把正在等待的模型请求也列出来。
+        const pending = !final && modelStarted ? [{ startedAt: modelStarted }] : [];
+        await input.onSession!(
+          await recordSession(join(runDir, "sessions"), {
+            id: sessionId,
+            ...(final ? outcome : { status: "running" as const }),
+            startedAt: new Date(started),
+            durationMs: Date.now() - started,
+            timings: { ...structuredClone(timings), models: [...timings.models, ...pending] },
+          }),
+        );
+      } catch (error) {
+        log("error", "agent_session_record_failed", {}, error);
+      }
+    });
+    return recording;
+  };
+  const progress = setInterval(() => {
+    if (changed || Date.now() - savedAt >= 30_000) void saveSession(false);
+  }, 5_000);
+  void saveSession(false);
   try {
     const root = await realpath(input.root);
     const target = await resolveModel(input);
@@ -134,6 +190,7 @@ export async function runPiSession(input: PiSessionInput) {
         input.signal?.throwIfAborted();
         if (timedOut) throw new TimeoutError();
         requestSent = true;
+        modelStarted = Date.now();
         return body;
       },
       rejected(error) {
@@ -142,20 +199,36 @@ export async function runPiSession(input: PiSessionInput) {
       },
     });
     const builtinTools = input.builtinTools ?? READ_ONLY_TOOLS;
-    const codegraph = (input.codegraph ?? builtinTools.length > 0) && (await ensureCodegraph(root, input));
-    const files = await prepareRunDirectory(runDir, root, input, proxy.baseUrl, target.vision);
+    let codegraph = false;
+    if (input.codegraph ?? builtinTools.length > 0) {
+      const indexed = existsSync(join(root, ".codegraph")),
+        startedAt = Date.now();
+      if (!indexed) {
+        timings.codegraph = { startedAt };
+        changed = true;
+      }
+      codegraph = await ensureCodegraph(root, input);
+      if (!indexed) {
+        timings.codegraph = { startedAt, durationMs: Date.now() - startedAt, ok: codegraph };
+        changed = true;
+      }
+    }
+    const files = await prepareRunDirectory(runDir, root, input, proxy.baseUrl, target.vision, socketDir);
     const tools = [
       ...builtinTools,
       ...(input.tools ?? []).map((tool) => tool.name),
       ...(codegraph ? ["codegraph_*"] : []),
+      ...(input.browser ? ["mcp__playwright__*"] : []),
     ];
     const args = [
       RPC_ENTRY,
-      ...["--no-session", "-ne", "-ns", "-np", "--no-themes", "-nc", "-na", "--offline"],
+      // 会话写在临时运行目录里，结束后整理入库；不读取宿主机已有的会话。
+      ...["--session-dir", join(runDir, "sessions"), "-ne", "-ns", "-np", "--no-themes", "-nc", "-na", "--offline"],
       ...["--provider", input.provider, "--model", input.modelName],
       ...(input.endpoint?.thinkingLevel ? ["--thinking", input.endpoint.thinkingLevel] : []),
       ...["--tools", tools.join(","), "-e", SERVICE_EXTENSION],
       ...(codegraph ? ["-e", CODEGRAPH_EXTENSION] : []),
+      ...(input.browser ? ["-e", "builtin:mcp"] : []),
       ...(input.skills ?? []).flatMap((skill) => ["--skill", join(AGENT_RESOURCES, "skills", skill)]),
       ...["--system-prompt", files.systemPrompt],
       ...(files.repositoryInstructions ? ["--append-system-prompt", files.repositoryInstructions] : []),
@@ -180,6 +253,17 @@ export async function runPiSession(input: PiSessionInput) {
         return { value: JSON.stringify({ allow: false, reason: (error as Error).message, isError: true }) };
       }
     });
+    rpc.onEvent = (record) => {
+      const now = Date.now();
+      if (["message_end", "tool_execution_start", "tool_execution_end"].includes(record.type)) changed = true;
+      if (record.type === "message_end" && record.message?.role === "assistant") {
+        timings.models.push({ startedAt: modelStarted ?? now, durationMs: now - (modelStarted ?? now) });
+        modelStarted = undefined;
+      } else if (record.type === "tool_execution_start")
+        timings.tools[record.toolCallId] = { startedAt: now, name: String(record.toolName) };
+      else if (record.type === "tool_execution_end" && timings.tools[record.toolCallId])
+        timings.tools[record.toolCallId]!.durationMs = now - timings.tools[record.toolCallId]!.startedAt;
+    };
     rpc.onAssistant = (message) => {
       const reported = emptyUsage();
       addUsage(reported, message.usage ?? {});
@@ -220,9 +304,15 @@ export async function runPiSession(input: PiSessionInput) {
     if (timedOut && !(failure instanceof BudgetError)) failure = new TimeoutError();
     else if (error === input.signal?.reason || input.signal?.aborted)
       failure = error instanceof TimeoutError ? new TimeoutError() : new Error(failure.message);
+    const timeout = failure instanceof TimeoutError || input.signal?.reason?.name === "TimeoutError";
+    outcome = {
+      status: timeout ? "timeout" : input.signal?.aborted ? "cancelled" : "failed",
+      error: redactSecrets(failure.message).slice(0, 500),
+    };
     throw Object.assign(failure, { usage, durationMs: Date.now() - started, model: input.modelName });
   } finally {
     clearTimeout(timer);
+    clearInterval(progress);
     input.signal?.removeEventListener("abort", stop);
     if (reservedTokens) {
       if (requestSent) usage.unreportedTokens += reservedTokens;
@@ -230,9 +320,24 @@ export async function runPiSession(input: PiSessionInput) {
     }
     if (child) await terminate(child);
     await proxy?.close();
+    // 请求已发出但没等到回复（超时或取消）时，也记下这次模型请求。
+    if (modelStarted) timings.models.push({ startedAt: modelStarted });
+    modelStarted = undefined;
+    await saveSession(true);
     await rm(runDir, { recursive: true, force: true });
+    if (socketDir) await rm(socketDir, { recursive: true, force: true });
     await checkpoint.catch(() => undefined);
   }
+}
+
+async function recordSession(
+  directory: string,
+  value: Omit<RecordedSession, "content" | "steps" | "bytes" | "truncated">,
+): Promise<RecordedSession> {
+  const files = await readdir(directory, { recursive: true }).catch(() => [] as string[]);
+  const file = files.find((name) => name.endsWith(".jsonl"));
+  const raw = file ? await readFile(join(directory, file), "utf8") : "";
+  return { ...value, ...sanitizeSession(raw) };
 }
 
 async function bridge(input: PiSessionInput, message: Record<string, any>) {
@@ -277,6 +382,7 @@ async function prepareRunDirectory(
   input: PiSessionInput,
   proxyUrl: string,
   vision: boolean,
+  socketDir?: string,
 ) {
   const agentDir = join(runDir, "agent");
   await Promise.all(["agent", "home", "tmp"].map((name) => mkdir(join(runDir, name), { recursive: true })));
@@ -310,9 +416,44 @@ async function prepareRunDirectory(
       images: { autoResize: false },
     }),
   );
+  if (input.browser) {
+    // 无界面、内存里的临时浏览器配置；文件读写限制在工作区，截图等输出写到运行目录。
+    const browserConfig = join(runDir, "playwright.json");
+    await writeFile(
+      browserConfig,
+      JSON.stringify({
+        browser: { browserName: "chromium", isolated: true, launchOptions: { headless: true } },
+        outputDir: join(runDir, "tmp", "playwright"),
+        imageResponses: vision ? "allow" : "omit",
+        ignoreRoots: true,
+      }),
+    );
+    await writeFile(
+      join(agentDir, "mcp.json"),
+      JSON.stringify({
+        autoEnableCodemode: false,
+        mcpServers: {
+          playwright: {
+            command: process.execPath,
+            args: [PLAYWRIGHT_MCP, "--config", browserConfig],
+            cwd: root,
+            env: { PLAYWRIGHT_BROWSERS_PATH: PLAYWRIGHT_BROWSERS, PWTEST_SOCKETS_DIR: socketDir! },
+            timeout: 120,
+            exposure: "direct",
+            toolExposure: Object.fromEntries(HIDDEN_BROWSER_TOOLS.map((name) => [name, "hidden"])),
+            description: "无界面 Chromium 浏览器：打开网页、查看页面内容、点击和填写表单。",
+          },
+        },
+      }),
+    );
+  }
   const config: ServiceExtensionConfig = {
     root,
-    readOnlyRoots: [await realpath(join(AGENT_RESOURCES, "skills"))],
+    // 开浏览器时 MCP 结果过长会存到临时目录，允许只读这里。
+    readOnlyRoots: [
+      await realpath(join(AGENT_RESOURCES, "skills")),
+      ...(input.browser ? [await realpath(join(runDir, "tmp"))] : []),
+    ],
     tools: (input.tools ?? []).map((tool) => ({
       name: tool.name,
       label: tool.label,
@@ -423,6 +564,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // Pi RPC 的 JSONL 连接：只按 LF 切分记录（JSON 字符串里可以合法出现 U+2028）。
 class RpcConnection {
   onAssistant?: (message: Record<string, any>) => void;
+  onEvent?: (record: Record<string, any>) => void;
   private buffer = "";
   private nextId = 0;
   private pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>();
@@ -473,6 +615,7 @@ class RpcConnection {
     } catch {
       return;
     }
+    this.onEvent?.(record);
     if (record.type === "response" && this.pending.has(record.id)) {
       this.pending.get(record.id)!.resolve(record);
       this.pending.delete(record.id);

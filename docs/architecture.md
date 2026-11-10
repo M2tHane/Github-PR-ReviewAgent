@@ -117,10 +117,11 @@ Repository Curator 仅保留在长期构想，不属于当前实现。
 
 1. **准备临时配置目录：** 写入模型配置（占位 key、指向本地代理）、关闭重试与上下文压缩的设置、服务 AGENTS.md 和系统提示。
 2. **启动本地模型代理：** 每次请求前持久化预留额、收紧输出上限，超预算直接拒绝不转发；转发时换成真实 key。
-3. **准备 codegraph：** 有内置工具的 Agent，在工作区没有 `.codegraph/` 时先建索引；失败只是不加载 codegraph 工具。
+3. **准备 codegraph：** 有内置工具的 Agent，在工作区没有 `.codegraph/` 时先建索引；失败只是不加载 codegraph 工具。Pi 启动后由服务的 codegraph 扩展启动一个常驻 codegraph 并预热，之后的查询不再重新加载索引；不启动脱离进程组的共享守护进程。
 4. **启动 Pi（RPC 模式）：** 工作目录是 Workspace；关闭扩展、Skills、提示模板、主题和上下文文件的自动发现，只加载服务扩展、codegraph 扩展和服务 Skills；环境变量只含运行所需的最小集合。
 5. **对话：** 发送任务，等 Pi 结束；调用方需要时在同一会话追加一轮（开发任务补发规则）。
 6. **结束：** 正常结束、超时、取消都会结束 Pi 和它启动的命令（同一进程组），结算未回报的预留额，删除临时目录。
+7. **保存执行过程：** 删除临时目录前读出 Pi 的会话文件（JSONL），去掉模型思考过程和图片数据、截断过长内容并打码，连同服务记下的耗时（建 codegraph 索引、每次模型请求、每次工具调用）交给调用方存入 `agent_sessions`。运行中有变化时每 5 秒保存一次，管理页能看到进度；结束时再存最终结果。Review、Reply、规则提取、健康检查各存一份；开发任务每次尝试各一份，同一条记录还写入服务完成的步骤（准备工作区、收集改动、检查、创建提交／分支／PR）。管理页的任务详情、系统运行记录和开发任务列表里展开"执行过程"即可按步骤查看，也能下载原始记录。
 
 [服务扩展](../src/pi/extension.ts) 在 Pi 进程里运行，状态留在服务：
 
@@ -148,7 +149,8 @@ Repository Curator 仅保留在长期构想，不属于当前实现。
 | read / grep / find / ls | Pi 内置；服务扩展限制路径并打码 | Review / Reply / Decision / 开发 |
 | bash | Pi 内置；工作目录是 Workspace，最小环境变量，随进程组结束 | Review / Reply / Decision / 开发 |
 | edit / write | Pi 内置；写入前由服务检查 | 仅开发 |
-| codegraph_* | 锁定版本的 pi-codegraph 扩展 | 有内置工具的 Agent |
+| codegraph_* | 服务的 codegraph 扩展（每个 Pi 进程一个常驻 codegraph，查询固定在当前工作区） | 有内置工具的 Agent |
+| mcp__playwright__* | `@playwright/mcp` 经 Pi 内置 MCP 加载；无界面 Chromium、内存配置，可访问任意网站，`browser_run_code_unsafe` 隐藏，结果打码 | 仅开发 |
 | read_file / search_text | 服务端工具，限定选定文件与返回行数 | 仅 Health |
 | PR / diff / thread 读取 | 服务准备绑定 Job 的上下文 | 通过输入上下文提供 |
 | Memory 检索 | 服务端附加仓库、Scope 和状态过滤 | 通过输入上下文提供 |
@@ -265,7 +267,7 @@ Health 独立使用一个 Pi 进程，只给服务端读取工具。默认分支
 | 层 | 初期选择 | 扩展条件 |
 | --- | --- | --- |
 | Runtime | Node.js + TypeScript | 固定受支持版本和锁文件 |
-| Agent | Pi 进程（RPC）、内置工具、服务扩展、服务 AGENTS.md 与 Skills、pi-codegraph | 需要更强隔离时改为每任务一个容器 |
+| Agent | Pi 进程（RPC）、内置工具、服务扩展、服务 AGENTS.md 与 Skills、codegraph | 需要更强隔离时改为每任务一个容器 |
 | GitHub | GitHub App + 原生 fetch | 线程详情需要时补 GraphQL |
 | HTTP | Node HTTP 或轻量 HTTP 框架 | 按 Webhook / 管理 API 需求确定 |
 | Job | M0 内存；M1 PostgreSQL + 单实例后台执行；现在 PostgreSQL 租约 + 多实例 | 吞吐瓶颈出现后再考虑 BullMQ + Redis |

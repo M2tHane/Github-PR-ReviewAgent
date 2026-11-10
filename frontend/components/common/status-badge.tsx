@@ -13,6 +13,7 @@ export const statusLabels: Record<string, string> = {
   failed: "失败",
   timeout: "超时",
   cancelled: "已取消",
+  interrupted: "已中断",
   superseded: "已过期",
   uncertain: "待核对发布",
   published: "已发布",

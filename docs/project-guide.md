@@ -153,9 +153,10 @@ GitHub 向 `/github/webhook` 发送事件。服务先用原始请求体校验签
 | `memories` | 团队规则及版本 | 规则内容、理由、范围、来源、证据、状态、替代关系和确认人 |
 | `memory_audits` | 规则操作审计 | 谁在何时确认、编辑、忽略、停用或替代了规则，内容如何变化 |
 | `agent_runs` | Agent 执行审计 | 所属 Job、父 run、角色、模型、状态、用量、覆盖限制和耗时 |
+| `agent_sessions` | Agent 执行过程 | 每次运行整理后的 Pi 会话（无思考过程、已打码）和各步耗时；属于 Job 或开发任务，管理页按步骤展示 |
 | `health_reports` | 健康检查报告 | 对应 Job 的结构化报告；可在管理页读取 |
 
-注意：提取器目前没有接入通用的 `agent_runs` 记录链路，不能据此认为每个提取 Job 都有对应 run。OAuth 登录 state 与会话则使用有容量和期限限制的内存存储，服务重启后需要重新登录。
+注意：提取器目前没有接入通用的 `agent_runs` 记录链路，不能据此认为每个提取 Job 都有对应 run；它的执行过程记录在 `agent_sessions`。OAuth 登录 state 与会话则使用有容量和期限限制的内存存储，服务重启后需要重新登录。
 
 ### 表之间如何联系？
 
@@ -165,6 +166,7 @@ GitHub 向 `/github/webhook` 发送事件。服务先用原始请求体校验签
 repository（仓库）
  ├─ delivery（GitHub 事件）→ job（任务）
  │                          ├─ agent_runs（一次或多次模型执行）
+ │                          ├─ agent_sessions（每次执行的步骤记录）
  │                          ├─ review_publication（发布的 Review）
  │                          ├─ findings（具体问题）
  │                          │   ├─ reply_publications（回复复核结果）

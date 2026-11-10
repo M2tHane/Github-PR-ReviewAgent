@@ -7,6 +7,7 @@ import { ReviewPublicationRepository } from "./repositories/review-publication.r
 import { FindingRepository } from "./repositories/finding.repository.js";
 import { ReplyRepository } from "./repositories/reply.repository.js";
 import { AgentRunRepository } from "./repositories/agent-run.repository.js";
+import { AgentSessionRepository } from "./repositories/agent-session.repository.js";
 import { HealthRepository } from "./repositories/health.repository.js";
 import { MemoryRepository } from "./repositories/memory.repository.js";
 import { RetentionRepository } from "./repositories/retention.repository.js";
@@ -25,6 +26,7 @@ export class Database extends JobRepository implements JobAcceptor {
   private readonly findings = new FindingRepository(this.pool);
   private readonly replies = new ReplyRepository(this.pool, this.findings);
   private readonly agents = new AgentRunRepository(this.pool);
+  private readonly agentSessions = new AgentSessionRepository(this.pool);
   private readonly health = new HealthRepository(this.pool, () => this.isStopping());
   private readonly memories = new MemoryRepository(this.pool);
   private readonly retention = new RetentionRepository(this.pool);
@@ -68,6 +70,8 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly startAgentRun = this.agents.startAgentRun.bind(this.agents);
   readonly jobUsage = this.agents.jobUsage.bind(this.agents);
   readonly finishAgentRun = this.agents.finishAgentRun.bind(this.agents);
+  readonly saveAgentSession = this.agentSessions.saveAgentSession.bind(this.agentSessions);
+  readonly getAgentSession = this.agentSessions.getAgentSession.bind(this.agentSessions);
   readonly activeHealthJob = this.health.activeHealthJob.bind(this.health);
   readonly enqueueHealth = this.health.enqueueHealth.bind(this.health);
   readonly retryHealth = this.health.retryHealth.bind(this.health);

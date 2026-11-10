@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { createAdminHandler } from "../../src/admin/handler.js";
 import type { Config } from "../../src/config/config.js";
 import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { emptyUsage } from "../../src/review/agent.js";
 import { groupFindings } from "../../src/review/presentation.js";
@@ -50,6 +50,20 @@ test("migration 幂等且 delivery/job 跨连接持久化", { skip: !fixture.url
     assert.equal(accepted.kind, "accepted");
     assert.equal(accepted.job?.status, "queued");
     assert.equal((await database.accept(input, { event: "pull_request", action: "opened" })).kind, "duplicate");
+    const budget = async () =>
+      (await database.pool.query("SELECT budget_tokens FROM repositories WHERE id=$1", [repositoryId])).rows[0]
+        .budget_tokens;
+    assert.equal(await budget(), 500_000, "新仓库默认 50 万 token");
+    // 已有库升级：仍是旧默认 2 万的仓库调到 50 万，单独设置过的不动。
+    const upgrade = await readFile(resolve("migrations/009_default_budget.sql"), "utf8");
+    for (const [before, after] of [
+      [20_000, 500_000],
+      [123_456, 123_456],
+    ]) {
+      await database.pool.query("UPDATE repositories SET budget_tokens=$2 WHERE id=$1", [repositoryId, before]);
+      await database.pool.query(upgrade);
+      assert.equal(await budget(), after);
+    }
     const id = accepted.job!.id;
     await database.close();
     const restarted = new Database(fixture.url!);

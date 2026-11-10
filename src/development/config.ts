@@ -4,6 +4,8 @@ export interface DevelopmentConfig {
   // 不设置时不限制 token；设置后整个任务（含重试）共用这一额度。
   budgetTokens?: number;
   timeoutMs: number;
+  // 同时开发的任务数；不同项目并行，同一项目按顺序一个一个做。
+  concurrency: number;
 }
 export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig | undefined {
   const botId = env.WECOM_BOT_ID?.trim(),
@@ -18,5 +20,8 @@ export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig
   const timeoutMs = Number(env.DEVELOPMENT_TIMEOUT_MS?.trim() || 3_600_000);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 60_000)
     throw new Error("DEVELOPMENT_TIMEOUT_MS 必须是至少 60000 的整数");
-  return { botId, secret, budgetTokens, timeoutMs };
+  const concurrency = Number(env.DEVELOPMENT_CONCURRENCY?.trim() || 3);
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 10)
+    throw new Error("DEVELOPMENT_CONCURRENCY 必须是 1 到 10 的整数");
+  return { botId, secret, budgetTokens, timeoutMs, concurrency };
 }

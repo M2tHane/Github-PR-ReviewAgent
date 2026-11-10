@@ -36,6 +36,7 @@ npm run format           # Biome 格式化；check:format 只检查
 | PR Review 主流程 | `src/review/review.processor.ts` |
 | Review Agent / Prompt / 结果解析 | `src/review/agent.ts`（`runAgentReview`、`REVIEW_PROMPT`、`parseReviewResult`） |
 | Pi 进程 / 预算 / 取消 | `src/pi/session.ts`（`runPiSession`、`ensureCodegraph`）、`src/pi/model-proxy.ts`（预留与输出上限） |
+| Agent 执行过程记录 | `src/pi/session-record.ts`（整理 Pi 会话、生成时间线）、`agent-session.repository.ts`、`src/admin/agent-sessions.routes.ts`、`frontend/components/common/session-timeline.tsx` |
 | Pi 服务扩展（路径、打码、写入检查、附规则） | `src/pi/extension.ts`（Pi 进程里运行，经 UI input 与服务通信） |
 | 服务 AGENTS.md 与 Skills | `agent/`（随服务发布，不来自待审仓库） |
 | 开发任务 | `src/development/processor.ts`、`changes.ts`（从工作区收集改动）、`rules.ts`（按路径附团队规则） |

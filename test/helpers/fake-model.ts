@@ -4,6 +4,8 @@ import type { AddressInfo } from "node:net";
 // OpenAI 兼容的假模型服务：按顺序返回脚本里的回复，记录每次请求，供真实 Pi 进程测试使用。
 export interface FakeReply {
   text?: string;
+  // 模型的思考过程，按 OpenAI 兼容接口的 reasoning_content 返回。
+  reasoning?: string;
   toolCalls?: Array<{ name: string; args: object }>;
   usage?: { input: number; output: number; cacheRead?: number };
   // 不回应，直到连接被关闭；用于测试取消与超时。
@@ -33,6 +35,8 @@ export async function startFakeModel(script: FakeReply[] | ((request: FakeReques
     response.writeHead(200, { "content-type": "text/event-stream" });
     const send = (data: object) => response.write(`data: ${JSON.stringify(data)}\n\n`);
     const base = { id: `chatcmpl-${index}`, object: "chat.completion.chunk", created: 1, model: entry.body.model };
+    if (reply.reasoning)
+      send({ ...base, choices: [{ index: 0, delta: { role: "assistant", reasoning_content: reply.reasoning } }] });
     if (reply.text) send({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: reply.text } }] });
     for (const [position, call] of (reply.toolCalls ?? []).entries())
       send({

@@ -54,6 +54,7 @@ export class DevelopmentWorker {
             },
           });
           const incoming = new Set<Promise<void>>();
+          const active = new Set<Promise<void>>();
           let authenticated = false;
           let lastSent = 0;
           let sending = Promise.resolve();
@@ -129,7 +130,11 @@ export class DevelopmentWorker {
                 this.config,
               );
               if (result === "accepted") {
-                await send(() => bot.replyStream(frame, request.messageId, "已收到开发任务。", true)).catch(() =>
+                const ahead = await this.store.ahead(config.botId, request.messageId).catch(() => 0);
+                const ack = ahead
+                  ? `已收到开发任务，前面还有 ${ahead} 个同项目的任务，会按顺序开发。`
+                  : "已收到开发任务。";
+                await send(() => bot.replyStream(frame, request.messageId, ack, true)).catch(() =>
                   log("error", "wecom_development_ack_uncertain", {}),
                 );
               }
@@ -140,20 +145,33 @@ export class DevelopmentWorker {
               await send(() => bot.replyStream(frame, `error-${Date.now()}`, markdownText(message), true));
             }
           };
+          // 同时最多处理 2 条消息（下载图片、入队），其余按到达顺序等待，不拒收；
+          // 等待的消息太多时才明确告知稍后重发，不能静默丢弃。
+          let receiving = 0;
+          const waiting: Array<() => void> = [];
+          const receiveInOrder = async (frame: WsFrame) => {
+            if (receiving >= 2) await new Promise<void>((resolve) => waiting.push(resolve));
+            receiving++;
+            try {
+              await receive(frame);
+            } finally {
+              receiving--;
+              waiting.shift()?.();
+            }
+          };
           bot.on("message", (frame: WsFrame) => {
             if (signal.aborted || frame.body?.chattype !== "group" || frame.body?.aibotid !== config.botId) return;
-            // 两条图文正在下载或确认时，明确告知新请求稍后重发，不能静默丢弃。
             const operation =
-              incoming.size >= 2
+              incoming.size >= 20
                 ? send(() =>
                     bot.replyStream(
                       frame,
                       `busy-${Date.now()}`,
-                      "当前正在接收其他开发任务，请稍后重新 @Bot 发送。",
+                      "同时收到的开发任务太多，请稍后重新 @Bot 发送。",
                       true,
                     ),
                   )
-                : receive(frame);
+                : receiveInOrder(frame);
             const work = operation
               .then(() => undefined)
               .catch(() => log("error", "wecom_development_receive_failed", {}))
@@ -191,8 +209,18 @@ export class DevelopmentWorker {
               // 用持锁连接探活；连接失败会终止这一实例，不能继续领取或发布任务。
               await connection.query("SELECT 1");
               if (authenticated) {
-                const task = await this.store.claim(config.botId);
-                if (task) await process(task, signal);
+                // 不同项目的任务并行，同一项目按顺序；最多同时做 concurrency 个。任务在后台运行，不挡完成通知。
+                while (active.size < config.concurrency) {
+                  const task = await this.store.claim(config.botId);
+                  if (!task) break;
+                  const work: Promise<void> = process(task, signal)
+                    .catch((error) => log("error", "development_task_crashed", { taskId: task.id }, error))
+                    .finally(() => active.delete(work));
+                  active.add(work);
+                }
+              }
+              // 完成通知逐条发送；每个任务结束后就发，不等其他任务。
+              while (authenticated && !signal.aborted) {
                 const result = await this.store.pool.query(
                   `UPDATE development_tasks SET notification_status='sending' WHERE id=(
                   SELECT id FROM development_tasks WHERE bot_id=$1 AND status NOT IN ('queued','running','publishing') AND notification_status='pending'
@@ -200,53 +228,54 @@ export class DevelopmentWorker {
                   [config.botId],
                 );
                 const notification = result.rows[0] as DevelopmentTask | undefined;
-                if (notification) {
-                  try {
-                    await send(async () => {
-                      if (!notification.reply_req_id || !notification.reply_expires_at)
-                        throw new DevelopmentError("reply_context_missing");
-                      if (notification.reply_expires_at.getTime() <= Date.now())
-                        throw new DevelopmentError("reply_window_expired");
-                      const binding = await this.store.pool.query(
-                        `SELECT 1 FROM development_settings s JOIN repositories r ON r.id=s.repository_id
-                         WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.version=$3 AND s.enabled
-                         AND r.enabled AND r.revoked_at IS NULL AND r.installation_id=$4`,
-                        [
-                          notification.repository_id,
-                          notification.chat_id,
-                          notification.settings_version,
-                          notification.installation_id,
-                        ],
-                      );
-                      if (
-                        !binding.rowCount ||
-                        !this.config.allowedRepositories.has(notification.repository.toLowerCase())
-                      )
-                        throw new DevelopmentError("repository_or_binding_changed");
-                      return bot.replyStream(
-                        { headers: { req_id: notification.reply_req_id } },
-                        `result-${notification.id}`,
-                        developmentMessage(notification).markdown.content,
-                        true,
-                      );
-                    });
-                    await this.store.pool.query("UPDATE development_tasks SET notification_status='sent' WHERE id=$1", [
-                      notification.id,
-                    ]);
-                  } catch (error) {
-                    const status = error instanceof DevelopmentError ? "failed" : "uncertain";
-                    await this.store.pool.query(
-                      "UPDATE development_tasks SET notification_status=$2,notification_error=$3 WHERE id=$1",
-                      [notification.id, status, error instanceof DevelopmentError ? error.message : "delivery_unknown"],
+                if (!notification) break;
+                try {
+                  await send(async () => {
+                    if (!notification.reply_req_id || !notification.reply_expires_at)
+                      throw new DevelopmentError("reply_context_missing");
+                    if (notification.reply_expires_at.getTime() <= Date.now())
+                      throw new DevelopmentError("reply_window_expired");
+                    const binding = await this.store.pool.query(
+                      `SELECT 1 FROM development_settings s JOIN repositories r ON r.id=s.repository_id
+                       WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.version=$3 AND s.enabled
+                       AND r.enabled AND r.revoked_at IS NULL AND r.installation_id=$4`,
+                      [
+                        notification.repository_id,
+                        notification.chat_id,
+                        notification.settings_version,
+                        notification.installation_id,
+                      ],
                     );
-                    log("error", "wecom_development_notification_uncertain", { taskId: notification.id });
-                  }
+                    if (
+                      !binding.rowCount ||
+                      !this.config.allowedRepositories.has(notification.repository.toLowerCase())
+                    )
+                      throw new DevelopmentError("repository_or_binding_changed");
+                    return bot.replyStream(
+                      { headers: { req_id: notification.reply_req_id } },
+                      `result-${notification.id}`,
+                      developmentMessage(notification).markdown.content,
+                      true,
+                    );
+                  });
+                  await this.store.pool.query("UPDATE development_tasks SET notification_status='sent' WHERE id=$1", [
+                    notification.id,
+                  ]);
+                } catch (error) {
+                  const status = error instanceof DevelopmentError ? "failed" : "uncertain";
+                  await this.store.pool.query(
+                    "UPDATE development_tasks SET notification_status=$2,notification_error=$3 WHERE id=$1",
+                    [notification.id, status, error instanceof DevelopmentError ? error.message : "delivery_unknown"],
+                  );
+                  log("error", "wecom_development_notification_uncertain", { taskId: notification.id });
                 }
               }
               await delay(2000, undefined, { signal });
             }
           } finally {
             disconnected.abort();
+            // 正在开发的任务随停止信号结束，等它们收尾后再断开连接。
+            await Promise.allSettled([...active]);
             await reviews.stop();
             signal.removeEventListener("abort", stopReviews);
             bot.disconnect();

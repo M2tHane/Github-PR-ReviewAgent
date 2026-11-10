@@ -145,7 +145,7 @@ GitHub Review / Team Memory / Health Report
 主要技术栈：
 
 - TypeScript / Node.js 24+
-- Pi Coding Agent（RPC 模式）+ pi-codegraph
+- Pi Coding Agent（RPC 模式）+ codegraph
 - GitHub App / Webhook / OAuth
 - PostgreSQL
 - React
@@ -165,14 +165,14 @@ Agent 运行依赖：
 | --- | --- | --- |
 | `@earendil-works/pi-coding-agent` | npm（package.json） | Pi agent，本服务以 RPC 模式为每个任务启动一个进程 |
 | `@colbymchenry/codegraph` | npm（package.json） | 代码知识图谱；按平台安装对应的预编译包（如 `@colbymchenry/codegraph-linux-x64`）。缺少平台包时不会联网下载，任务照常进行，只是不加载 codegraph 工具 |
-| `@vndv/pi-codegraph` | npm（package.json） | Pi 的 codegraph 扩展，提供 `codegraph_explore` 等工具 |
+| `@playwright/mcp` | npm（package.json） | 开发任务的浏览器工具（Pi 内置 MCP 加载）。浏览器要另外安装：`node node_modules/@playwright/mcp/cli.js install-browser --only-shell chromium`（无界面 Chromium，下载约 100 MB），装在 Playwright 默认目录，或用 `PLAYWRIGHT_BROWSERS_PATH` 指定 |
 | `rg`（ripgrep） | 系统包 | Pi 的 grep 工具。Pi 离线运行，不会自动下载 |
 | `fd`（Debian 包名 `fd-find`，命令 `fdfind`） | 系统包 | Pi 的 find 工具 |
 | `git` | 系统包 | 获取固定提交的工作区 |
 
-Docker 镜像已包含以上依赖。本机开发时用系统包管理器安装 `rg`、`fd`，例如 `brew install ripgrep fd`。
+Docker 镜像包含除 Playwright 浏览器以外的依赖（项目后续不考虑镜像打包，镜像里没有加浏览器）。本机开发时用系统包管理器安装 `rg`、`fd`，例如 `brew install ripgrep fd`。
 
-每个工作区第一次运行 Agent 时会建 codegraph 索引（大仓库可能需要数十秒、占用数百 MB 临时空间），不跨任务缓存。
+每个工作区第一次运行 Agent 时会建 codegraph 索引（大仓库可能需要数十秒、占用数百 MB 临时空间），不跨任务缓存。`codegraph_*` 工具由服务自己的 Pi 扩展提供（`src/pi/codegraph-extension.ts`）：每个 Agent 一个常驻 codegraph 进程，启动时预热，查询固定在当前工作区。
 
 ### 2. 启动 PostgreSQL
 

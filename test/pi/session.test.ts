@@ -5,10 +5,13 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Object as ObjectSchema, String as StringSchema } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runPiSession, WRITE_TOOLS, type PiSessionInput } from "../../src/pi/session.js";
 import { BudgetError, ProviderError, TimeoutError, type AgentUsage } from "../../src/pi/types.js";
+import { sessionSteps, type RecordedSession } from "../../src/pi/session-record.js";
 import { lastToolResult, startFakeModel, type FakeReply } from "../helpers/fake-model.js";
 
 const GITHUB_TOKEN = `ghp_${"a".repeat(36)}`;
@@ -277,6 +280,136 @@ test("超时返回 TimeoutError；模型服务错误按是否可重试分类", a
   assert(permanent instanceof ProviderError && !permanent.retryable, String(permanent));
 });
 
+test("运行结束交出会话记录：每步工具调用、结果和耗时都在，思考过程不保存，凭据已打码", async (t) => {
+  const { root, input } = await fixture(t, [
+    { reasoning: "内部思考-不应保存", ...call("read", { path: "secret.txt" }) },
+    call("bash", { command: "sleep 0.3; echo done" }),
+    text('{"ok":true}'),
+  ]);
+  await writeFile(join(root, "secret.txt"), `token=${GITHUB_TOKEN}\n`);
+  const sessions: RecordedSession[] = [];
+  await runPiSession(input({ onSession: async (session) => void sessions.push(session) }));
+  assert(sessions.length >= 2, "开始时先保存一次，结束时再保存");
+  assert.equal(sessions[0]!.status, "running");
+  assert.equal(new Set(sessions.map((item) => item.id)).size, 1, "同一次运行共用一个 id");
+  const session = sessions.at(-1);
+  assert.equal(session!.status, "succeeded");
+  assert.equal(session!.steps, 5, "3 次模型回复 + 2 次工具结果");
+  assert(!session!.content.includes("内部思考-不应保存"), "思考过程不保存");
+  assert(!session!.content.includes(GITHUB_TOKEN) && session!.content.includes("[已隐藏的GitHub Token]"));
+  assert.equal(session!.timings.models.length, 3);
+  const steps = sessionSteps(session!.content, session!.timings, session!.startedAt.getTime(), session!.durationMs);
+  assert.deepEqual(
+    steps.map((step) => step.kind),
+    ["input", "input", "model", "tool", "model", "tool", "model"],
+  );
+  const bash = steps.find((step) => step.title.startsWith("bash"))!;
+  assert.equal(bash.title, "bash sleep 0.3; echo done");
+  assert(bash.durationMs! >= 300, `bash 耗时 ${bash.durationMs}`);
+  assert.match(bash.detail!, /结果\ndone/);
+  assert.equal(steps.find((step) => step.kind === "tool")!.title, "read secret.txt");
+});
+
+test("超时或取消时也交出会话记录，未完成的工具调用和模型请求单独列出", async (t) => {
+  const { input } = await fixture(t, [call("bash", { command: "sleep 30" })]);
+  const sessions: RecordedSession[] = [];
+  await assert.rejects(
+    runPiSession(input({ timeoutMs: 3000, onSession: async (session) => void sessions.push(session) })),
+    TimeoutError,
+  );
+  const timedOut = sessions.at(-1)!;
+  assert.equal(timedOut.status, "timeout");
+  const steps = sessionSteps(timedOut.content, timedOut.timings, timedOut.startedAt.getTime(), timedOut.durationMs);
+  const unfinished = steps.find((step) => step.kind === "tool")!;
+  assert.equal(unfinished.title, "bash sleep 30");
+  assert(unfinished.error && unfinished.detail!.includes("仍在运行"));
+
+  const hanging = await fixture(t, [{ hang: true }]);
+  const controller = new AbortController();
+  const cancelled: RecordedSession[] = [];
+  const pending = runPiSession(
+    hanging.input({ signal: controller.signal, onSession: async (session) => void cancelled.push(session) }),
+  );
+  while (!hanging.model.requests.length) await new Promise((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  await pending.catch(() => undefined);
+  const last = cancelled.at(-1)!;
+  assert.equal(last.status, "cancelled");
+  const waiting = sessionSteps(last.content, last.timings, last.startedAt.getTime(), last.durationMs);
+  assert(
+    waiting.some((step) => step.title === "模型请求未完成"),
+    JSON.stringify(waiting),
+  );
+});
+
+test("运行中定时交出进度：正在执行的命令显示为进行中", async (t) => {
+  const { input } = await fixture(t, [call("bash", { command: "sleep 6" }), text("{}")]);
+  const sessions: RecordedSession[] = [];
+  await runPiSession(input({ onSession: async (session) => void sessions.push(session) }));
+  const during = sessions.find(
+    (session) => session.status === "running" && Object.values(session.timings.tools).some((tool) => !tool.durationMs),
+  );
+  assert(during, `运行中应有一次保存包含未结束的命令：${sessions.map((item) => item.status).join(",")}`);
+  const steps = sessionSteps(during.content, during.timings, during.startedAt.getTime(), during.durationMs, {}, true);
+  const bash = steps.find((step) => step.kind === "tool")!;
+  assert.equal(bash.title, "bash sleep 6");
+  assert.equal(bash.error, false);
+  assert.equal(bash.detail, "正在运行…");
+  assert.equal(sessions.at(-1)!.status, "succeeded");
+});
+
+test("保存会话失败只记日志，不影响任务结果", async (t) => {
+  const { input } = await fixture(t, [text('{"ok":true}')]);
+  const run = await runPiSession(
+    input({
+      onSession: async () => {
+        throw new Error("数据库不可用");
+      },
+    }),
+  );
+  assert.equal(run.text, '{"ok":true}');
+});
+
+test("开发任务可以用浏览器：打开网页、结果打码，执行代码的工具不开放，结束后浏览器一起退出", async (t) => {
+  const page = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(
+      `<html><head><title>浏览器测试页</title></head><body><h1>订单导出说明</h1><p>token=${GITHUB_TOKEN}</p></body></html>`,
+    );
+  });
+  await new Promise<void>((resolve) => page.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => page.close(() => resolve())));
+  const url = `http://127.0.0.1:${(page.address() as AddressInfo).port}/`;
+  const { model, input } = await fixture(t, [
+    call("mcp__playwright__browser_navigate", { url }),
+    call("mcp__playwright__browser_snapshot", {}),
+    text("{}"),
+  ]);
+  await runPiSession(input({ browser: true, timeoutMs: 120_000 }));
+  assert.match(lastToolResult(model.requests[1]!)!, /浏览器测试页/);
+  const tools = model.requests[0]!.body.tools.map((tool: any) => tool.function.name);
+  assert(tools.includes("mcp__playwright__browser_navigate"), tools.join(","));
+  assert(!tools.includes("mcp__playwright__browser_run_code_unsafe"), "执行任意代码的工具不开放");
+  const result = lastToolResult(model.requests[2]!)!;
+  assert.match(result, /订单导出说明/);
+  assert(!result.includes(GITHUB_TOKEN) && result.includes("[已隐藏的GitHub Token]"), result.slice(0, 500));
+  // Pi 结束后，MCP 服务和浏览器都不能留在后台。
+  const leftovers = () =>
+    execFileSync("ps", ["-axo", "command"], { encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.includes("pi-run-") && /playwright|headless_shell|chrome/i.test(line));
+  for (let waited = 0; leftovers().length && waited < 20_000; waited += 500)
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(leftovers(), []);
+
+  const readOnly = await fixture(t, [text("{}")]);
+  await runPiSession(readOnly.input());
+  assert(
+    !readOnly.model.requests[0]!.body.tools.some((tool: any) => tool.function.name.startsWith("mcp__")),
+    "审查类任务没有浏览器",
+  );
+});
+
 test("图片原样进入模型请求", async (t) => {
   const { model, input } = await fixture(t, [text("{}")]);
   const data = Buffer.from("fake-png-bytes-".repeat(40)).toString("base64");
@@ -302,4 +435,49 @@ test("工作区没有 codegraph 索引时先建索引并加载工具，索引不
   const explored = lastToolResult(model.requests[1]!)!;
   assert(explored.includes("loadToken"), explored);
   assert(!explored.includes(GITHUB_TOKEN) && explored.includes("[已隐藏的GitHub Token]"));
+});
+
+test("同一个 Agent 共用一个常驻 codegraph：只有第一次查询加载索引，不能查其他项目，结束后进程退出", async (t) => {
+  const other = await mkdtemp(join(tmpdir(), "pi-codegraph-other-"));
+  t.after(() => rm(other, { recursive: true, force: true }));
+  const { root, model, input } = await fixture(t, [
+    call("codegraph_search", { query: "listOrders" }),
+    call("codegraph_search", { query: "loadToken" }),
+    call("codegraph_callers", { symbol: "listOrders", projectPath: other }),
+    call("codegraph_files", { path: "/etc" }),
+    text("{}"),
+  ]);
+  await writeFile(
+    join(root, "orders.ts"),
+    "export function listOrders() { return loadToken(); }\nexport function loadToken() { return 1; }\n",
+  );
+  await writeFile(join(other, "secret.ts"), "export function otherProjectOnly() {}\n");
+  for (const directory of [root, other]) {
+    execFileSync("git", ["-C", directory, "init", "--quiet"]);
+    execFileSync("codegraph", ["init", "-y", directory], {
+      env: {
+        ...process.env,
+        PATH: `${join(process.cwd(), "node_modules/.bin")}:${process.env.PATH}`,
+        CODEGRAPH_NO_DOWNLOAD: "1",
+      },
+      stdio: "ignore",
+    });
+  }
+  const sessions: RecordedSession[] = [];
+  await runPiSession(input({ codegraph: true, onSession: async (session) => void sessions.push(session) }));
+  const results = [2, 3, 4, 5].map((index) => lastToolResult(model.requests[index - 1]!)!);
+  assert.match(results[0]!, /listOrders/);
+  assert.match(results[1]!, /loadToken/);
+  assert.match(results[2]!, /listOrders|No callers|callers/i, "projectPath 被忽略，仍查当前工作区");
+  assert(!results.join("\n").includes("otherProjectOnly"));
+  const durations = Object.values(sessions.at(-1)!.timings.tools).map((tool) => tool.durationMs ?? 0);
+  assert.equal(durations.length, 4);
+  assert(
+    durations.slice(1).every((ms) => ms < 1500),
+    `第一次之后的查询不再加载索引：${durations.join(",")}`,
+  );
+  const running = execFileSync("ps", ["-axo", "command"], { encoding: "utf8" })
+    .split("\n")
+    .filter((line) => line.includes("serve --mcp") && line.includes(root));
+  assert.deepEqual(running, [], "Pi 结束后 codegraph 进程一起结束");
 });

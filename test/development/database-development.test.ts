@@ -51,7 +51,7 @@ async function setup() {
     modelName: "test",
     modelProvider: "test",
     modelApiKey: "test",
-    development: { botId, secret: "unused", budgetTokens: 160000, timeoutMs: 5000 },
+    development: { botId, secret: "unused", budgetTokens: 160000, timeoutMs: 5000, concurrency: 2 },
   } as Config;
   const root = await mkdtemp(resolve("work/development-test-"));
   await mkdir(join(root, "src"));
@@ -342,6 +342,18 @@ test("模型服务临时故障时整个任务重试，用量累加；确定性�
       let calls = 0;
       const model: typeof runAgentSession = async (input) => {
         calls++;
+        // 每次尝试结束时交出执行记录。
+        await input.onSession?.({
+          id: randomUUID(),
+          status: calls <= failures ? "failed" : "succeeded",
+          startedAt: new Date(),
+          durationMs: 5,
+          steps: 0,
+          bytes: 0,
+          truncated: false,
+          timings: { models: [], tools: {} },
+          content: "",
+        });
         if (calls <= failures) {
           // 失败前已经写了文件：重试必须从干净的工作区重新开始。
           await writeFile(join(input.root, "src/half-done.ts"), "partial\n");
@@ -358,6 +370,39 @@ test("模型服务临时故障时整个任务重试，用量累加；确定性�
     assert.equal(row.status, "succeeded");
     assert.equal(retried.calls(), 2);
     assert.equal(row.usage.totalTokens, 190, "失败那次的 40 加上成功那次的 150");
+    assert.deepEqual(
+      (await s.store.list(s.repoId))
+        .find((item) => item.id === task.id)
+        .agent_sessions.map((item: any) => [item.role, item.attempt, item.status]),
+      [
+        ["developer", 1, "failed"],
+        ["developer", 2, "succeeded"],
+      ],
+      "每次尝试各有一份执行记录",
+    );
+    // 服务步骤和 Agent 会话写在同一份记录里：第一次失败在 Agent 阶段，第二次走完全部步骤。
+    const attempts = (
+      await s.database.pool.query(
+        "SELECT attempt,status,error,events FROM agent_sessions WHERE development_task_id=$1 ORDER BY attempt",
+        [task.id],
+      )
+    ).rows;
+    assert.deepEqual(Object.keys(attempts[0].events).sort(), ["snapshot", "workspace"]);
+    assert.match(attempts[0].error, /模型服务临时故障，0\.001 秒后重试：.*Upstream request failed/);
+    assert.deepEqual(Object.keys(attempts[1].events).sort(), [
+      "branch",
+      "changes",
+      "check",
+      "commit",
+      "latest",
+      "pr",
+      "workspace",
+    ]);
+    assert(
+      Object.values(attempts[1].events as Record<string, { ok: boolean; durationMs: number }>).every(
+        (event) => event.ok && event.durationMs >= 0,
+      ),
+    );
     assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
 
     const permanent = flaky(1, "401 invalid api key");
@@ -688,6 +733,146 @@ test("智能机器人完成结果引用原消息，无成员提及；重复消�
         (await s.database.pool.query("SELECT notification_status FROM development_tasks WHERE bot_id=$1", [s.botId]))
           .rows[0]?.notification_status === "sent",
     );
+  } finally {
+    await worker.stop();
+    await s.cleanup();
+  }
+});
+
+test("多个项目并行开发，同一项目按发送顺序排队；确认消息带排队位置", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  // 第二个项目绑定另一个群，由同一个智能机器人处理。
+  const other = s.repoId + 500,
+    otherName = `owner/dev-${other}`;
+  await s.database.pool.query("INSERT INTO repositories(id,installation_id,full_name) VALUES($1,1,$2)", [
+    other,
+    otherName,
+  ]);
+  await s.store.saveSettings(other, { ...s.settings, chatId: `group-${other}` }, "maintainer");
+  s.config.allowedRepositories.add(otherName);
+  let bot: InstanceType<typeof WSClient> | undefined;
+  const replies: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  // 任务一直做到测试放行，记录同时在做的任务。
+  const running = new Map<string, () => void>(),
+    started: string[] = [];
+  let peak = 0;
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    started.push(task.prompt);
+    await new Promise<void>((resolve) => running.set(task.prompt, resolve));
+    running.delete(task.prompt);
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  const send = (id: string, chatId: string) =>
+    bot!.emit("message", {
+      headers: { req_id: `request-${id}` },
+      body: {
+        aibotid: s.botId,
+        msgid: id,
+        chatid: chatId,
+        chattype: "group" as const,
+        from: { userid: "developer" },
+        msgtype: "text",
+        text: { content: id },
+      },
+    });
+  const acks = () =>
+    replies.filter((reply) => reply[0].headers?.req_id?.startsWith("request-") && !reply[1].startsWith("result-"));
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    send("A1", s.settings.chatId);
+    await waitFor(async () => acks().length === 1);
+    send("A2", s.settings.chatId);
+    await waitFor(async () => acks().length === 2);
+    send("B1", `group-${other}`);
+    await waitFor(async () => acks().length === 3);
+    assert.deepEqual(
+      acks().map((reply) => reply[2]),
+      ["已收到开发任务。", "已收到开发任务，前面还有 1 个同项目的任务，会按顺序开发。", "已收到开发任务。"],
+    );
+    await waitFor(async () => started.length === 2, 10_000);
+    peak = Math.max(peak, running.size);
+    assert.deepEqual([...started].sort(), ["A1", "B1"], "不同项目同时开始，A2 等 A1");
+    running.get("A1")!();
+    await waitFor(async () => started.length === 3, 10_000);
+    assert.equal(started.at(-1), "A2", "同一项目的下一个任务在前一个结束后开始");
+    assert.equal(peak, 2);
+    running.get("B1")!();
+    running.get("A2")!();
+    await waitFor(
+      async () =>
+        (
+          await s.database.pool.query(
+            "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND notification_status='sent'",
+            [s.botId],
+          )
+        ).rows[0].n === 3,
+      15_000,
+    );
+  } finally {
+    for (const release of running.values()) release();
+    await worker.stop();
+    await s.database.pool.query("DELETE FROM repositories WHERE id=$1", [other]);
+    await s.cleanup();
+  }
+});
+
+test("同时收到多条消息时依次入队，不再要求稍后重发", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  let bot: InstanceType<typeof WSClient> | undefined;
+  const replies: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    this.emit("authenticated");
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    for (const id of ["m1", "m2", "m3", "m4"])
+      bot!.emit("message", {
+        headers: { req_id: `request-${id}` },
+        body: {
+          aibotid: s.botId,
+          msgid: id,
+          chatid: s.settings.chatId,
+          chattype: "group" as const,
+          from: { userid: "developer" },
+          msgtype: "text",
+          text: { content: id },
+        },
+      });
+    await waitFor(
+      async () =>
+        (await s.database.pool.query("SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1", [s.botId]))
+          .rows[0].n === 4,
+      20_000,
+    );
+    assert(!replies.some((reply) => String(reply[2]).includes("太多")));
   } finally {
     await worker.stop();
     await s.cleanup();

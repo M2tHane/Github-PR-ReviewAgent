@@ -549,6 +549,7 @@ a.review-row:hover,
 }
 .status-failed,
 .status-timeout,
+.status-interrupted,
 .status-still_valid,
 .status-high,
 .status-critical {
@@ -695,6 +696,107 @@ details ul {
 .agent-run dd {
   margin: 0.15rem 0;
   font-variant-numeric: tabular-nums;
+}
+
+/* ===== Agent 执行过程 ===== */
+.session-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+/* 表格单元格里不能被挤成一两个字宽；窄屏时表格横向滚动。 */
+.agent-session {
+  min-width: 18rem;
+  max-width: 60rem;
+  overflow-wrap: anywhere;
+}
+.agent-session > summary {
+  cursor: pointer;
+}
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+.session-steps {
+  list-style: none;
+  margin: 0.4rem 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.session-step {
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0;
+  font-size: 0.85rem;
+}
+.session-step summary {
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+.session-step summary .step-title::after {
+  content: " ▸";
+  color: var(--subtle);
+}
+.session-step details[open] > summary .step-title::after {
+  content: " ▾";
+}
+.session-step summary::-webkit-details-marker {
+  display: none;
+}
+.session-step pre {
+  max-height: 24rem;
+  margin: 0.4rem 0 0.2rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-line {
+  display: grid;
+  grid-template-columns: 4.2rem 2.6rem minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.step-line time,
+.step-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.step-kind {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.step-model .step-kind {
+  color: var(--accent-text);
+}
+.step-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.step-tool .step-title {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+.step-slow .step-meta {
+  color: var(--should-text);
+  font-weight: 600;
+}
+.step-error .step-title,
+.step-error .step-kind {
+  color: var(--must-text);
+}
+@media (max-width: 640px) {
+  .step-line {
+    grid-template-columns: 3.6rem minmax(0, 1fr);
+  }
+  .step-kind {
+    display: none;
+  }
+  .step-meta {
+    grid-column: 2;
+  }
 }
 
 /* ===== 概览 ===== */

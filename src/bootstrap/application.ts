@@ -65,7 +65,8 @@ export function createApplication() {
     purging = database
       .purgeExpired({ retentionDays: config.dataRetentionDays, revokedGraceDays: config.revokedDataGraceDays })
       .then((result) => {
-        if (result.jobs || result.deliveries || result.repositories) log("info", "data_purged", { ...result });
+        if (result.jobs || result.deliveries || result.repositories || result.sessions)
+          log("info", "data_purged", { ...result });
       })
       .catch((error) => log("error", "data_purge_failed", {}, error))
       .finally(() => {

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
+import { SessionTimeline } from "../../components/common/session-timeline.js";
 import type { Repository } from "../../types.js";
 import type { DevelopmentSettings } from "../../../src/development/types.js";
+import type { AgentSessionRow } from "../../../src/admin/dto.js";
 
 type Task = {
   id: string;
@@ -16,6 +18,7 @@ type Task = {
   notification_status: string;
   notification_error: string | null;
   created_at: string;
+  agent_sessions?: AgentSessionRow[];
 };
 type EditableSettings = Omit<DevelopmentSettings, "members" | "protections"> & {
   members: Array<DevelopmentSettings["members"][number] & { key: string }>;
@@ -67,6 +70,17 @@ export function DevelopmentSettingsPanel({ repo, onClose }: { repo: Repository; 
       });
     return () => controller.abort();
   }, [endpoint, reload]);
+  // 有排队或进行中的任务时每 5 秒刷新任务列表（不动正在编辑的设置），能看到任务开始、结束和新的执行记录。
+  const active = tasks.some((task) => ["queued", "running", "publishing"].includes(task.status));
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => {
+      api<Response>(endpoint)
+        .then((data) => setTasks(data.tasks))
+        .catch(() => undefined);
+    }, 5_000);
+    return () => clearInterval(timer);
+  }, [active, endpoint]);
   function update(patch: Partial<EditableSettings>) {
     setSettings((s) => s && { ...s, ...patch });
     setNotice("");
@@ -328,6 +342,7 @@ export function DevelopmentSettingsPanel({ repo, onClose }: { repo: Repository; 
                   </a>
                 )}
                 <p className="muted">目标分支：{task.target_branch}</p>
+                <SessionTimeline sessions={task.agent_sessions ?? []} />
                 {task.status === "uncertain" && (
                   <p>
                     请核对分支：<code>{task.branch}</code>。不会自动重复创建 PR。

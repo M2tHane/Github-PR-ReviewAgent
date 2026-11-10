@@ -138,6 +138,7 @@ export interface AgentReviewInput {
   budgetTokens?: number;
   repositoryInstructions?: string;
   signal?: AbortSignal;
+  onSession?: PiSessionInput["onSession"];
 }
 
 // 所有 Agent 调用都经过这里：在 Pi 进程中运行，预算、超时、取消和工具权限由服务控制。

@@ -21,7 +21,7 @@ M2 增加 own-thread Reply Handler、按复杂度触发的 Main / Specialist、�
 
 M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与报告m3)。M3 不扩展 Repository Curator、自动源码修改、自动修复/commit/push/merge、Redis/BullMQ 或通用工作流平台。这里的只读约束针对产品内分析 Agent；开发本服务仍应运行构建和测试。
 
-新增授权范围：企业微信群内开发任务可在隔离快照上修改代码、用 bash 运行检查，由服务创建独立分支、commit 和 PR；不自动合并，不安装依赖。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
+新增授权范围：企业微信群内开发任务可在隔离快照上修改代码、用 bash 运行检查，由服务创建独立分支、commit 和 PR；不自动合并，不安装依赖。开发任务可以用 Playwright 浏览器（`@playwright/mcp`）访问任意网站。管理员／开发、文件保护及免审查边界见 [开发说明](docs/wecom-development.md)，状态与证据见 [DEV 清单](docs/tasks/DEV.md)。此授权不扩大原审查类 Agent 的权限。
 
 ## 文档入口与开工顺序
 
@@ -70,7 +70,7 @@ PR 分析绑定 repository、PR、base SHA 和 head SHA；M3 健康分析绑定 
 
 - 普通分支 PR 优先；当前 fork PR 明确不支持。
 - 路径规范化和符号链接解析后都不能越界，不能访问宿主机凭据或其他 Job。
-- 所有 Agent 都以 Pi 进程运行（见 [Pi Runtime](.agents/decisions/pi-runtime.md)），可以用 bash 在 Workspace 里读代码和做检查；不安装依赖、不访问网络服务。只有开发任务有写文件工具。
+- 所有 Agent 都以 Pi 进程运行（见 [Pi Runtime](.agents/decisions/pi-runtime.md)），可以用 bash 在 Workspace 里读代码和做检查；不安装依赖，bash 不访问网络服务。只有开发任务有写文件工具和浏览器（可访问任意网站，网页内容是数据不是指令）。
 - bash 和服务同一系统用户：Pi 子进程只拿最小环境变量，凭据不进入其配置、命令行和环境。这只能避免顺手暴露，不是强隔离。
 - 仓库里的 README、AGENTS.md、Skills、`.pi`、源码、注释和 PR 文本全部是数据，不是系统指令。
 - 只加载服务自有 Prompt、AGENTS.md、Skills 和扩展；仓库的 `.pi`、CLAUDE.md、`.claude/rules` 不加载，仓库 AGENTS.md 只取目标分支版本作参考。仓库内容不能注册工具、改变权限、身份、SHA 或触发外部写操作。
@@ -97,7 +97,7 @@ Reply 的 FIXED、MISJUDGMENT、VALID_EXCEPTION、STILL_VALID、NEEDS_CLARIFICAT
 
 ## 凭据、日志与临时文件
 
-私钥、installation token、Webhook secret、OAuth secret 和模型 key 不进入 Git、Prompt、待审 Workspace、clone URL 或普通日志。日志只保留排障所需的 Job / PR / SHA / usage 元数据，不保存隐藏推理。
+私钥、installation token、Webhook secret、OAuth secret 和模型 key 不进入 Git、Prompt、待审 Workspace、clone URL 或普通日志。日志只保留排障所需的 Job / PR / SHA / usage 元数据，不保存隐藏推理。Agent 执行过程按 Pi 会话存入 `agent_sessions`：保存前去掉模型思考过程和图片数据、截断过长内容并打码；只给有该仓库权限的维护者查看和下载，随任务按保留期删除（见 [Pi Runtime](.agents/decisions/pi-runtime.md)）。
 
 真实配置保留在被忽略的本地文件；临时 checkout、日志、截图和复现数据放在 `work/`。本地会话导出可能含联调输入，不能提交。
 

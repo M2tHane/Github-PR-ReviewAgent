@@ -11,6 +11,8 @@ export interface PurgeResult {
   jobs: number;
   deliveries: number;
   repositories: number;
+  // 开发任务的执行记录（Agent 会话）；PR 任务的会话随任务一起删除，不单独计数。
+  sessions: number;
 }
 
 const BATCH = 500;
@@ -21,7 +23,7 @@ export class RetentionRepository {
 
   // 每批最多删 500 条，避免长时间锁表；多个实例同时跑时只有拿到锁的那个会执行。
   async purgeExpired(policy: RetentionPolicy, now = new Date()): Promise<PurgeResult> {
-    const result: PurgeResult = { jobs: 0, deliveries: 0, repositories: 0 };
+    const result: PurgeResult = { jobs: 0, deliveries: 0, repositories: 0, sessions: 0 };
     const client = await this.pool.connect();
     try {
       if (!(await client.query("SELECT pg_try_advisory_lock($1) locked", [PURGE_LOCK])).rows[0].locked)
@@ -60,6 +62,15 @@ export class RetentionRepository {
                   SELECT h.job_id FROM health_reports h JOIN jobs l ON l.id=h.job_id
                   WHERE l.repository_id=j.repository_id ORDER BY h.created_at DESC LIMIT 1)
               LIMIT $2)`,
+          );
+          // 开发任务记录保留，只删过期的执行过程记录。
+          result.sessions += await batches(
+            client,
+            BATCH,
+            [cutoff],
+            `
+            DELETE FROM agent_sessions WHERE id IN (
+              SELECT id FROM agent_sessions WHERE development_task_id IS NOT NULL AND created_at<$1 LIMIT $2)`,
           );
           // 投递记录只用于去重；没有任务引用、又过了保留期的才删。
           result.deliveries += await batches(
