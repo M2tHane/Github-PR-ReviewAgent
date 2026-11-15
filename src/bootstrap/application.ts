@@ -1,4 +1,4 @@
-import { createApp } from "../github/webhook/handler.js";
+import { createApp, createProbeServer } from "../github/webhook/handler.js";
 import { redeliverFailedWebhooks } from "../github/webhook/redelivery.js";
 import { removeStaleTaskDirectories } from "../workspace/cleanup.js";
 import { loadConfig } from "../config/config.js";
@@ -25,52 +25,75 @@ import { DevelopmentStore, developmentSource } from "../development/store.js";
 import { createDevelopmentProcessor } from "../development/processor.js";
 import { DevelopmentWorker } from "../development/worker.js";
 
-// 单进程模块边界的理由见 .agents/decisions/repository-architecture.md。
-export function createApplication() {
-  const config = loadConfig();
-  const database = new Database(
+const services = {
+  Database,
+  PersistentRunner,
+  DevelopmentWorker,
+  enqueueDueHealthJobs,
+  removeStaleTaskDirectories,
+  redeliverFailedWebhooks,
+};
+
+// 同一构建产物按角色装配；默认 all。职责划分见 .agents/decisions/execution-engine.md。
+export function createApplication(config = loadConfig(), overrides: Partial<typeof services> = {}) {
+  const dependencies = { ...services, ...overrides };
+  const edge = config.processRole !== "worker";
+  const worker = config.processRole !== "edge";
+  const executionConcurrency = () => (worker ? config.workerConcurrency + config.development.concurrency : 0);
+  const database = new dependencies.Database(
     config.databaseUrl,
-    config.workerConcurrency,
+    executionConcurrency(),
     config.development.wecom ? reviewNotificationChannel(config.development.wecom.botId) : undefined,
   );
-  const memories = new MemoryService(database);
-  const review = createReviewProcessor(config, undefined, database, memories);
-  const extract = createDecisionProcessor(config, database, memories);
-  const reply = createReplyProcessor(config, database, memories);
-  const health = createHealthProcessor(config, database, memories);
-  const runner = new PersistentRunner(
-    new JobsSource(database),
-    createJobDispatcher({ PR_REVIEW: review, DECISION_EXTRACT: extract, REPLY_HANDLE: reply, HEALTH_AUDIT: health }),
-    500,
-    { concurrency: config.workerConcurrency },
-  );
+  const github = new GitHubClient(config.appId, config.privateKey);
+  const developmentStore = new DevelopmentStore(database.pool);
+  const memories = worker ? new MemoryService(database) : undefined;
+  const runner = worker
+    ? new dependencies.PersistentRunner(
+        new JobsSource(database),
+        createJobDispatcher({
+          PR_REVIEW: createReviewProcessor(config, undefined, database, memories!),
+          DECISION_EXTRACT: createDecisionProcessor(config, database, memories!),
+          REPLY_HANDLE: createReplyProcessor(config, database, memories!),
+          HEALTH_AUDIT: createHealthProcessor(config, database, memories!),
+        }),
+        500,
+        { concurrency: config.workerConcurrency },
+      )
+    : undefined;
+  const developmentRunner = worker
+    ? new dependencies.PersistentRunner(
+        developmentSource(developmentStore),
+        createDevelopmentProcessor(config, developmentStore, github),
+        500,
+        { concurrency: config.development.concurrency },
+      )
+    : undefined;
+  const development =
+    edge && config.development.wecom ? new dependencies.DevelopmentWorker(config, developmentStore, github) : undefined;
   // 管理端改了间隔或并发数时立即调整；其余设置在用到时读 config，不需要额外处理。
   const settings = new ServiceSettings(config, database.pool, (keys) => {
-    if (keys.includes("WORKER_CONCURRENCY")) {
-      database.resizePool(config.workerConcurrency);
-      runner.setConcurrency(config.workerConcurrency);
-    }
-    if (keys.includes("DEVELOPMENT_CONCURRENCY")) developmentRunner.setConcurrency(config.development.concurrency);
-    if (keys.includes("DATA_PURGE_INTERVAL_MS")) purgeTimer.reschedule();
-    if (keys.includes("WEBHOOK_REDELIVERY_INTERVAL_MS")) redeliveryTimer.reschedule();
+    if (!worker) return;
+    if (keys.includes("WORKER_CONCURRENCY") || keys.includes("DEVELOPMENT_CONCURRENCY"))
+      database.resizePool(executionConcurrency());
+    if (keys.includes("WORKER_CONCURRENCY")) runner!.setConcurrency(config.workerConcurrency);
+    if (keys.includes("DEVELOPMENT_CONCURRENCY")) developmentRunner!.setConcurrency(config.development.concurrency);
+    // 首次 refresh 在启动前，只加载新值；运行中的更改才重排定时器。
+    if (started && keys.includes("DATA_PURGE_INTERVAL_MS")) purgeTimer.reschedule();
+    if (started && keys.includes("WEBHOOK_REDELIVERY_INTERVAL_MS")) redeliveryTimer.reschedule();
   });
-  const github = new GitHubClient(config.appId, config.privateKey);
-  const { server } = createApp(config, database, createAdminHandler(config, database, github, undefined, settings));
+  const server = edge
+    ? createApp(config, database, createAdminHandler(config, database, github, undefined, settings)).server
+    : createProbeServer(database);
   const scheduleAbort = new AbortController();
-  const developmentStore = new DevelopmentStore(database.pool);
-  const developmentRunner = new PersistentRunner(
-    developmentSource(developmentStore),
-    createDevelopmentProcessor(config, developmentStore, github),
-    500,
-    { concurrency: config.development.concurrency },
-  );
-  const development = config.development.wecom ? new DevelopmentWorker(config, developmentStore, github) : undefined;
+  let started = false;
   let scheduling: Promise<void> | undefined;
   let scheduleTimer: ReturnType<typeof setInterval> | undefined;
 
   const pollSchedules = () => {
     if (scheduling || scheduleAbort.signal.aborted) return;
-    scheduling = enqueueDueHealthJobs(config, database, github, scheduleAbort.signal)
+    scheduling = dependencies
+      .enqueueDueHealthJobs(config, database, github, scheduleAbort.signal)
       .catch((error) => {
         if (!scheduleAbort.signal.aborted) log("error", "health_schedule_poll_failed", {}, error);
       })
@@ -85,17 +108,22 @@ export function createApplication() {
   const purge = () => {
     if (purging || scheduleAbort.signal.aborted) return;
     const longest = Math.max(config.agentTimeoutMs, config.development.timeoutMs, config.healthTimeoutMs ?? 0);
-    void removeStaleTaskDirectories(longest + 10 * 60_000)
+    const cleaning = dependencies
+      .removeStaleTaskDirectories(longest + 10 * 60_000)
       .then((removed) => removed && log("info", "stale_task_directories_removed", { removed }))
       .catch((error) => log("error", "stale_task_directories_failed", {}, error));
-    if (!config.dataRetentionDays && !config.revokedDataGraceDays) return;
-    purging = database
-      .purgeExpired({ retentionDays: config.dataRetentionDays, revokedGraceDays: config.revokedDataGraceDays })
-      .then((result) => {
-        if (result.jobs || result.deliveries || result.repositories || result.sessions)
-          log("info", "data_purged", { ...result });
-      })
-      .catch((error) => log("error", "data_purge_failed", {}, error))
+    const data =
+      !config.dataRetentionDays && !config.revokedDataGraceDays
+        ? undefined
+        : database
+            .purgeExpired({ retentionDays: config.dataRetentionDays, revokedGraceDays: config.revokedDataGraceDays })
+            .then((result) => {
+              if (result.jobs || result.deliveries || result.repositories || result.sessions)
+                log("info", "data_purged", { ...result });
+            })
+            .catch((error) => log("error", "data_purge_failed", {}, error));
+    purging = Promise.all([cleaning, data])
+      .then(() => undefined)
       .finally(() => {
         purging = undefined;
       });
@@ -108,7 +136,7 @@ export function createApplication() {
     if (redelivering || scheduleAbort.signal.aborted) return;
     if (!config.webhookRedelivery) return;
     redelivering = database
-      .withWebhookRedeliveryLock(() => redeliverFailedWebhooks(github, scheduleAbort.signal))
+      .withWebhookRedeliveryLock(() => dependencies.redeliverFailedWebhooks(github, scheduleAbort.signal))
       .then(() => undefined)
       .catch((error) => {
         if (!scheduleAbort.signal.aborted) log("error", "webhook_redelivery_failed", {}, error);
@@ -122,23 +150,34 @@ export function createApplication() {
   const redeliveryTimer = repeat(redeliver, () => config.webhookRedeliveryIntervalMs ?? DEFAULT_REDELIVERY_INTERVAL_MS);
 
   return {
+    server,
     async start() {
       // 先读一次管理端改过的设置，再开始领取任务；读不到（没跑迁移、数据库不可用）时用 .env 的值。
       await settings.refresh();
       settings.start();
-      database.resizePool(config.workerConcurrency);
-      runner.setConcurrency(config.workerConcurrency);
-      await runner.start();
-      developmentRunner.setConcurrency(config.development.concurrency);
-      await developmentRunner.start();
+      database.resizePool(executionConcurrency());
+      if (worker) {
+        runner!.setConcurrency(config.workerConcurrency);
+        await runner!.start();
+        developmentRunner!.setConcurrency(config.development.concurrency);
+        await developmentRunner!.start();
+        scheduleTimer = setInterval(pollSchedules, 30_000);
+        pollSchedules();
+        purgeTimer.reschedule();
+        purge();
+        redeliveryTimer.reschedule();
+        redeliver();
+      }
+      started = true;
       development?.start();
-      scheduleTimer = setInterval(pollSchedules, 30_000);
-      pollSchedules();
-      purgeTimer.reschedule();
-      purge();
-      redeliveryTimer.reschedule();
-      redeliver();
-      server.listen(config.port, () => log("info", "listening", { port: config.port }));
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(config.port, () => {
+          server.off("error", reject);
+          log("info", "listening", { port: config.port, role: config.processRole });
+          resolve();
+        });
+      });
     },
     async stop() {
       if (scheduleTimer) clearInterval(scheduleTimer);
@@ -149,8 +188,8 @@ export function createApplication() {
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
       await Promise.all([
         closed,
-        runner.stop(),
-        developmentRunner.stop(),
+        runner?.stop(),
+        developmentRunner?.stop(),
         development?.stop(),
         scheduling,
         purging,

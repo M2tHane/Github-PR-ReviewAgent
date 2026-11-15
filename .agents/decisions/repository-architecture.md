@@ -6,7 +6,7 @@
 
 ## Decision
 
-保持单个 Node 进程（HTTP 与 Worker 同进程），以业务模块组织 `src/`；同一份进程可以起多个实例，共用一个 PostgreSQL。`bootstrap` 只装配依赖，`github` 接收并路由事件，`jobs` 负责领取与分派，`review`、`reply`、`memory`、`health` 各自处理业务，`admin` 提供管理接口，`persistence` 持有 SQL 和事务。
+保持单代码库与同一构建产物，以业务模块组织 `src/`；通过 `PROCESS_ROLE=edge|worker|all` 区分接收请求与执行任务的进程，默认 `all` 保持同进程运行，多实例共用一个 PostgreSQL。角色划分与滚动发布理由见 [执行引擎](execution-engine.md)。`bootstrap` 只装配依赖，`github` 接收并路由事件，`jobs` 负责领取与分派，`review`、`reply`、`memory`、`health` 各自处理业务，`admin` 提供管理接口，`persistence` 持有 SQL 和事务。
 
 [Dispatcher](../../src/jobs/dispatcher.ts) 显式处理已知 Job Type；未知类型必须失败。[Database](../../src/persistence/database.ts) 暂时作为既有调用方的薄 facade，SQL 已归入业务 Repository。该 facade 是渐进迁移的兼容边界，不是继续集中新业务逻辑的理由。
 

@@ -20,6 +20,7 @@ import type { MemoryRecord } from "../../src/memory/types.js";
 const exec = promisify(execFile);
 
 const config: Config = {
+  processRole: "all",
   development: loadDevelopmentConfig({}),
   appId: "1",
   privateKey: "unused",

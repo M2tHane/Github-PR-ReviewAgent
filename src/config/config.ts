@@ -3,7 +3,10 @@ import { loadWecomConfig, type WecomConfig } from "../notifications/config.js";
 
 import { loadDevelopmentConfig, type DevelopmentConfig } from "../development/config.js";
 
+export type ProcessRole = "edge" | "worker" | "all";
+
 export interface Config {
+  processRole: ProcessRole;
   development: DevelopmentConfig;
   wecom?: WecomConfig;
   appId: string;
@@ -92,6 +95,9 @@ function flag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean 
 }
 
 export function loadConfig(env = process.env): Config {
+  const processRole = env.PROCESS_ROLE?.trim() ?? "all";
+  if (processRole !== "edge" && processRole !== "worker" && processRole !== "all")
+    throw new Error("配置 PROCESS_ROLE 只能是 edge / worker / all");
   const repositories = required(env, "GITHUB_ALLOWED_REPOSITORIES")
     .split(",")
     .map((x) => x.trim().toLowerCase())
@@ -106,6 +112,7 @@ export function loadConfig(env = process.env): Config {
     throw new Error("无法读取 GITHUB_PRIVATE_KEY_PATH");
   }
   return {
+    processRole,
     wecom: loadWecomConfig(env),
     development: loadDevelopmentConfig(env),
     appId: required(env, "GITHUB_APP_ID"),

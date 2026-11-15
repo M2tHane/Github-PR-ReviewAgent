@@ -120,6 +120,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     limitations: [],
   });
   const config = {
+    processRole: "all",
     development: loadDevelopmentConfig({}),
     appId: "1",
     privateKey: "key",
