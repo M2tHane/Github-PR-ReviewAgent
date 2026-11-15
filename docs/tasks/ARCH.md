@@ -48,7 +48,7 @@
 | ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 已完成（`23831f0`）；真实 GitHub 安装清单未验证 |
 | ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 已完成（`b0e888a`）；团队规则要等 2-C 才进入审查 |
 | ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，冲突时项目规则胜出；Review、Reply、健康检查、开发任务、规则提取统一从这里取规则 | 待做（依赖 2-B） |
-| ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；按后续提交推断"疑似已修复"（和开发者确认的修复分开统计） | 待做（依赖 2-B） |
+| ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；合并时推断"疑似已修复"（和开发者确认的修复分开统计） | 已完成（`arch/p2-e-review-queue`，待合并）；真实 GitHub 未验收 |
 | ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
 | ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 待做（依赖 2-C） |
 | ARCH-2-H | 把团队规则提供给本地 Codex／Claude Code：规则变化时由服务提 PR 更新仓库里的规则文件，并在 AGENTS.md／CLAUDE.md 引用（用户 2026-11-15 选定，不做 MCP） | 待做（依赖 2-C） |
@@ -202,3 +202,18 @@
 - 验收（合并后）：`node --test dist/test/admin/*.test.js dist/test/memory/*.test.js dist/test/review/*.test.js dist/test/reply/*.test.js dist/test/github/*.test.js` 91 通过、22 跳过；`node --env-file=.env --test dist/test/admin/database-*.test.js dist/test/memory/database-*.test.js` 31/31。看过团队列表、规则列表、覆盖详情截图。
 - 遗留：选了仓库后，规则列表里的团队规则仍显示团队级别，没有标出本项目的覆盖（详情里有），放进 2-C。
 
+
+
+**ARCH-2-E**（2026-11-15，基于 `248d3ce`，分支 `arch/p2-e-review-queue`）
+
+- 迁移 `020_rule_review.sql` 增加意见的 `inferred_fixed_at/sha`、规则按原因的暂不处理记录、按仓库的文件树缓存。合并提取任务在人类讨论为空的提前结束之前，按 finding head 分组 compare 到真实合并 SHA；RIGHT 侧行号 ±3 与旧侧 hunk 相交时记疑似修复，跳过重复项，不改 finding 状态；compare 失败记日志并继续。没有新增模型调用，未修改 Prompt 或规则召回。
+- `usage.inferredFixed` 与已确认 FIXED 分开；项目统计仍限定仓库，团队统计按规则 ID 汇总全部仓库。修复继承列表将团队统计硬编码为零的问题，并按团队去重查询。队列检查仍生效的版本，候选新版本不会遮住旧 ACTIVE 规则。
+- `GET /api/rule-review` 按现有规则编辑权限返回 ACTIVE 规则与 noisy / sleeping / path_invalid / expired 依据。阈值为 3 次／40%、90 天；`POST /api/memories/:id/dismiss-review` 要求 reason 与非空 note，按规则＋原因忽略 90 天，即使依据变化也不提前出现。文件树只在打开队列时按需读取、缓存 24 小时；截断、读取失败或不可访问时明确列出未检查仓库，不把未知结果当作路径失效。
+- 定向：`npm run build && node --env-file=.env --test dist/test/memory/database-rule-review.test.js dist/test/github/client.test.js dist/test/admin/admin.test.js`，13/13 通过。覆盖 5 次引用／3 次撤回、模拟时钟跨越 90 天、团队 A/B 汇总、已确认 FIXED 不重复计疑似、ACTIVE 与候选并存、所有仓库路径匹配与截断、24 小时缓存、compare 命中／不命中／失败、重复与 LEFT 排除、仓库维护者／团队管理员／CSRF 边界。
+- 全量顺序执行：`npm test` 327 项，196 通过、0 失败、131 跳过（未加载数据库），59.39 秒；`npm run test:db` 170/170 通过，0 跳过，182.28 秒。数据库测试使用本机 PostgreSQL 的独立临时 schema。`npm audit --audit-level=high`：0 vulnerabilities。
+- 页面：按 `work/ui-review/preview.mjs` 的方式，用临时 schema＋真实管理 handler＋替身 GitHub，ego-browser 检查 1600／1024 宽的 0 条、30 条、三原因、长中文／无空格英文名称、长团队名和详情统计；30 条分页为 20＋10。实际填写理由保存成功，数据库记录 `memory_id=71e7438b-68e2-400d-80ef-907fa0050900`、reason=noisy、actor=preview，另外两项原因仍显示。截图在被忽略的 `work/ui-review/review-*.png`；预览进程和 schema 已删除。
+- 开销：合并推断每次执行增加最多 D 次 compare（D 为待推断意见不同 head SHA 数，无意见则 0）；取树缓存失效时每仓库 2 次 GitHub 读取，另按 installation 签发 token，同请求共用，缓存命中无新增 GitHub 读取；同进程相同仓库并发刷新共用请求，最多同时读取 4 个仓库。预览 30 条／2 仓库实测打开前取树 0 次，首次 2 次取树方法调用＋1 次 token，重复打开仍为 2／1；缓存命中的真实管理 API 连续 10 次成功响应为 6.34–34.59 ms、28,148 字节（GitHub 为替身、没有生产压测）。内存随所查仓库完整路径数增长，未测大仓库内存峰值。
+- 限制：GitHub compare 最多返回 300 个文件，二进制或缺失 patch 不推断；改动附近代码只能说明疑似修复。没有真实 Webhook、真实 GitHub／模型发布输入；本项没有真实 delivery、Review 或 reply URL，没有模型角色运行及 token 消耗。未部署、未 push，不把整个阶段 2 标为完成。
+- 新增拒绝路径：暂不处理请求缺少有效四类 reason 或 note 为空返回 422，依据任务书的四类原因和“理由必填”；登录、CSRF、项目／团队管理权限沿用现有 401／403／404。compare 与文件树网络失败不会新增用户拒绝规则。
+
+- 收尾检查：`npm run format` 检查 248 个文件、格式化 10 个本次改动文件；`npm run check:docs` 36 个 Markdown 文件／310 个本地链接与锚点通过；`npm run check:format`、`git diff --check` 通过。

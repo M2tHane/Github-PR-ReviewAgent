@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
-import { MemoryService, toMemory } from "../memory/memory.service.js";
+import { MemoryService } from "../memory/memory.service.js";
 import { MemoryRepository } from "../persistence/repositories/memory.repository.js";
 import { RuleImportService } from "../memory/import.service.js";
 import { RuleImportError, MAX_IMPORT_RULES } from "../memory/import-format.js";
@@ -88,20 +88,22 @@ export function createTeamRoutes(
   }
   async function inherited(repositoryId: number): Promise<MemoryWithUsage[]> {
     const result = await database.pool.query(
-      "SELECT m.* FROM memories m JOIN team_repositories tr ON tr.team_id=m.team_id WHERE tr.repository_id=$1 AND m.status='ACTIVE' ORDER BY m.id",
+      "SELECT team_id FROM team_repositories WHERE repository_id=$1 ORDER BY team_id",
       [repositoryId],
     );
-    return result.rows.map((row) => ({
-      ...toMemory(row),
-      usage: { provided: 0, cited: 0, fixed: 0, withdrawn: 0, exception: 0, open: 0, lastCitedAt: null },
-    }));
+    return (
+      await Promise.all(result.rows.map((row) => memories.list({ teamId: row.team_id }, undefined, true)))
+    ).flat();
   }
   async function visibleMemories(teams: Team[], repositories: Repository[]) {
-    const managed = (
-      await Promise.all(teams.filter((team) => team.canManage).map((team) => memories.list({ teamId: team.id })))
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    return (
+      await Promise.all(
+        teams
+          .filter((team) => team.canManage || team.repositoryIds.some((id) => repositoryIds.has(id)))
+          .map((team) => memories.list({ teamId: team.id }, undefined, !team.canManage)),
+      )
     ).flat();
-    const inheritedRules = (await Promise.all(repositories.map((repo) => inherited(repo.id)))).flat();
-    return [...new Map([...inheritedRules, ...managed].map((memory) => [memory.id, memory])).values()];
   }
   async function overrides(repositoryId: number): Promise<RuleOverride[]> {
     const rows = (

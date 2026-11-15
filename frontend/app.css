@@ -1036,6 +1036,29 @@ a.stat:hover {
 .rule-row {
   padding: 1rem 1.1rem;
 }
+.rule-review-reasons {
+  padding: 0;
+  margin: 0.75rem 0 0;
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+.rule-review-reasons li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.rule-review-reasons .chip,
+.rule-row .rule-line > button {
+  flex-shrink: 0;
+}
+.rule-review-dismiss {
+  margin-top: 1rem;
+  border-top: 1px dashed var(--line);
+  padding-top: 0.75rem;
+}
 .rule-line {
   display: flex;
   align-items: center;

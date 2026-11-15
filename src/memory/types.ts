@@ -86,6 +86,7 @@ export interface MemoryRecord {
   supersededBy?: string;
   approvedBy?: number;
   approvedAt?: string;
+  expiresAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -94,6 +95,7 @@ export interface MemoryUsage {
   provided: number;
   cited: number;
   fixed: number;
+  inferredFixed: number;
   withdrawn: number;
   exception: number;
   open: number;
@@ -101,3 +103,11 @@ export interface MemoryUsage {
 }
 
 export type MemoryWithUsage = MemoryRecord & { usage: MemoryUsage };
+
+export type RuleReviewReason =
+  | { reason: "noisy"; cited: number; withdrawn: number; withdrawnRatio: number }
+  | { reason: "sleeping"; approvedAt: string; lastCitedAt: string | null; days: number }
+  | { reason: "path_invalid"; paths: string[]; repositories: number }
+  | { reason: "expired"; expiresAt: string };
+export type RuleReviewItem = { memory: MemoryWithUsage; reasons: RuleReviewReason[] };
+export type RuleReviewQueue = { items: RuleReviewItem[]; uncheckedRepositories: string[] };
