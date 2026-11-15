@@ -3,14 +3,16 @@ import { api, messageOf } from "../../api/client.js";
 import { SessionTimeline } from "../../components/common/session-timeline.js";
 import { dateText, numberText, usageText, usageTotal } from "../../format.js";
 import type { Repository } from "../../types.js";
-import type { DevelopmentSettings } from "../../../src/development/types.js";
+import type { DevelopmentSettings, DevelopmentSource } from "../../../src/development/types.js";
 import type { AgentSessionRow } from "../../../src/admin/dto.js";
 import type { AgentUsage } from "../../../src/review/agent.js";
 import { NotificationMembers } from "./notification-members.js";
 
 type Task = {
   id: string;
-  requester: string;
+  requester: string | null;
+  requester_login: string | null;
+  source: DevelopmentSource;
   status: string;
   kind?: "develop" | "discuss" | "notice" | "revise";
   issue_number?: number | null;
@@ -43,6 +45,13 @@ const kindLabels: Record<NonNullable<Task["kind"]>, string> = {
   notice: "提示 · ",
   revise: "PR 评论处理 · ",
 };
+const sourceLabels: Record<DevelopmentSource, string> = {
+  wecom: "群消息",
+  issue: "issue",
+  pr_comment: "PR 评论",
+  admin: "管理页",
+  issue_label: "issue 标签",
+};
 const statuses: Record<string, string> = {
   queued: "等待执行",
   running: "开发中",
@@ -57,6 +66,7 @@ const statuses: Record<string, string> = {
 // 设置和任务来自同一个接口；表单和任务列表分在两个页签里，共用这份状态。
 export function useDevelopment(repo: Repository) {
   const [settings, setSettings] = useState<EditableSettings>();
+  const [enabled, setEnabled] = useState(false);
   const [configured, setConfigured] = useState(false),
     [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState(""),
@@ -71,6 +81,7 @@ export function useDevelopment(repo: Repository) {
     api<Response>(endpoint, { signal: controller.signal })
       .then((data) => {
         setConfigured(data.configured);
+        setEnabled(data.settings?.enabled ?? false);
         setTasks(data.tasks);
         setSettings(
           editable(
@@ -89,7 +100,10 @@ export function useDevelopment(repo: Repository) {
     if (!active) return;
     const timer = setInterval(() => {
       api<Response>(endpoint)
-        .then((data) => setTasks(data.tasks))
+        .then((data) => {
+          setTasks(data.tasks);
+          setEnabled(data.settings?.enabled ?? false);
+        })
         .catch(() => undefined);
     }, 5_000);
     return () => clearInterval(timer);
@@ -113,6 +127,7 @@ export function useDevelopment(repo: Repository) {
         }),
       });
       setSettings(editable(result.settings));
+      setEnabled(result.settings.enabled);
       setNotice("开发设置已保存。未发布任务会按新设置取消，请重新发起。");
     } catch (cause) {
       setError(messageOf(cause));
@@ -122,6 +137,7 @@ export function useDevelopment(repo: Repository) {
   }
   return {
     settings,
+    enabled,
     configured,
     tasks,
     error,
@@ -135,7 +151,7 @@ export function useDevelopment(repo: Repository) {
 type Development = ReturnType<typeof useDevelopment>;
 
 export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Repository }) {
-  const { settings, configured, error, notice, busy, update, save } = dev;
+  const { settings, error, notice, busy, update, save } = dev;
   const [linking, setLinking] = useState(false);
   return (
     <div className="card repo-form">
@@ -153,18 +169,12 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
         !error && <p role="status">加载中…</p>
       ) : (
         <>
-          {!configured && (
-            <p className="alert">
-              尚未配置智能机器人。请设置 Bot ID 和 Secret 后启用；原群通知 Webhook 无法接收 @ 消息。
-            </p>
-          )}
           <form onSubmit={save} className="development-form">
             <fieldset disabled={busy}>
-              <legend>群与目标分支</legend>
+              <legend>目标分支与群绑定</legend>
               <label>
-                群 ID
+                群 ID（可选）
                 <input
-                  required
                   value={settings.chatId}
                   onChange={(e) => update({ chatId: e.target.value.trim() })}
                   placeholder="在群内 @ 智能机器人获取群 ID"
@@ -180,22 +190,23 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
                 />
               </label>
               <p className="muted">
-                每个群只能绑定一个仓库及目标分支。AI 从该分支创建新开发分支，完成后引用原需求回复 PR
-                链接，不自动合并。PR 审查完成通知也发送到这个群，不再 @成员。
+                AI 从目标分支创建开发分支并提 PR，不自动合并。只用管理页或 issue 标签派任务时，群 ID
+                和成员可以留空。绑定企微群后，群消息任务和 PR 审查通知发送到该群。
               </p>
               <label className="check">
                 <input
                   type="checkbox"
                   checked={settings.enabled}
-                  disabled={!configured}
                   onChange={(e) => update({ enabled: e.target.checked })}
                 />
-                启用群内开发任务
+                启用开发任务
               </label>
             </fieldset>
             <fieldset disabled={busy}>
               <legend>成员身份</legend>
-              <p className="muted">按企业微信成员 ID 识别；未设置的成员不能发起任务。至少保留一名管理员。</p>
+              <p className="muted">
+                仅用于企微群内派任务，按企业微信成员 ID 识别。绑定群时至少保留一名管理员；不绑群时可留空。
+              </p>
               {settings.members.map((member, index) => (
                 <div className="development-member" key={member.key}>
                   <label>
@@ -347,7 +358,27 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
 }
 
 export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Repository }) {
-  const { tasks, error, busy, refresh } = dev;
+  const { tasks, error, busy, refresh, enabled, settings } = dev;
+  const [prompt, setPrompt] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setSubmitError("");
+    setSubmitted(false);
+    try {
+      await api(`/api/repositories/${repo.id}/development/tasks`, { method: "POST", body: JSON.stringify({ prompt }) });
+      setPrompt("");
+      setSubmitted(true);
+      refresh();
+    } catch (cause) {
+      setSubmitError(messageOf(cause));
+    } finally {
+      setSubmitting(false);
+    }
+  }
   return (
     <>
       {error && (
@@ -355,6 +386,44 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
           {error}
         </p>
       )}
+      <form onSubmit={submit} className="card repo-form development-task">
+        <h3>新建开发任务</h3>
+        <p className="muted">
+          描述希望实现的效果，AI 会创建开发分支并提 PR。结果显示在下方，需要确认时会开 issue 讨论。
+        </p>
+        {!enabled && (
+          <p className="muted">{settings ? "请先在开发设置中保存目标分支并启用开发任务。" : "正在读取开发设置…"}</p>
+        )}
+        <label>
+          开发描述
+          <textarea
+            required
+            maxLength={12000}
+            rows={5}
+            value={prompt}
+            disabled={!enabled || submitting}
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setSubmitted(false);
+            }}
+            placeholder="例如：为订单列表增加按日期筛选，并验证空结果的展示。"
+          />
+        </label>
+        <p className="muted">{numberText(prompt.length)} / 12,000 字</p>
+        {submitError && (
+          <p className="alert" role="alert">
+            {submitError}
+          </p>
+        )}
+        {submitted && (
+          <p className="feedback" role="status">
+            开发任务已加入队列，可在下方查看进度。
+          </p>
+        )}
+        <button type="submit" disabled={!enabled || submitting || !prompt.trim()}>
+          {submitting ? "提交中…" : "提交开发任务"}
+        </button>
+      </form>
       <div className="subhead">
         <h3>最近的开发任务</h3>
         <button type="button" className="secondary" disabled={busy} onClick={refresh}>
@@ -362,7 +431,7 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
         </button>
       </div>
       {tasks.length >= 50 && <p className="muted">只显示最近 50 条。</p>}
-      {!tasks.length && <p className="muted">还没有任务。在绑定群内 @Bot，发送文字，可在同一条消息中附图片。</p>}
+      {!tasks.length && <p className="muted">还没有任务。可在上方提交需求，或为 GitHub issue 添加 pi-dev 标签。</p>}
       {tasks.map((task) => (
         <article className="card development-task" key={task.id}>
           <strong>
@@ -370,7 +439,7 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
             {statuses[task.status] ?? task.status}
           </strong>
           <p>
-            {task.requester} · {dateText(task.created_at)}
+            {sourceLabels[task.source]} · {task.requester_login ?? task.requester} · {dateText(task.created_at)}
           </p>
           {task.issue_number && (
             <a
@@ -409,7 +478,7 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
                   sent: "已发送",
                   failed: "失败",
                   uncertain: "结果待核对",
-                  skipped: "不发（只在 issue 里回复）",
+                  skipped: "不发送",
                 } as Record<string, string>
               )[task.notification_status]
             }

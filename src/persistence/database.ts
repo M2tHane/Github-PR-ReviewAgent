@@ -24,6 +24,7 @@ const poolSize = (concurrency: number) => 5 + concurrency * 3;
 export class Database extends JobRepository implements JobAcceptor {
   private readonly development = new DevelopmentStore(this.pool);
   readonly isDevelopmentPullRequest = this.development.isDevelopmentPullRequest.bind(this.development);
+  readonly acceptIssueLabel = this.development.acceptIssueLabel.bind(this.development);
   readonly acceptIssueComment = this.development.acceptIssueComment.bind(this.development);
   readonly acceptPullRequestComment = this.development.acceptPullRequestComment.bind(this.development);
   readonly closeDevelopmentPullRequest = this.development.closePullRequest.bind(this.development);

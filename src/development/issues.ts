@@ -109,7 +109,9 @@ export function createDiscussionProcessor(
       const snapshot = await recorder.step("snapshot", "获取目标分支最新提交", () =>
         github.developmentSnapshot(token, task.repository, Number(task.repository_id), task.target_branch, signal),
       );
-      const logins = await store.requesterLogins(task.repository_id, task.requester);
+      const logins = origin.requester_login
+        ? [origin.requester_login]
+        : await store.requesterLogins(task.repository_id, origin.requester);
       await workspace(
         `https://github.com/${task.repository}.git`,
         token,
