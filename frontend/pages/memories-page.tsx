@@ -7,7 +7,7 @@ import { Pager } from "../components/common/pager.js";
 import { Status } from "../components/common/status-badge.js";
 import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
 import { dateText, numberText } from "../format.js";
-import type { Memory, Team, Repository as Repo } from "../types.js";
+import type { Memory, Team, RuleOverride, Repository as Repo } from "../types.js";
 import { shortText } from "../../src/review/presentation.js";
 import type { RuleReviewQueue } from "../../src/memory/types.js";
 import { RuleReviewRows } from "../features/memories/rule-review.js";
@@ -37,6 +37,29 @@ export function MemoriesPage({
     [repositoryId, setRepositoryId] = useState(params.get("repo") ?? "ALL"),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(1);
+  const [projectOverrides, setProjectOverrides] = useState<{ repositoryId: string; items: RuleOverride[] }>();
+  const [overrideError, setOverrideError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setProjectOverrides(undefined);
+    setOverrideError("");
+    if (repositoryId !== "ALL")
+      void api<{ overrides: RuleOverride[] }>(`/api/repositories/${repositoryId}/team-rules`).then(
+        (data) => {
+          if (active) setProjectOverrides({ repositoryId, items: data.overrides });
+        },
+        (cause) => {
+          if (active) setOverrideError(messageOf(cause));
+        },
+      );
+    return () => {
+      active = false;
+    };
+  }, [repositoryId, items]);
+  const overrideFor = (id: string) =>
+    projectOverrides?.repositoryId === repositoryId
+      ? projectOverrides.items.find((entry) => entry.memoryId === id)
+      : undefined;
   const [importMode, setImportMode] = useState<"markdown" | "project" | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -279,7 +302,7 @@ export function MemoriesPage({
         </div>
       </div>
       {items.some((item) => item.teamId) && (
-        <p className="muted">团队规则与项目覆盖目前用于管理，自动应用将在后续版本启用。</p>
+        <p className="muted">生效的团队规则用于所属项目；选中仓库可查看本项目的停用与级别覆盖。</p>
       )}
       {importMode && (
         <RuleImport
@@ -369,6 +392,11 @@ export function MemoriesPage({
           </select>
         </label>
       </div>
+      {overrideError && (
+        <p className="alert" role="alert">
+          项目覆盖加载失败：{overrideError}
+        </p>
+      )}
       <nav className="rule-tabs" aria-label="规则状态">
         {[
           ["ALL", "全部"],
@@ -447,10 +475,25 @@ export function MemoriesPage({
                 <a className="rule-open" href={`#rules/${item.id}${suffix}`}>
                   <h3>{item.title}</h3>
                 </a>
-                <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
+                <span
+                  className={`rule-level level-${overrideFor(item.id)?.level ?? item.level}`}
+                  title={
+                    overrideFor(item.id)?.action === "level" ? `团队级别：${ruleLevelLabels[item.level]}` : undefined
+                  }
+                >
+                  {overrideFor(item.id)?.action === "level"
+                    ? `本项目级别：${overrideFor(item.id)!.level}`
+                    : ruleLevelLabels[item.level]}
+                </span>
                 <Status
-                  value={item.status}
-                  label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
+                  value={overrideFor(item.id)?.action === "disable" ? "DEPRECATED" : item.status}
+                  label={
+                    overrideFor(item.id)?.action === "disable"
+                      ? "本项目已停用"
+                      : item.status === "CANDIDATE" && item.activeVersion
+                        ? "待确认更新"
+                        : undefined
+                  }
                 />
               </div>
               <ScopeChips scope={item.scope} limit={3} />

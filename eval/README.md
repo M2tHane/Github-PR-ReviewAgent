@@ -43,7 +43,7 @@ node eval/evaluate-recall.mjs --max-chars=60000 --output=work/recall-60k.json
 node eval/evaluate-recall.mjs --adapter=./eval/recall/context-adapter.mjs --output=work/recall-context.json
 ```
 
-第二条命令中的适配器是未来要实现的文件。适配器导出 `async function select({ memories, input, maxChars })`，`input` 为 `{ paths, text }`，返回 `{ rulesFull, rulesIndex }`。全文数组至少保留规则的 `id/title/content/rationale`，索引数组至少保留 `id`；应返回实际提供给 Agent 的字段，以便比较载荷。评测对每个用例调用两次：指定预算和 `Number.MAX_SAFE_INTEGER`，后者只用于识别哪些缺失来自预算。适配器必须无副作用、结果确定，且尊重预算参数；这里只提供当前实现适配器，尚未实现上下文编译器。
+第二条命令使用上下文编译器，分别评估 `full` 全文与 `full + index` 的覆盖率；本批生产 Review 仍只接收 `full`。适配器导出 `async function select({ memories, input, maxChars })`，`input` 为 `{ paths, text }`，返回 `{ rulesFull, rulesIndex }`。全文数组至少保留规则的 `id/title/content/rationale`，索引数组至少保留 `id`；应返回实际提供给 Agent 的字段，以便比较载荷。评测对每个用例调用两次：指定预算和 `Number.MAX_SAFE_INTEGER`，后者只用于识别哪些缺失来自预算。适配器必须无副作用、结果确定，且尊重预算参数；旧样例未标级别时按数据库默认的 should 处理；默认适配器保留旧算法，便于对照。
 
 ## 提取评测（真实模型，手动运行）
 

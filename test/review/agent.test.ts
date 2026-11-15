@@ -92,6 +92,7 @@ test("第一次输出有效时不追加提问；发给模型的团队规则只�
   const memory = {
     id: "memory-1",
     version: 2,
+    level: "info",
     repositoryId: 1,
     installationId: 1,
     type: "coding_convention",
@@ -118,6 +119,7 @@ test("第一次输出有效时不追加提问；发给模型的团队规则只�
     {
       id: "memory-1",
       version: 2,
+      level: "info",
       type: "coding_convention",
       title: "规则标题",
       content: "规则正文",

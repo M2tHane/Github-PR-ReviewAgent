@@ -363,7 +363,7 @@ export function RulePanel({
             <span className="muted">
               {item.status === "ACTIVE"
                 ? item.teamId
-                  ? "团队规则已生效，共享应用将在后续版本启用"
+                  ? "用于团队内各仓库的后续 PR 审查"
                   : "用于后续 PR 审查"
                 : "保留来源与历史"}
             </span>

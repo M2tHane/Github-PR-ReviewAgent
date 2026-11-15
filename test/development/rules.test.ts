@@ -8,6 +8,7 @@ function rule(title: string, scope: TeamRuleRow["scope"], extra: Partial<TeamRul
     id: `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`,
     version: 1,
     type: "engineering_rule",
+    level: "should",
     title,
     content: `${title}的正文`,
     rationale: "团队约定",
@@ -36,8 +37,8 @@ test("全局规则开头给全文，按路径规则只进目录；条件标签�
   );
   assert.deepEqual(prompt.globalTeamRules[1].scope, conditional.scope);
   assert.deepEqual(prompt.teamRuleIndex, [
-    { ref: "R3", type: "engineering_rule", title: "金额用最小单位", paths: ["service/billing/**"] },
-    { ref: "R4", type: "engineering_rule", title: "Go 错误包装", languages: ["go"] },
+    { ref: "R3", level: "should", type: "engineering_rule", title: "金额用最小单位", paths: ["service/billing/**"] },
+    { ref: "R4", level: "should", type: "engineering_rule", title: "Go 错误包装", languages: ["go"] },
   ]);
   assert.equal(JSON.stringify(prompt.teamRuleIndex).includes("正文"), false);
 });

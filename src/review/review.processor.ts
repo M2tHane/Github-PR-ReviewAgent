@@ -67,11 +67,18 @@ export function createReviewProcessor(
     let singleRunId: string | undefined, agentUsage: AgentUsage | undefined;
     try {
       await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-        const selection = await memories?.retrieveForReview(job.repositoryId, {
+        const selection = await memories?.context(job.repositoryId, {
           paths: files.map((file) => file.filename),
           text: recallText(job, files),
         });
-        const recalled = selection?.memories ?? [];
+        const recalled = selection?.full ?? [];
+        if (selection && (selection.index.length || selection.mustOverBudget))
+          log("info", "review_memory_budget", {
+            jobId: job.id,
+            provided: selection.full.length,
+            total: selection.total,
+            mustOverBudget: selection.mustOverBudget,
+          });
         const previous = (await publications?.getOpenFindings?.(job)) ?? [];
         const previousFindings = previous.map((finding) => {
           const display = displayFinding(finding);
@@ -144,10 +151,12 @@ export function createReviewProcessor(
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))
           review.result.limitations.push("GitHub 未提供部分文件的 patch，相关内容只能按 Workspace 源码检查。");
-        if (selection && selection.memories.length < selection.total)
+        if (selection && selection.full.length < selection.total)
           review.result.limitations.push(
-            `团队规则超过上限，本次只带了 ${selection.memories.length}/${selection.total} 条。`,
+            `团队规则超过上限，本次只带了 ${selection.full.length}/${selection.total} 条。`,
           );
+        if (selection?.mustOverBudget)
+          review.result.limitations.push("must 级团队规则超过字符上限，仍已全部提供，输入开销可能增加。");
         // 兜底：上面已丢弃无效的模型意见，正常情况下这里不会再报错。
         const locations = review.result.findings.flatMap((finding) => [
           finding,
@@ -158,7 +167,7 @@ export function createReviewProcessor(
           if (!changed.has(path)) throw new Error(`finding 路径不属于 PR: ${path}`);
           await readWorkspaceFile(root, path);
         }
-        validateMemoryReferences(review.result, recalled, job.repositoryId);
+        validateMemoryReferences(review.result, recalled);
         const validDiffLines = diffLines(files);
         for (const location of locations) normalizeFindingLocation(location, validDiffLines);
         review.result.resolvedPrevious = linkRepeats(review.result.findings, previous);
@@ -236,19 +245,14 @@ function recallText(job: ReviewJob, files: Array<{ filename: string; patch?: str
   return [job.title, job.body, ...added].join("\n");
 }
 
-export function validateMemoryReferences(
-  result: ReviewResult,
-  recalled: import("../memory/types.js").MemoryRecord[],
-  repositoryId: number,
-) {
+export function validateMemoryReferences(result: ReviewResult, recalled: import("../memory/types.js").MemoryRecord[]) {
   const recalledById = new Map(recalled.map((memory) => [`${memory.id}:${memory.version}`, memory]));
   for (const finding of result.findings.flatMap((item) => [item, ...(item.candidates ?? [])])) {
     if (["team_rule", "memory_conflict"].includes(finding.category) && !finding.memory)
       throw new Error("团队规则 finding 必须绑定 Memory id/version");
     if (!finding.memory) continue;
     const memory = recalledById.get(`${finding.memory.id}:${finding.memory.version}`);
-    if (!memory || memory.status !== "ACTIVE" || memory.repositoryId !== repositoryId)
-      throw new Error("模型引用了未召回或无效的 Memory");
+    if (!memory || memory.status !== "ACTIVE") throw new Error("模型引用了未召回或无效的 Memory");
     finding.memory.source = memory.source;
     finding.memory.title = memory.title;
   }

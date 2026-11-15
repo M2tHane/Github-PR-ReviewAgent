@@ -20,7 +20,9 @@ import type { ReviewJob } from "../../src/jobs/types.js";
 import type { MemoryService } from "../../src/memory/memory.service.js";
 
 const exec = promisify(execFile);
-const memories = { retrieveForReview: async () => ({ memories: [], total: 0 }) } as unknown as MemoryService;
+const memories = {
+  context: async () => ({ full: [], index: [], mustOverBudget: false, total: 0 }),
+} as unknown as MemoryService;
 
 const job = {
   id: "job",

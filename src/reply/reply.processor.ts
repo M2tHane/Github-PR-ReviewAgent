@@ -1,7 +1,7 @@
 import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { GitHubApiError, GitHubClient } from "../github/client.js";
-import type { MemoryService } from "../memory/memory.service.js";
+import { rankMemories, type MemoryService } from "../memory/memory.service.js";
 import { runAgentSession, TimeoutError, type AgentUsage } from "../review/agent.js";
 import { DEFAULT_BUDGET_TOKENS } from "../pi/types.js";
 import type { MemoryRecord } from "../memory/types.js";
@@ -220,21 +220,13 @@ export function createReplyProcessor(
           github.getFiles(token, job.repository, job.prNumber),
           github.getReviewComments(token, job.repository, job.prNumber),
         ]);
-        const relevantMemories = (
-          await Promise.all([
-            finding.memory ? memories.get(job.repositoryId, finding.memory.id) : undefined,
-            memories.retrieve(job.repositoryId, {
-              paths: files.map((file) => file.filename),
-              text: `${finding.description} ${job.humanReplyBody ?? ""}`,
-            }),
-          ])
-        )
-          .flat()
-          .filter((memory): memory is MemoryRecord => Boolean(memory))
-          .filter(
-            (memory, index, all) =>
-              all.findIndex((item) => item.id === memory.id && item.version === memory.version) === index,
-          );
+        const text = `${finding.description} ${job.humanReplyBody ?? ""}`;
+        const context = await memories.context(job.repositoryId, { text }, Number.MAX_SAFE_INTEGER);
+        const original = context.full.find((memory) => memory.id === finding.memory?.id);
+        const ranked = rankMemories(context.full, { paths: files.map((file) => file.filename), text });
+        const relevantMemories = original
+          ? [original, ...ranked.filter((memory) => memory.id !== original.id)]
+          : ranked;
         await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
           const binding = {
             finding,

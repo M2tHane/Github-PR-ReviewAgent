@@ -47,7 +47,7 @@
 | --- | --- | --- |
 | ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 已完成（`23831f0`）；真实 GitHub 安装清单未验证 |
 | ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 已完成（`b0e888a`）；团队规则要等 2-C 才进入审查 |
-| ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，冲突时项目规则胜出；Review、Reply、健康检查、开发任务、规则提取统一从这里取规则 | 进行中 |
+| ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，项目差异通过例外或停用覆盖表达；各类 Agent 共用规则入口 | 已完成（`4db020a`）；Review 这一批仍只给全文，索引按需读取留给 2-G |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；合并时推断"疑似已修复"（和开发者确认的修复分开统计） | 已完成（`3587c59`）；真实 GitHub 未验收 |
 | ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
 | ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 待做（依赖 2-C） |
@@ -229,3 +229,15 @@
 - 新增拒绝路径：暂不处理请求缺少有效四类 reason 或 note 为空返回 422，依据任务书的四类原因和“理由必填”；登录、CSRF、项目／团队管理权限沿用现有 401／403／404。compare 与文件树网络失败不会新增用户拒绝规则。
 
 - 收尾检查：`npm run format` 检查 248 个文件、格式化 10 个本次改动文件；`npm run check:docs` 36 个 Markdown 文件／310 个本地链接与锚点通过；`npm run check:format`、`git diff --check` 通过。
+
+**ARCH-2-C**（2026-11-15，基于 `248d3ce`，分支 `arch/p2-c-context`）
+
+- 实现：`context.ts` 一次 SQL 读取项目及所属团队 ACTIVE 最新版本和项目覆盖；纯函数应用停用／改级别，保留团队原级别，按 Scope 和例外关联收集，再按 must、should、info 排序。must 超限全给，Review 记日志及 limitations；其余超限规则进入索引。本批 Review 只给全文，未增加按需读规则工具。冲突差异仍通过项目例外或停用覆盖表达，不做语义推断。
+- 调用方：Review、Reply、健康检查、开发及修订、规则提取共用编译器。Review／Health 以实际提供的 ID/version 校验，团队规则照常记入任务仓库的 `review_memory_usage`。Reply 保留前 10 条加有效原规则；Health 保留前 10 条；开发保留按文件附规则并带级别。提取器带规则归属，团队规则可作为例外／冲突目标，不能被项目候选替代（`unknown_rule`）。未改 Review／Reply／Health 的系统 Prompt、复查队列和用量统计。
+- 回归：`npm test` 重跑 198 通过、0 失败、131 跳过（数据库用例），测试 Runner 耗时 62.10 秒；首轮既有 CodeGraph 建索引用例撞到 10 秒超时，单项及全量重跑通过，未改运行时。`npm run test:db` 首轮 172 通过、1 失败（既有安全审查测试连接 PostgreSQL 超时）；随后 `node --env-file=.env --test --test-concurrency=4 dist/test/*/database-*.test.js` 全量 173/173，0 跳过，46.30 秒。新增用例覆盖有效版本、多团队同 Scope、停用／改级别、团队原规则、must 超限、should 优先和所有调用方的实际输入及引用校验。
+- 评测：默认适配器全文及 provided 均 52/85（61.18%）；`node eval/evaluate-recall.mjs --adapter=./eval/recall/context-adapter.mjs --output=work/recall-context.json` 全文仍 52/85（61.18%），全文加索引为 85/85（100%）。16 个合成样例，`node --test eval/metrics.test.mjs` 7/7。索引未进入当前 Review，不能把 100% 解释为线上全文召回率。
+- 页面：真实管理 Handler＋临时 schema＋替身登录/GitHub；ego-browser 在 1600×1000、1024×900 查看一个仓库属于 3 个团队、停用、must 覆盖成 info、无覆盖各一条，标签无横向溢出；切换到另一个无覆盖的仓库后恢复团队默认。截图在忽略的 `work/context-1600.png`、`work/context-1024.png`。临时服务和 schema 已回收。
+- 开销：规则读取仍为一次 SQL，Reply 从最多两次减为一次；查询新增团队成员关系与覆盖连接。200 条合成规则纯编译运行 30 次，中位数 11.79 ms、95 分位 25.54 ms，不含数据库／模型。规则正文和 must 超限会增加输入与内存，未做生产查询、内存或真实模型压测。
+- 限制：GitHub 与模型均为替身，模型角色为 general_review／reply_handler／health_auditor／developer／decision_extractor；新增 Review／Reply／提取替身 usage 为 0，开发和 Health 复用 150 tokens 的测试记账值，不是真实消耗。没有真实 delivery、Job、finding、Review 或 reply URL，未运行真实 Webhook 或模型提取回归。新增拒绝路径仅为提取候选 `supersedes` 指向团队规则时按任务书丢弃；停用、移出团队和错误版本仍沿用“未实际提供”的引用拒绝规则。
+
+- 收尾：`npm run format` 格式化 248 个文件，随后 `npm run check:format` 无需修改；`npm run check:docs` 36 个 Markdown、310 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。

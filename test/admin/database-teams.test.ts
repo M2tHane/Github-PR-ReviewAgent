@@ -119,7 +119,7 @@ test("团队管理、规则生命周期、提升和项目覆盖的数据库与 A
       assert.equal((await request("member", `/api/teams/${teamId}/memories`)).status, 403);
       assert.deepEqual((await ok("member", "/api/bootstrap")).memories, []);
     });
-    await t.test("ACTIVE 项目规则提升为团队候选；团队管理员批准原子替代，审计完整且不进入 Review 召回", async () => {
+    await t.test("ACTIVE 项目规则提升为团队候选；团队管理员批准原子替代，审计完整并进入 Review 召回", async () => {
       sourceId = await seed("必须处理数据库错误");
       assert.equal((await memories.get(801, sourceId))!.level, "should");
       const promoted = await ok("maintainer", `/api/repositories/801/promotions/${sourceId}`, "POST", { teamId });
@@ -151,7 +151,7 @@ test("团队管理、规则生命周期、提升和项目覆盖的数据库与 A
       assert.ok(audits.some((row) => row.memory_id === ruleId && row.action === "promote"));
       assert.ok(audits.some((row) => row.memory_id === ruleId && row.action === "supersede-new"));
       assert.ok(audits.some((row) => row.memory_id === sourceId && row.action === "supersede-old"));
-      assert.deepEqual((await memories.retrieveForReview(801, { paths: ["src/main.ts"], text: "" })).memories, []);
+      assert.equal((await memories.context(801, { paths: ["src/main.ts"], text: "" })).full[0]?.id, ruleId);
       assert.equal((await ok("maintainer", "/api/repositories/801/team-rules")).memories[0].id, ruleId);
       assert.equal((await ok("teamadmin", "/api/bootstrap")).memories[0].id, ruleId);
     });

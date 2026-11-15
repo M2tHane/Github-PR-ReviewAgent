@@ -187,7 +187,7 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
         throw new Error("must not publish");
       },
     } as unknown as Database;
-    const memories = { retrieve: async () => [] } as unknown as MemoryService;
+    const memories = { context: async () => ({ full: [] }) } as unknown as MemoryService;
     for (const mode of ["stale", "unauthorized", "uncertain"]) {
       currentHead = headSha;
       enabled = true;
@@ -882,7 +882,7 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
     assert.deepEqual(none.saved.limitations, ["模型有 2 条意见指向不属于本 PR 的文件或未提供的团队规则，已丢弃。"]);
 
     const truncated = await publish([], {
-      retrieveForReview: async () => ({ memories: [], total: 3 }),
+      context: async () => ({ full: [], index: [{ id: "omitted" }], mustOverBudget: false, total: 3 }),
     } as unknown as MemoryService);
     assert.deepEqual(truncated.saved.limitations, ["团队规则超过上限，本次只带了 0/3 条。"]);
     assert.deepEqual(truncated.provided, [], "未提供的规则不记使用记录");
@@ -891,9 +891,14 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
       { id: "rule-2", version: 2, repositoryId: 1, status: "ACTIVE" },
     ] as MemoryRecord[];
     const unused = await publish([], {
-      retrieveForReview: async () => ({ memories: recalled, total: 3 }),
+      context: async () => ({ full: recalled, index: [], mustOverBudget: false, total: 3 }),
     } as unknown as MemoryService);
     assert.deepEqual(unused.provided, recalled, "即使没有意见引用，仍记录真正交给模型的两条规则");
+    const must = await publish([], {
+      context: async () => ({ full: recalled, index: [], mustOverBudget: true, total: 2 }),
+    } as unknown as MemoryService);
+    assert.deepEqual(must.provided, recalled);
+    assert.deepEqual(must.saved.limitations, ["must 级团队规则超过字符上限，仍已全部提供，输入开销可能增加。"]);
   } finally {
     await rm(source, { recursive: true, force: true });
   }

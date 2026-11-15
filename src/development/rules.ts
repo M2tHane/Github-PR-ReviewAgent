@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { hasSpecificScope, scopeMatches } from "../memory/memory.service.js";
 import type { MemoryRecord } from "../memory/types.js";
 
-// 开发任务读取的 ACTIVE 规则行，字段与 memories 表一致。
+// 编译后的 ACTIVE 规则，保留快照中的 exception_to 字段。
 export interface TeamRuleRow {
   id: string;
   version: number;
   type: MemoryRecord["type"];
+  level: MemoryRecord["level"];
   title: string;
   content: string;
   rationale: string;
@@ -35,6 +36,7 @@ export function createRuleBook(
   const view = (row: TeamRuleRow) => ({
     ref: refs.get(row.id)!,
     type: row.type,
+    level: row.level,
     title: row.title,
     content: row.content,
     rationale: row.rationale,
@@ -69,6 +71,7 @@ export function createRuleBook(
       teamRuleIndex: scoped.map((row) => ({
         ref: refs.get(row.id)!,
         type: row.type,
+        level: row.level,
         title: row.title,
         ...Object.fromEntries(
           (["paths", "languages", "modules"] as const)
