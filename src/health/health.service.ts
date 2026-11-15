@@ -106,11 +106,7 @@ export function parseHealthResult(
       if (
         ref.kind === "memory" &&
         binding.memories.some(
-          (memory) =>
-            memory.id === ref.id &&
-            memory.version === ref.version &&
-            memory.repositoryId === binding.job.repositoryId &&
-            memory.status === "ACTIVE",
+          (memory) => memory.id === ref.id && memory.version === ref.version && memory.status === "ACTIVE",
         )
       )
         return { kind: "memory", id: ref.id, version: ref.version, detail };

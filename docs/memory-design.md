@@ -196,11 +196,13 @@ Memory 必须有明确 scope。
 
 项目例外可以关联本项目或所属团队的生效原规则。团队例外只能关联同团队的生效规则；提升项目例外时保留原关联以便追溯，确认前须重新关联团队内生效原规则。例外仍必须限定范围，不能通过替代删除它依赖的原规则。
 
-### 6.4 级别与当前接入边界
+### 6.4 级别与上下文编译器
 
 每条规则具有 `must`（必须）、`should`（建议）或 `info`（参考）级别。已有规则经迁移统一为 should，Markdown 导入也默认 should；跨项目导入和团队提升保留来源级别。修改生效规则的级别产生候选新版本，批准前旧级别继续有效。项目覆盖的级别独立于团队版本，不改变团队默认级别。
 
-本批仅接入数据、权限和管理页面。Review、Reply、健康检查、开发任务与规则提取的实际取规则查询仍按 `repository_id` 读取项目规则，团队规则、项目覆盖和级别尚不参与任务召回或截断。团队提升批准后，原项目规则已被替代，团队规则要等后续上下文编译器接入才进入任务；因此不应把本批单独上线视为团队规则已开始自动执行。must 全量提供、should/info 按相关度控制体量也属于后续编译器工作。
+Review、Reply、健康检查、开发任务和规则提取统一从 `src/memory/context.ts` 取得本项目实际适用的规则。一次 SQL 收集项目和所属团队的 ACTIVE 最新版本及本项目覆盖；候选更新不替代仍有效的旧版本。纯函数先应用停用或级别覆盖（保留 `teamLevel` 原级别），再按 Scope 过滤、带出例外依赖的有效原规则，返回全文 `full`、超限索引 `index`、`mustOverBudget` 和截断前总数。被项目停用的原规则不会被例外重新带回。
+
+项目规则与团队规则的差异通过项目例外（按路径生效）或项目覆盖停用（整个项目）表达；编译器不推断冲突。多个团队同范围的规则都保留。仓库移出团队后，后续编译不再提供该团队规则；规则页选中仓库时显示本项目停用或级别覆盖。
 
 ## 7. 例外规则
 
@@ -264,24 +266,28 @@ repository / team 边界
   ↓
 status = ACTIVE
   ↓
+项目覆盖（停用或改级别）
+  ↓
 scope / path / language / module
   ↓
-内容相关性排序
+例外关联 → 级别、范围和内容相关性排序 → 全文与超限索引
 ```
 
 Review 只允许 ACTIVE 且作用域匹配的 Memory 作为团队约定依据。
 
 `conditions` 是自然语言条件，不参与服务端过滤，由 Agent 结合正文判断是否适用。
 
-Review 的选取（`selectReviewMemories`）不按相关性截断：作用域命中改动文件的规则全部带上，未限定作用域的全局规则不要求最低分；选中的例外规则把未选中的 ACTIVE 原规则一并带上。内容相关性排序只在选中规则的 `title + content + rationale` 合计超过 30 000 字符时使用：限定作用域的在前、全局的在后，各自按词重叠分数从高到低、同分按 ID 保留到上限，并在 Review 的 limitations 写明“只带了 N/M 条”。发给模型的规则只保留 `id`、`version`、`type`、`title`、`content`、`rationale`、`scope`、`source`、`exceptionTo`、`supersedes`。代价是每次 Review 的首条提示变长，预算把缓存读取按全额计入，规则多的仓库每轮请求都会多算这部分。
+Review 的字符预算仍为 `REVIEW_MEMORY_CHARS`（30 000），按 `title + content + rationale` 计算。范围命中的规则和例外带出的原规则按覆盖后的级别排序：must 全部进入全文，即使自身超限也不截断，并记录日志和 limitations；剩余额度依次提供 should、info，同级别内限定范围的优先、全局的在后，再按词重叠分数和 ID 排序。保持排序前缀，第一条超限后的其余非 must 规则进入索引（仅 id、version、title、level、scope）。普通截断同样记录日志，在 limitations 说明“只带了 N/M 条”。
 
-Reply 与健康检查仍按词重叠计分排序后取前 10 条（`retrieve`）。
+本批 Review 只接收 `full`，不把索引交给模型，也没有按需读全文工具。发给模型的字段为 `id`、`version`、`type`、`title`、`content`、`rationale`、`scope`、`source`、`exceptionTo`、`supersedes`、`level`。编译器的索引用于召回评测，索引覆盖率不能解释为当前 Review 已读取全文。must 超限可能增加每轮输入开销；缓存读取仍按全额计入预算。
+
+Reply 与健康检查在不按字符截断的编译结果上，仍用 `rankMemories` 按词重叠排序取前 10 条；Reply 额外带回原意见引用的、仍在本项目有效集合内的规则。开发任务不预先按路径或字符过滤，由 `createRuleBook` 在实际读写文件时附规则，全文和目录均带有效级别。提取器使用有字符预算的全文，`existingRules` 带 `repositoryId` / `teamId` 归属：例外和冲突可关联团队规则，`supersedes` 仅允许本项目规则，其他目标按 `unknown_rule` 丢弃。
 
 模型输出中引用的 Memory ID 和 version 必须由服务端再次校验：
 
 - 记录存在。
 - 当前用户 / Job 可见。
-- repository 匹配。
+- 在本次编译且实际提供的清单中（项目或所属团队）；不再要求规则自己的 repository_id 等于任务仓库。
 - status 仍为 ACTIVE。
 - version 未过期。
 - scope 仍然适用。

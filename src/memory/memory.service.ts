@@ -3,6 +3,7 @@ import { matchesGlob } from "node:path";
 import { languageOf, normalizeLanguage } from "../config/languages.js";
 import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
+import { loadMemoryContext, type ContextInput } from "./context.js";
 import {
   MemoryPromotionError,
   ownerColumn,
@@ -213,20 +214,12 @@ export class MemoryService {
   }
 
   async retrieve(repositoryId: number, input: RetrieveInput) {
-    return rankMemories(await this.activeMemories(repositoryId), input);
+    const context = await this.context(repositoryId, input, Number.MAX_SAFE_INTEGER);
+    return rankMemories(context.full, input);
   }
 
-  // Review 用：范围命中的规则全部带上，见 selectReviewMemories。Reply 和健康检查仍用 retrieve。
-  async retrieveForReview(repositoryId: number, input: Pick<RetrieveInput, "paths" | "text">) {
-    return selectReviewMemories(await this.activeMemories(repositoryId), input);
-  }
-
-  private async activeMemories(repositoryId: number) {
-    const result = await this.database.pool.query(
-      "SELECT DISTINCT ON (id) * FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version DESC",
-      [repositoryId],
-    );
-    return result.rows.map(toMemory);
+  context(repositoryId: number, input: ContextInput, maxChars = REVIEW_MEMORY_CHARS) {
+    return loadMemoryContext(this.database.pool, repositoryId, input, maxChars);
   }
 }
 
@@ -272,10 +265,11 @@ export function rankMemories(memories: MemoryRecord[], input: RetrieveInput) {
   );
 }
 
-// Review 一次带上的团队规则 title + content + rationale 总字符数上限。
+// Review 的 title + content + rationale 字符预算；编译器对 must 超限只告警。
 export const REVIEW_MEMORY_CHARS = 30_000;
 
-// Review 的规则选取：范围命中改动文件的规则全部带上，全局规则不要求最低分；选中的例外把未选中的 ACTIVE 原规则一并带上。
+// 旧 Review 算法保留为召回评测基线；生产统一使用 context.ts。
+// 范围命中改动文件的规则全部带上，全局规则不要求最低分；选中的例外把未选中的 ACTIVE 原规则一并带上。
 // 只有总字符数超过上限时才截断：限定范围的在前、全局的在后，各自按词重叠分数从高到低、同分按 ID，保留到上限为止。
 // total 是截断前的条数，调用方据此说明"只带了几条"。
 export function selectReviewMemories(

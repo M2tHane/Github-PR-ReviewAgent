@@ -1,3 +1,4 @@
+import { seedTeamRule } from "../helpers/team-rule.js";
 import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
@@ -176,6 +177,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
       "INSERT INTO repositories(id,installation_id,full_name,budget_tokens) VALUES($1,1,'owner/health-worker',10000)",
       [repositoryId],
     );
+    const team = await seedTeamRule(database, repositoryId);
     const first = await database.enqueueHealth(repositoryId, { defaultBranch: "main", headSha: sha }, "manual");
     const abandoned = await database.startAgentRun(first.job!.id, "health_auditor", 10000, 1000);
     await database.finishAgentRun(abandoned, { status: "failed", usage: { ...emptyUsage(), unreportedTokens: 4000 } });
@@ -232,6 +234,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     const execute = async (input: any) => {
       calls++;
       prompts.push(input.prompt);
+      assert.equal(input.prompt.activeTeamMemories[0]?.id, team.id);
       workspace = input.root;
       budgets.push(input.budgetTokens);
       await input.onUsage({ ...emptyUsage(), unreportedTokens: 1000 });
@@ -265,7 +268,10 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
                     description: "超时常量为负数",
                     impact: "立即超时",
                     suggestion: "使用正数",
-                    references: [{ kind: "code", path: "src/a.ts", line: 1, detail: "负数声明" }],
+                    references: [
+                      { kind: "code", path: "src/a.ts", line: 1, detail: "负数声明" },
+                      { kind: "memory", id: team.id, version: 1, detail: "团队约定" },
+                    ],
                   },
                   {
                     dimension: "security",

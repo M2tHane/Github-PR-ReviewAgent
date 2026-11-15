@@ -143,8 +143,8 @@ export interface AgentReviewInput {
 
 // 发给模型的规则只带判断需要的字段；证据、置信度、审批人和时间等留在服务内部。
 function memoryForPrompt(memory: MemoryRecord) {
-  const { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes } = memory;
-  return { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes };
+  const { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes, level } = memory;
+  return { id, version, type, title, content, rationale, scope, source, exceptionTo, supersedes, level };
 }
 
 // 所有 Agent 调用都经过这里：在 Pi 进程中运行，预算、超时、取消和工具权限由服务控制。

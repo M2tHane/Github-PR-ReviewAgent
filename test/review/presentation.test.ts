@@ -93,7 +93,6 @@ test("分组拒绝未知、重复、遗漏及跨规则合并，短评不能超�
       validateMemoryReferences(
         { summary: "", findings: [{ ...exportFinding, category: "team_rule" }], coverage: [], limitations: [] },
         [],
-        1,
       ),
     /必须绑定/,
   );

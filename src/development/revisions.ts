@@ -16,6 +16,7 @@ import { DevelopmentError, type DevelopmentTask } from "./types.js";
 import { enforceProtections, safePath, WRITING_LIMITS } from "./policy.js";
 import { applySnapshot, collectChanges, NoChangesError, repositoryFiles } from "./changes.js";
 import { createRuleBook } from "./rules.js";
+import { loadMemoryContext } from "../memory/context.js";
 import { snapshotRecorder } from "./snapshots.js";
 import { WORKSPACE_RULES } from "./prompt-rules.js";
 import type { DevelopmentStore } from "./store.js";
@@ -240,12 +241,13 @@ export function createRevisionProcessor(
           return !latest || date > latest ? date : latest;
         }, since);
       const originalRequest = await store.pullRequestOrigin(task);
-      const ruleRows = (
-        await store.pool.query(
-          "SELECT id,version,type,title,content,rationale,scope,source,evidence,exception_to FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version",
-          [task.repository_id],
-        )
-      ).rows;
+      const context = await loadMemoryContext(
+        store.pool,
+        task.repository_id,
+        { text: task.prompt },
+        Number.MAX_SAFE_INTEGER,
+      );
+      const ruleRows = context.full.map((rule) => ({ ...rule, exception_to: rule.exceptionTo ?? null }));
       await store.checkpoint(task, { baseSha: snapshot.sha, model: `${config.modelProvider}/${config.modelName}` });
       let savedSnapshot = await store.loadSnapshot(task.id);
       const spent = emptyUsage();

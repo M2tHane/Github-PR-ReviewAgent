@@ -1,3 +1,4 @@
+import { seedTeamRule } from "../helpers/team-rule.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
@@ -280,6 +281,7 @@ test("开发正常修改并提 PR；图片和团队规则传入模型；任务�
       ($4,1,$2,1,'engineering_rule','候选','候选不能参与开发','未确认','{}','{"pullRequestNumber":2}',1,'CANDIDATE',$5)`,
       [ruleId, s.repoId, randomUUID(), randomUUID(), randomUUID()],
     );
+    const team = await seedTeamRule(s.database, s.repoId, { title: "团队基线", scope: {}, level: "must" });
     const task = await s.enqueue();
     task.images = [{ type: "image", data: "cGljdHVyZQ==", mimeType: "image/png" }];
     const model: typeof runAgentSession = async (input) => {
@@ -288,9 +290,13 @@ test("开发正常修改并提 PR；图片和团队规则传入模型；任务�
       const prompt = input.prompt as any;
       assert.deepEqual(
         prompt.globalTeamRules.map((r: any) => [r.ref, r.title, r.content]),
-        [["R1", "账务精度", "金额使用最小货币单位"]],
+        [
+          ["R1", "团队基线", "团队规则正文"],
+          ["R2", "账务精度", "金额使用最小货币单位"],
+        ],
       );
       assert.deepEqual(prompt.teamRuleIndex, []);
+      assert.equal(prompt.globalTeamRules[0].level, "must");
       return s.agent()(input);
     };
     await s.process(model)(task, new AbortController().signal);
@@ -299,8 +305,9 @@ test("开发正常修改并提 PR；图片和团队规则传入模型；任务�
     assert.equal(row.pr_number, 42);
     assert.equal(row.requester, "developer");
     assert.equal(row.usage.totalTokens, 150);
-    assert.equal(row.rule_snapshot[0].id, ruleId);
-    assert.equal(row.rule_snapshot[0].version, 2);
+    assert.equal(row.rule_snapshot[0].id, team.id);
+    assert.equal(row.rule_snapshot[1].id, ruleId);
+    assert.equal(row.rule_snapshot[1].version, 2);
     assert.deepEqual(row.rule_snapshot[0].delivered, { via: "prompt" });
     assert.deepEqual(row.images, []);
     assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
@@ -1522,6 +1529,7 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
     await s.process()(origin, new AbortController().signal);
     const branch = (await s.getTask(origin.id)).branch;
     s.pull.ref = branch;
+    await seedTeamRule(s.database, s.repoId, { title: "修订遵守团队约定", scope: {}, level: "info" });
     assert.deepEqual(await prComment(s, 201, "carol", "把 value 改成 3"), { kind: "accepted", taskKind: "revise" });
     assert.deepEqual(await prComment(s, 201, "carol", "把 value 改成 3"), { kind: "duplicate" });
     assert.deepEqual(
@@ -1554,6 +1562,8 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
       body: `${reply}\n\n提交：${s.head.slice(0, 7)}\n\n<!-- pi-dev:${revise.id}:reply -->`,
     });
     assert.equal(prompts[0].originalRequest, "修改代码");
+    assert.equal(prompts[0].globalTeamRules[0].title, "修订遵守团队约定");
+    assert.equal(prompts[0].globalTeamRules[0].level, "info");
     assert.deepEqual(
       prompts[0].pullRequest.comments.map((c: any) => [c.author, c.new, c.body]),
       [["carol", true, "把 value 改成 3"]],

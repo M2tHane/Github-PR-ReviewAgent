@@ -92,9 +92,9 @@ test("规则使用统计：提供、引用结局、重试、跨版本和任务�
     await t.test("未提供全零；两条规则提供一次，只有一条被撤回意见引用；重试和删除", async () => {
       for (const id of ids) assert.deepEqual(await usage(id), zero);
       const job = await review();
-      const recalled = (
-        await service.retrieveForReview(repositoryId, { paths: ["src/a.ts"], text: "" })
-      ).memories.filter((memory) => memory.id !== ids[2]);
+      const recalled = (await service.context(repositoryId, { paths: ["src/a.ts"], text: "" })).full.filter(
+        (memory) => memory.id !== ids[2],
+      );
       await database.saveReviewMemoryUsage(job, recalled);
       const withdrawn = finding("被撤回的意见");
       const [stored] = await database.saveFindings(job, [withdrawn], new Set());
@@ -177,7 +177,7 @@ test("规则使用统计：提供、引用结局、重试、跨版本和任务�
       assert.equal(active.activeVersion, 2);
       assert.deepEqual(await service.list(repositoryId, "CANDIDATE"), []);
       assert.ok(
-        !(await service.retrieveForReview(repositoryId, { paths: ["src/a.ts"], text: "" })).memories.some(
+        !(await service.context(repositoryId, { paths: ["src/a.ts"], text: "" })).full.some(
           (memory) => "usage" in memory,
         ),
         "展示统计不进入召回和模型输入",
@@ -551,7 +551,7 @@ test("提取器只带相关生效规则，逐条丢弃并保存替代、例外�
       getReviewComments: async () => [],
     } as unknown as GitHubClient;
     const config = { modelProvider: "p", modelName: "m", modelApiKey: "k", agentTimeoutMs: 1000 } as Config;
-    const retrieve = t.mock.method(service, "retrieveForReview");
+    const retrieve = t.mock.method(service, "context");
     let output = JSON.stringify([
       { ...proposal, title: 42 },
       { ...proposal, relation: { exceptionTo: outsideId } },
@@ -563,7 +563,20 @@ test("提取器只带相关生效规则，逐条丢弃并保存替代、例外�
       for (const rule of prompt.existingRules) {
         assert.deepEqual(
           Object.keys(rule).sort(),
-          ["id", "version", "type", "title", "content", "rationale", "scope", "exceptionTo", "supersedes"].sort(),
+          [
+            "id",
+            "version",
+            "type",
+            "title",
+            "content",
+            "rationale",
+            "scope",
+            "exceptionTo",
+            "supersedes",
+            "repositoryId",
+            "teamId",
+            "level",
+          ].sort(),
         );
         assert.equal(rule.version, 1);
       }

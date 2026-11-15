@@ -70,7 +70,7 @@ export class MemoryRepository {
         const conflictRules = new Map<string, { title: string }>();
         if (conflictIds.length) {
           const result = await client.query<{ id: string; title: string }>(
-            "SELECT DISTINCT ON (id) id,title FROM memories WHERE repository_id=$1 AND id=ANY($2::uuid[]) ORDER BY id,(status='ACTIVE') DESC,version DESC",
+            "SELECT DISTINCT ON (id) id,title FROM memories WHERE (repository_id=$1 OR team_id IN (SELECT team_id FROM team_repositories WHERE repository_id=$1)) AND id=ANY($2::uuid[]) ORDER BY id,(status='ACTIVE') DESC,version DESC",
             [job.repositoryId, conflictIds],
           );
           for (const rule of result.rows) conflictRules.set(rule.id, rule);

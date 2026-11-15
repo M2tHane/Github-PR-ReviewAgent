@@ -33,6 +33,7 @@ import { WORKSPACE_RULES } from "./prompt-rules.js";
 import { createRevisionProcessor } from "./revisions.js";
 import type { DevelopmentStore } from "./store.js";
 import { createRuleBook } from "./rules.js";
+import { loadMemoryContext } from "../memory/context.js";
 import { AgentSessionRecorder, AgentSessionRepository } from "../persistence/repositories/agent-session.repository.js";
 import { TimeoutError } from "../pi/types.js";
 
@@ -216,12 +217,13 @@ function createDeveloper(
         originalRequest = (await store.issueOrigin(task))?.prompt ?? "";
         thread = await recorder!.step("issue", "读取 issue 讨论", () => issueThread(github, token!, task, signal));
       }
-      const ruleRows = (
-        await store.pool.query(
-          "SELECT id,version,type,title,content,rationale,scope,source,evidence,exception_to FROM memories WHERE repository_id=$1 AND status='ACTIVE' ORDER BY id,version",
-          [task.repository_id],
-        )
-      ).rows;
+      const context = await loadMemoryContext(
+        store.pool,
+        task.repository_id,
+        { text: task.prompt },
+        Number.MAX_SAFE_INTEGER,
+      );
+      const ruleRows = context.full.map((rule) => ({ ...rule, exception_to: rule.exceptionTo ?? null }));
       let rules = createRuleBook(ruleRows, task.proposal ? task.rule_snapshot : undefined);
       await store.checkpoint(task, {
         baseSha: snapshot.sha,

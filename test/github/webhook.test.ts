@@ -640,7 +640,7 @@ test("ReviewResult 只接受约定结构和有限输出", () => {
   );
 });
 
-test("模型不能引用未召回或跨仓库 Memory", () => {
+test("模型只可引用实际提供的项目或团队 Memory，ID 和版本必须一致", () => {
   const memory = {
     id: "memory",
     level: "should",
@@ -676,18 +676,18 @@ test("模型不能引用未召回或跨仓库 Memory", () => {
       },
     ],
   };
-  validateMemoryReferences(result, [memory], 2);
+  validateMemoryReferences(result, [memory]);
   assert.equal(result.findings[0]?.memory?.source.pullRequestNumber, 1);
   assert.throws(
     () =>
       validateMemoryReferences(
         { ...result, findings: [{ ...result.findings[0]!, memory: { id: "invented", version: 1, source: {} } }] },
         [memory],
-        2,
       ),
     /未召回/,
   );
-  assert.throws(() => validateMemoryReferences(result, [memory], 3), /无效/);
+  validateMemoryReferences(result, [{ ...memory, repositoryId: null, teamId: "team" }]);
+  assert.throws(() => validateMemoryReferences(result, [{ ...memory, version: 2 }]), /未召回/);
 });
 
 test("GitHub Publisher 固定 COMMENT 和 commit_id", async () => {
