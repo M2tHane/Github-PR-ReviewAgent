@@ -241,3 +241,11 @@
 - 限制：GitHub 与模型均为替身，模型角色为 general_review／reply_handler／health_auditor／developer／decision_extractor；新增 Review／Reply／提取替身 usage 为 0，开发和 Health 复用 150 tokens 的测试记账值，不是真实消耗。没有真实 delivery、Job、finding、Review 或 reply URL，未运行真实 Webhook 或模型提取回归。新增拒绝路径仅为提取候选 `supersedes` 指向团队规则时按任务书丢弃；停用、移出团队和错误版本仍沿用“未实际提供”的引用拒绝规则。
 
 - 收尾：`npm run format` 格式化 248 个文件，随后 `npm run check:format` 无需修改；`npm run check:docs` 36 个 Markdown、310 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。
+
+**阶段 1 完成、阶段 2 第二批合并后**（2026-11-15，`4c0c1d3`）
+
+- 包含：1-A～1-E（1-B 含审查修复，迁移改名为 021）、2-A、2-B、2-C、2-E、2-F，以及主脑的修正：提取器例外关联（`a86508c`）、合并推断改用 PR 最后的 head（`0754d17`）、团队规则详情的旧文案。
+- `npm test`：344 项，203 通过、0 失败、141 跳过（数据库用例），40.2 秒。随后 `npm run test:db`：186/186 通过、0 跳过，107.1 秒。`npm run check:docs`（36 个文件、310 个链接与锚点）、`npm run check:format` 通过。
+- 召回评测（编译器适配器）：全文 52/85（61.18%），全文＋索引 85/85；Review 目前只收全文，索引要等 2-G。
+- 阶段 1 未做的验收：真实部署下 30 分钟开发任务滚动发布；真实 GitHub／模型下的中断续做演练。
+
