@@ -95,6 +95,7 @@ export function createDiscussionProcessor(
     const started = Date.now();
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(config.agentTimeoutMs)]);
     const recorder = new AgentSessionRecorder(sessions, { developmentTaskId: task.id, role: "discussion", attempt: 1 });
+    const effects = store.sideEffects(task);
     await recorder.start();
     try {
       if (await store.laterDiscussion(task)) {
@@ -163,7 +164,24 @@ export function createDiscussionProcessor(
           });
           const reply = redactSecrets(parseReply(run.text));
           await recorder.step("comment", "在 issue 里回复", () =>
-            github.createIssueComment(token, task.repository, task.issue_number!, reply, signal),
+            effects.once("comment", {
+              kind: "issue_comment",
+              verify: async () => {
+                const comments = await github.listIssueComments(token, task.repository, task.issue_number!, signal);
+                const found = comments.find((comment) =>
+                  comment.body.includes(`<!-- pi-dev:${task.id}:discussion -->`),
+                );
+                return found ? { id: found.id } : undefined;
+              },
+              perform: () =>
+                github.createIssueComment(
+                  token,
+                  task.repository,
+                  task.issue_number!,
+                  `${reply}\n\n<!-- pi-dev:${task.id}:discussion -->`,
+                  signal,
+                ),
+            }),
           );
         },
         { signal },
@@ -189,14 +207,30 @@ export function createDiscussionProcessor(
 // 固定提示：谁能说“开始”、开发中的回复不会用上、群内开发已关闭等。不调用模型。
 export function createNoticeProcessor(
   store: DevelopmentStore,
-  github: Pick<GitHubClient, "installationToken" | "createIssueComment">,
+  github: Pick<GitHubClient, "installationToken" | "createIssueComment" | "listIssueComments">,
 ) {
   return async (task: DevelopmentTask, signal: AbortSignal) => {
+    const effects = store.sideEffects(task);
     try {
       const token = await github.installationToken(Number(task.installation_id), signal);
       // issue 里的提示发到 issue，开发 PR 里的发到 PR。
       const number = task.issue_number ?? task.pr_number!;
-      await github.createIssueComment(token, task.repository, number, task.prompt, signal);
+      await effects.once("comment", {
+        kind: "issue_comment",
+        verify: async () => {
+          const comments = await github.listIssueComments(token, task.repository, number, signal);
+          const found = comments.find((comment) => comment.body.includes(`<!-- pi-dev:${task.id}:notice -->`));
+          return found ? { id: found.id } : undefined;
+        },
+        perform: () =>
+          github.createIssueComment(
+            token,
+            task.repository,
+            number,
+            `${task.prompt}\n\n<!-- pi-dev:${task.id}:notice -->`,
+            signal,
+          ),
+      });
       await store.finish(task, "succeeded", `已在 #${number} 回复提示。`);
     } catch (error) {
       if (signal.reason instanceof RunnerStoppedError || signal.reason instanceof TaskLeaseLostError)

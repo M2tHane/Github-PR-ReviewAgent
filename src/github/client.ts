@@ -219,6 +219,14 @@ export class GitHubClient {
     return { sha: ref.object.sha, tree: commit.tree.sha };
   }
 
+  async developmentCommitTree(token: string, repository: string, sha: string, signal: AbortSignal) {
+    const commit = await this.request<{ tree: { sha: string } }>(token, `/repos/${repository}/git/commits/${sha}`, {
+      signal,
+    });
+    if (!/^[a-f0-9]{40}$/.test(commit.tree?.sha)) throw new Error("开发提交 tree 无效");
+    return commit.tree.sha;
+  }
+
   async createDevelopmentCommit(
     token: string,
     repository: string,
@@ -284,6 +292,15 @@ export class GitHubClient {
   }
 
   // 开发需求的讨论 issue：开 issue、发评论、读正文和全部评论。需要 App 的 Issues 读写权限。
+  async findDevelopmentIssue(token: string, repository: string, marker: string, signal: AbortSignal) {
+    const issues = await this.request<Array<{ number: number; title: string; body: string | null }>>(
+      token,
+      `/repos/${repository}/issues?state=all&sort=created&direction=desc&per_page=100`,
+      { signal },
+    );
+    return issues.find((issue) => issue.body?.includes(marker));
+  }
+
   async createIssue(token: string, repository: string, input: { title: string; body: string }, signal: AbortSignal) {
     const issue = await this.request<{ number: number }>(token, `/repos/${repository}/issues`, {
       method: "POST",

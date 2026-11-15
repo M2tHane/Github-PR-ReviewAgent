@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Config } from "../config/config.js";
-import type { GitHubClient } from "../github/client.js";
+import { GitHubApiError, type GitHubClient } from "../github/client.js";
 import { runAgentSession } from "../review/agent.js";
 import { WRITE_TOOLS } from "../pi/session.js";
 import { addUsage, emptyUsage, ProviderError, type AgentUsage } from "../pi/types.js";
@@ -20,7 +20,7 @@ import {
   startHint,
   type IssueThread,
 } from "./issues.js";
-import { collectChanges, repositoryFiles } from "./changes.js";
+import { applySnapshot, collectChanges, collectSnapshot, repositoryFiles } from "./changes.js";
 import { WORKSPACE_RULES } from "./prompt-rules.js";
 import { createRevisionProcessor } from "./revisions.js";
 import type { DevelopmentStore } from "./store.js";
@@ -115,32 +115,63 @@ function createDeveloper(
     }, 1000);
     let publishing = false;
     let token: string | undefined;
+    const effects = store.sideEffects(task);
     // issue 里的后续：PR 建好贴链接；没建成把原因贴回去，issue 回到讨论中，可以再说“开始”。
     const announcePullRequest = async (prNumber: number) => {
       await store.finishIssue(task, prNumber);
-      await github
-        .createIssueComment(
-          token!,
-          task.repository,
-          task.issue_number!,
-          `PR 建好了：#${prNumber}`,
-          AbortSignal.timeout(15_000),
-        )
-        .catch((error) => log("error", "development_issue_comment_failed", { taskId: task.id }, error));
+      await effects
+        .once(`issue-pr-${prNumber}`, {
+          kind: "issue_comment",
+          verify: async () => {
+            const comments = await github.listIssueComments(
+              token!,
+              task.repository,
+              task.issue_number!,
+              AbortSignal.timeout(15_000),
+            );
+            const found = comments.find((comment) => comment.body.includes(`<!-- pi-dev:${task.id}:issue-pr -->`));
+            return found ? { id: found.id } : undefined;
+          },
+          perform: () =>
+            github.createIssueComment(
+              token!,
+              task.repository,
+              task.issue_number!,
+              `PR 建好了：#${prNumber}
+
+<!-- pi-dev:${task.id}:issue-pr -->`,
+              AbortSignal.timeout(15_000),
+            ),
+        })
+        .catch((error: unknown) => log("error", "development_issue_comment_failed", { taskId: task.id }, error));
     };
     const reportToIssue = async (message: string) => {
       if (!task.issue_number) return;
       await store.setIssueStatus(task, "discussing");
       if (!token) return;
-      await github
-        .createIssueComment(
-          token,
-          task.repository,
-          task.issue_number,
-          `这次没有建 PR：${message}\n\n补充或调整后，可以再回复“开始”。`,
-          AbortSignal.timeout(15_000),
-        )
-        .catch((error) => log("error", "development_issue_comment_failed", { taskId: task.id }, error));
+      await effects
+        .once("issue-failure", {
+          kind: "issue_comment",
+          verify: async () => {
+            const comments = await github.listIssueComments(
+              token!,
+              task.repository,
+              task.issue_number!,
+              AbortSignal.timeout(15_000),
+            );
+            const found = comments.find((comment) => comment.body.includes(`<!-- pi-dev:${task.id}:issue-failure -->`));
+            return found ? { id: found.id } : undefined;
+          },
+          perform: () =>
+            github.createIssueComment(
+              token!,
+              task.repository,
+              task.issue_number!,
+              `这次没有建 PR：${message}\n\n补充或调整后，可以再回复“开始”。\n\n<!-- pi-dev:${task.id}:issue-failure -->`,
+              AbortSignal.timeout(15_000),
+            ),
+        })
+        .catch((error: unknown) => log("error", "development_issue_comment_failed", { taskId: task.id }, error));
     };
     // 每次尝试一份执行记录：服务步骤和 Agent 会话写在一起，运行中就能在管理页看到进度。
     let recorder: AgentSessionRecorder | undefined;
@@ -153,9 +184,18 @@ function createDeveloper(
       await record(1);
       access = await guard();
       token = await github.installationToken(Number(task.installation_id), signal);
-      const snapshot = await recorder!.step("snapshot", "获取目标分支最新提交", () =>
+      const latestSnapshot = await recorder!.step("snapshot", "获取目标分支最新提交", () =>
         github.developmentSnapshot(token!, task.repository, Number(task.repository_id), task.target_branch, signal),
       );
+      const snapshot = task.base_sha
+        ? {
+            sha: task.base_sha,
+            tree:
+              "developmentCommitTree" in github
+                ? await (github as GitHubClient).developmentCommitTree(token!, task.repository, task.base_sha, signal)
+                : latestSnapshot.tree,
+          }
+        : latestSnapshot;
       task.base_sha = snapshot.sha;
       // 从 issue 里“开始”的任务：需求是群里原话加 issue 讨论全文。
       let thread: IssueThread | undefined;
@@ -176,6 +216,7 @@ function createDeveloper(
         rules: rules.snapshot(),
         model: `${config.modelProvider}/${config.modelName}`,
       });
+      const savedSnapshot = await store.loadSnapshot(task.id);
       // 重试时整个任务从头再来，前几次的消耗累加进任务用量。
       const spent = emptyUsage();
       const total = (usage: Partial<AgentUsage>) => {
@@ -184,6 +225,84 @@ function createDeveloper(
         addUsage(sum, usage);
         return sum;
       };
+      // 提交已经完成但 worker 在后续发布步骤中断：不再创建工作区或启动 Agent，只核对并继续发布。
+      if (task.head_sha && task.proposal) {
+        const proposal = parseDevelopmentResult(task.proposal);
+        const title =
+          task.title ?? (proposal.kind === "pr" ? redactSecrets(proposal.title).replace(/\s+/g, " ").trim() : "");
+        if (proposal.kind !== "pr") throw new DevelopmentError("已记录提交但最终提案无效。", "failed");
+        const sha = task.head_sha;
+        publishing = true;
+        await guard();
+        await recorder!.step("branch", "核对开发分支", () =>
+          effects.once("branch", {
+            kind: "branch",
+            verify: async () => {
+              const current = await github
+                .developmentSnapshot(
+                  token!,
+                  task.repository,
+                  Number(task.repository_id),
+                  task.branch,
+                  AbortSignal.timeout(15_000),
+                )
+                .catch((error) => {
+                  if (error instanceof GitHubApiError && error.status === 404) return undefined;
+                  throw error;
+                });
+              if (!current) return undefined;
+              if (current.sha !== sha) throw new DevelopmentError("开发分支已指向其他提交，请人工核对。", "failed");
+              return { sha };
+            },
+            perform: async () => {
+              await github.createDevelopmentBranch(token!, task.repository, task.branch, sha, signal);
+              return { sha };
+            },
+          }),
+        );
+        await guard();
+        const pr = await recorder!.step("pr", "核对或创建 PR", () =>
+          effects.once("pr", {
+            kind: "pull_request",
+            verify: async () => {
+              const matches = await github.findDevelopmentPullRequest(
+                token!,
+                task.repository,
+                task.branch,
+                task.target_branch,
+                AbortSignal.timeout(15_000),
+              );
+              return matches.find(
+                (candidate) =>
+                  candidate.head.sha === sha &&
+                  candidate.head.ref === task.branch &&
+                  candidate.head.repo.full_name === task.repository &&
+                  candidate.base.ref === task.target_branch,
+              );
+            },
+            perform: async () => {
+              const created = await github.createDevelopmentPullRequest(
+                token!,
+                task.repository,
+                {
+                  head: task.branch,
+                  base: task.target_branch,
+                  title,
+                  body: redactSecrets(proposal.summary) + (task.issue_number ? `\n\nCloses #${task.issue_number}` : ""),
+                },
+                signal,
+              );
+              if (created.head.sha !== sha) throw new Error("PR head 与开发提交不一致");
+              return created;
+            },
+          }),
+        );
+        await store.checkpoint(task, { prNumber: pr.number, durationMs: Date.now() - started });
+        await store.finish(task, "succeeded", "开发任务已完成，PR 已创建；请查看 CI 结果。");
+        await recorder?.finish("succeeded", "接着完成发布步骤。");
+        if (task.issue_number) await announcePullRequest(pr.number);
+        return;
+      }
       // 一次完整执行：新的工作区、Agent 会话和规则分配，成功时创建 PR。
       const runOnce = async (installationToken: string, attempt: number) => {
         const current = recorder!;
@@ -198,6 +317,8 @@ function createDeveloper(
             const files = await repositoryFiles(root, snapshot.sha, signal);
             const repositoryInstructions = await readBaseFile(root, snapshot.sha, "AGENTS.md");
             preparing.done();
+            if (savedSnapshot && savedSnapshot.baseSha === snapshot.sha)
+              await applySnapshot(root, savedSnapshot.changes);
             const reads = new Set<string>(),
               written = new Set<string>(),
               redacted = new Set<string>();
@@ -220,80 +341,135 @@ function createDeveloper(
               const changes = await collectChanges(root, snapshot.sha, files, signal);
               return { changes, paths: changes.map((change) => change.path) };
             };
+            const saveCurrentSnapshot = async () => {
+              const changes = await collectSnapshot(root, snapshot.sha, files, new AbortController().signal);
+              await store.saveSnapshot(task, snapshot.sha, changes);
+            };
+            const snapshotTimer = setInterval(() => {
+              void saveCurrentSnapshot().catch((error) =>
+                log("error", "development_snapshot_failed", { taskId: task.id }, error),
+              );
+            }, 5 * 60_000);
+            snapshotTimer.unref();
             let followedUp = false,
               shortened = false;
-            const run = await agent({
-              root,
-              provider: config.modelProvider,
-              modelName: config.modelName,
-              apiKey: config.modelApiKey,
-              endpoint: config.modelEndpoint,
-              timeoutMs: timeoutMs - (Date.now() - started),
-              // 未配置预算时不限制 token；用量照常记录。
-              budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
-              signal,
-              images: task.images,
-              builtinTools: WRITE_TOOLS,
-              browser: true,
-              cacheDir: config.development.cacheDir,
-              skills: DEVELOPMENT_SKILLS,
-              repositoryInstructions,
-              systemPrompt: PROMPT,
-              bridge: {
-                read: async (path, wasRedacted) => {
-                  reads.add(path);
-                  if (wasRedacted) redacted.add(path);
-                  return { rules: rules.forFile(path) };
-                },
-                write: allowWrite,
-                written: async (path) => {
-                  written.add(path);
-                  return { rules: rules.forFile(path, "write") };
-                },
-              },
-              onUsage: (usage) => store.checkpoint(task, { usage: total(usage) }),
-              onSession: current.agent,
-              // 只补发一次；拒绝或改动不合规时交给下方的正式检查报错。
-              // 先查字数（超了压缩一次），再补发新文件命中的团队规则（一次）。
-              followUp: async (text) => {
-                let result: ReturnType<typeof parseDevelopmentResult>;
-                try {
-                  result = parseDevelopmentResult(parseModelJson(text, "开发结果", 20_000));
-                } catch {
-                  return undefined;
-                }
-                const tooLong = shortened ? undefined : lengthFeedback(result);
-                if (tooLong) {
-                  shortened = true;
-                  return tooLong;
-                }
-                if (followedUp || result.kind === "issue") return undefined;
-                followedUp = true;
-                return rules.followUp((await changesOf()).paths);
-              },
-              prompt: {
-                task: originalRequest,
-                ...(thread ? { issue: thread } : {}),
-                role: task.role,
-                protections: access.protections,
-                ...rules.prompt(),
-                repository: task.repository,
-                targetBranch: task.target_branch,
-                baseSha: snapshot.sha,
-              },
-            });
-            await store.checkpoint(task, {
-              usage: total(run.usage),
-              durationMs: Date.now() - started,
-              rules: rules.snapshot(),
-            });
-            const proposal = parseDevelopmentResult(parseModelJson(run.text, "开发结果", 20_000));
+            let run: Awaited<ReturnType<typeof agent>> | undefined;
+            let proposal: ReturnType<typeof parseDevelopmentResult>;
+            if (task.proposal) {
+              proposal = parseDevelopmentResult(task.proposal);
+            } else {
+              try {
+                run = await agent({
+                  root,
+                  provider: config.modelProvider,
+                  modelName: config.modelName,
+                  apiKey: config.modelApiKey,
+                  endpoint: config.modelEndpoint,
+                  timeoutMs: timeoutMs - (Date.now() - started),
+                  // 未配置预算时不限制 token；用量照常记录。
+                  budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
+                  signal,
+                  images: task.images,
+                  builtinTools: WRITE_TOOLS,
+                  browser: true,
+                  cacheDir: config.development.cacheDir,
+                  skills: DEVELOPMENT_SKILLS,
+                  repositoryInstructions,
+                  systemPrompt: savedSnapshot
+                    ? `${PROMPT}\n工作区已恢复中断前的改动，先查看现状再继续，不要从头重写。`
+                    : PROMPT,
+                  bridge: {
+                    read: async (path, wasRedacted) => {
+                      reads.add(path);
+                      if (wasRedacted) redacted.add(path);
+                      return { rules: rules.forFile(path) };
+                    },
+                    write: allowWrite,
+                    written: async (path) => {
+                      written.add(path);
+                      return { rules: rules.forFile(path, "write") };
+                    },
+                  },
+                  onUsage: (usage) => store.checkpoint(task, { usage: total(usage) }),
+                  onSession: current.agent,
+                  // 只补发一次；拒绝或改动不合规时交给下方的正式检查报错。
+                  // 先查字数（超了压缩一次），再补发新文件命中的团队规则（一次）。
+                  followUp: async (text) => {
+                    let result: ReturnType<typeof parseDevelopmentResult>;
+                    try {
+                      result = parseDevelopmentResult(parseModelJson(text, "开发结果", 20_000));
+                    } catch {
+                      return undefined;
+                    }
+                    const tooLong = shortened ? undefined : lengthFeedback(result);
+                    if (tooLong) {
+                      shortened = true;
+                      return tooLong;
+                    }
+                    if (followedUp || result.kind === "issue") return undefined;
+                    followedUp = true;
+                    return rules.followUp((await changesOf()).paths);
+                  },
+                  prompt: {
+                    task: originalRequest,
+                    ...(thread ? { issue: thread } : {}),
+                    role: task.role,
+                    protections: access.protections,
+                    ...rules.prompt(),
+                    repository: task.repository,
+                    targetBranch: task.target_branch,
+                    baseSha: snapshot.sha,
+                    ...(savedSnapshot ? { resume: { files: savedSnapshot.changes.map((change) => change.path) } } : {}),
+                  },
+                });
+              } finally {
+                await saveCurrentSnapshot().catch((error) =>
+                  log("error", "development_snapshot_failed", { taskId: task.id }, error),
+                );
+                clearInterval(snapshotTimer);
+              }
+              proposal = parseDevelopmentResult(parseModelJson(run!.text, "开发结果", 20_000));
+              task.proposal = proposal;
+              await store.checkpoint(task, {
+                usage: total(run!.usage),
+                durationMs: Date.now() - started,
+                rules: rules.snapshot(),
+                proposal,
+              });
+            }
+            if (task.proposal)
+              await saveCurrentSnapshot().catch((error) =>
+                log("error", "development_snapshot_failed", { taskId: task.id }, error),
+              );
+            clearInterval(snapshotTimer);
             if (proposal.kind === "issue") {
               // 需求要先问清楚：不提交改动。新需求开 issue；已经在 issue 里的，把问题贴成评论。
               const body = redactSecrets(proposal.body);
               if (task.issue_number) {
                 await current.step("issue", "在 issue 里补充提问", () =>
-                  github.createIssueComment(token!, task.repository, task.issue_number!, body, signal),
+                  effects.once(`issue-question-${task.issue_number}`, {
+                    kind: "issue_comment",
+                    verify: async () => {
+                      const comments = await github.listIssueComments(
+                        token!,
+                        task.repository,
+                        task.issue_number!,
+                        AbortSignal.timeout(15_000),
+                      );
+                      const found = comments.find((comment) =>
+                        comment.body.includes(`<!-- pi-dev:${task.id}:issue-question -->`),
+                      );
+                      return found ? { id: found.id } : undefined;
+                    },
+                    perform: () =>
+                      github.createIssueComment(
+                        token!,
+                        task.repository,
+                        task.issue_number!,
+                        `${body}\n\n<!-- pi-dev:${task.id}:issue-question -->`,
+                        signal,
+                      ),
+                  }),
                 );
                 await store.setIssueStatus(task, "discussing");
                 await store.finish(
@@ -307,12 +483,26 @@ function createDeveloper(
                   : await store.requesterLogins(task.repository_id, task.requester);
                 const title = redactSecrets(proposal.title).replace(/\s+/g, " ").trim();
                 const issue = await current.step("issue", "开 issue 讨论需求", () =>
-                  github.createIssue(
-                    token!,
-                    task.repository,
-                    { title, body: `${body}\n\n---\n${startHint(logins)}` },
-                    signal,
-                  ),
+                  effects.once("issue", {
+                    kind: "issue",
+                    verify: async () => {
+                      if (!("findDevelopmentIssue" in github)) return undefined;
+                      const found = await (github as GitHubClient).findDevelopmentIssue(
+                        token!,
+                        task.repository,
+                        `<!-- pi-dev-task:${task.id} -->`,
+                        signal,
+                      );
+                      return found ? { number: found.number } : undefined;
+                    },
+                    perform: () =>
+                      github.createIssue(
+                        token!,
+                        task.repository,
+                        { title, body: `${body}\n\n---\n${startHint(logins)}\n\n<!-- pi-dev-task:${task.id} -->` },
+                        signal,
+                      ),
+                  }),
                 );
                 task.issue_number = issue.number;
                 await store.recordIssue(task, issue.number);
@@ -336,7 +526,24 @@ function createDeveloper(
             await guard();
             const title = redactSecrets(proposal.title).replace(/\s+/g, " ").trim();
             const sha = await current.step("commit", "创建提交", () =>
-              github.createDevelopmentCommit(token!, task.repository, snapshot, changes, title, signal),
+              effects
+                .once("commit", {
+                  kind: "commit",
+                  verify: async () => undefined,
+                  perform: async () => ({
+                    sha: await github.createDevelopmentCommit(
+                      token!,
+                      task.repository,
+                      snapshot,
+                      changes,
+                      title,
+                      signal,
+                    ),
+                    title,
+                    body: redactSecrets(proposal.summary),
+                  }),
+                })
+                .then((result: string | { sha: string }) => (typeof result === "string" ? result : result.sha)),
             );
             await guard();
             // 先保存服务归属及 head，再调用创建分支/PR；GitHub Webhook 可能比 API 响应先到。
@@ -346,25 +553,70 @@ function createDeveloper(
             publishing = true;
             await guard();
             await current.step("branch", "创建开发分支", () =>
-              github.createDevelopmentBranch(token!, task.repository, task.branch, sha, signal),
+              effects.once("branch", {
+                kind: "branch",
+                verify: async () => {
+                  const current = await github
+                    .developmentSnapshot(
+                      token!,
+                      task.repository,
+                      Number(task.repository_id),
+                      task.branch,
+                      AbortSignal.timeout(15_000),
+                    )
+                    .catch((error) => {
+                      if (error instanceof GitHubApiError && error.status === 404) return undefined;
+                      throw error;
+                    });
+                  if (!current) return undefined;
+                  if (current.sha !== sha) throw new DevelopmentError("开发分支已指向其他提交，请人工核对。", "failed");
+                  return { sha };
+                },
+                perform: async () => {
+                  await github.createDevelopmentBranch(token!, task.repository, task.branch, sha, signal);
+                  return { sha };
+                },
+              }),
             );
             await guard();
-            const pr = await current.step("pr", "创建 PR", async () => {
-              const created = await github.createDevelopmentPullRequest(
-                token!,
-                task.repository,
-                {
-                  head: task.branch,
-                  base: task.target_branch,
-                  title,
-                  // 来自 issue 的任务：PR 合并时自动关闭 issue。
-                  body: redactSecrets(proposal.summary) + (task.issue_number ? `\n\nCloses #${task.issue_number}` : ""),
+            const pr = await current.step("pr", "创建 PR", () =>
+              effects.once("pr", {
+                kind: "pull_request",
+                verify: async () => {
+                  const matches = await github.findDevelopmentPullRequest(
+                    token!,
+                    task.repository,
+                    task.branch,
+                    task.target_branch,
+                    AbortSignal.timeout(15_000),
+                  );
+                  return matches.find(
+                    (candidate) =>
+                      candidate.head.sha === sha &&
+                      candidate.head.ref === task.branch &&
+                      candidate.head.repo.full_name === task.repository &&
+                      candidate.base.ref === task.target_branch,
+                  );
                 },
-                signal,
-              );
-              if (created.head.sha !== sha) throw new Error("PR head 与开发提交不一致");
-              return created;
-            });
+                perform: async () => {
+                  const created = await github.createDevelopmentPullRequest(
+                    token!,
+                    task.repository,
+                    {
+                      head: task.branch,
+                      base: task.target_branch,
+                      title,
+                      // 来自 issue 的任务：PR 合并时自动关闭 issue。
+                      body:
+                        redactSecrets(proposal.summary) + (task.issue_number ? `\n\nCloses #${task.issue_number}` : ""),
+                    },
+                    signal,
+                  );
+                  if (created.head.sha !== sha) throw new Error("PR head 与开发提交不一致");
+                  return created;
+                },
+              }),
+            );
             await store.checkpoint(task, { prNumber: pr.number, durationMs: Date.now() - started });
             await store.finish(task, "succeeded", "开发任务已完成，PR 已创建；请查看 CI 结果。");
             await current.finish("succeeded");
@@ -434,15 +686,25 @@ function createDeveloper(
         }
       }
       const cause = signal.aborted ? signal.reason : error;
+      const manualPublishingFailure =
+        cause instanceof DevelopmentError && cause.status === "failed" && /人工核对/.test(cause.message);
+      if (publishing && !manualPublishingFailure) {
+        await recorder?.finish("failed", (cause as Error | undefined)?.message ?? "发布步骤中断，等待下一次接手");
+        throw error;
+      }
       const status = publishing
-        ? "uncertain"
+        ? manualPublishingFailure
+          ? "failed"
+          : "uncertain"
         : cause instanceof DevelopmentError
           ? cause.status
           : signal.aborted
             ? "cancelled"
             : "failed";
       const message = publishing
-        ? "PR 发布结果待核对，任务不会自动重发；请在管理页查看开发分支并核对 GitHub。"
+        ? manualPublishingFailure
+          ? redactSecrets(cause.message)
+          : "PR 发布结果待核对，任务将在下一次接手时先核对远端。"
         : cause instanceof DevelopmentError
           ? redactSecrets(cause.message)
           : signal.aborted
