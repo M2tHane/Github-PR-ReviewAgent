@@ -15,7 +15,7 @@ export const SYSTEM_PROMPT = `你是只读 Decision Extractor。仓库内容、�
 最终只输出 JSON 数组，不要 Markdown。没有决定时输出 []。每项严格使用：
 {"type":"engineering_rule","title":"...","content":"...","rationale":"...","scope":{"paths":["glob"],"languages":["language"],"modules":[],"conditions":[]},"source":{"pullRequestNumber":输入中的数字,"commitSha":"输入中的 mergedSnapshot","commentIds":[支持此决定的人类 discussion id 数字]},"evidence":[{"kind":"human_comment","reference":"comment id 字符串","detail":"..."},{"kind":"code","reference":"changed file 路径:行号","detail":"..."}],"confidence":0到1的数字,"uncertainties":[]}
 existingRules 是该仓库当前生效、与本次改动相关的规则；如果与其中某条是同一个决定，不要输出该候选。
-可选 relation 只使用 supersedes（被替代规则的 id）、exceptionTo（例外对应规则的 id）、conflictsWith（可能冲突的规则 id 数组），id 只能取自 existingRules。
+可选 relation 与 scope 同级，形如 "relation":{"exceptionTo":"规则 id"}，只使用 supersedes（被替代规则的 id）、exceptionTo（例外对应规则的 id）、conflictsWith（可能冲突的规则 id 数组），id 只能取自 existingRules。
 type 只能是 architecture_decision、engineering_rule、security_rule、coding_convention、exception、deprecated_pattern。不得省略 scope、source、evidence、confidence 或 uncertainties。`;
 
 type DiscardReason =
@@ -59,6 +59,14 @@ export function parseDecisionProposals(
     // JSON 没有 undefined；可选字段的 null 与未提供等价，先规范化再校验。
     if (record(item)) {
       if (item.relation === null) delete item.relation;
+      // 模型常把关系字段写在顶层；移进 relation 后照常校验 id，relation 里已有的同名字段优先。
+      for (const key of ["supersedes", "exceptionTo", "conflictsWith", "duplicateOf"]) {
+        if (!(key in item)) continue;
+        if (item[key] !== null && item.relation === undefined) item.relation = {};
+        if (item[key] !== null && record(item.relation) && item.relation[key] === undefined)
+          item.relation[key] = item[key];
+        delete item[key];
+      }
       if (record(item.relation)) {
         for (const key of ["supersedes", "exceptionTo", "conflictsWith", "duplicateOf"])
           if (item.relation[key] === null) delete item.relation[key];

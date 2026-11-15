@@ -155,6 +155,34 @@ test("局部例外与替代关系保留，指纹稳定", () => {
   assert.equal(parseDecisionProposals(JSON.stringify([unlinked]), job, new Set()).proposals[0]?.type, "exception");
 });
 
+test("写在顶层的关系字段移进 relation，再按提供的规则校验", () => {
+  const result = parseDecisionProposals(
+    JSON.stringify([
+      { ...proposal, exceptionTo: "known" },
+      { ...proposal, supersedes: "known", relation: { conflictsWith: ["known"] } },
+      { ...proposal, exceptionTo: "other", relation: { exceptionTo: "known" } },
+      { ...proposal, exceptionTo: null },
+      { ...proposal, exceptionTo: "unknown" },
+      { ...proposal, duplicateOf: "known" },
+    ]),
+    job,
+    new Set(["known"]),
+  );
+  assert.deepEqual(result.proposals, [
+    { ...proposal, relation: { exceptionTo: "known" } },
+    { ...proposal, relation: { conflictsWith: ["known"], supersedes: "known" } },
+    { ...proposal, relation: { exceptionTo: "known" } },
+    proposal,
+  ]);
+  assert.deepEqual(
+    result.discarded.map(({ index, reason }) => [index, reason]),
+    [
+      [4, "unknown_rule"],
+      [5, "duplicate_relation"],
+    ],
+  );
+});
+
 test("relation 只能引用提供的规则，duplicateOf 候选逐条丢弃", () => {
   const relations = [
     { supersedes: "unknown" },
