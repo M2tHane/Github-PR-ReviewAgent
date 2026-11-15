@@ -40,10 +40,10 @@ export function createRuleBook(rows: TeamRuleRow[]) {
     const add = (row: TeamRuleRow, path: string) => {
       if (!delivered.has(row.id) && !found.has(row.id)) found.set(row.id, { row, path });
     };
-    // 开发任务没有条件标签，只按路径、语言、模块判断；条件由模型阅读正文理解。
+    // 只按路径、语言、模块判断；自然语言条件由模型结合正文判断是否适用。
     for (const path of paths)
       for (const row of scoped)
-        if (scopeMatches(row, [path], row.scope.conditions ?? [])) {
+        if (scopeMatches(row, [path])) {
           add(row, path);
           // 例外离开原规则没有意义：原规则同样按路径生效且尚未给出时一并附上。
           const original = row.exception_to ? scoped.find((other) => other.id === row.exception_to) : undefined;

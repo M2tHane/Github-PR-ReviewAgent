@@ -1,4 +1,4 @@
-import { numberText } from "../../format.js";
+import { numberText, usageText, usageTotal } from "../../format.js";
 import { Status } from "./status-badge.js";
 import type { AgentRunRow } from "../../../src/admin/dto.js";
 
@@ -20,10 +20,15 @@ export function RunDetails({ runs }: { runs: AgentRunRow[] }) {
             <div>
               <dt>用量 / 预算</dt>
               <dd>
-                {numberText(run.usage?.totalTokens ?? (run.usage_input_tokens ?? 0) + (run.usage_output_tokens ?? 0))} /{" "}
-                {numberText(run.input_budget_tokens)} tokens
+                {numberText(usageTotal(run))} / {numberText(run.input_budget_tokens)} tokens
               </dd>
             </div>
+            {usageTotal(run) !== undefined && (
+              <div className="agent-run-usage">
+                <dt>用量分项</dt>
+                <dd className="usage-text">{usageText(run)}</dd>
+              </div>
+            )}
           </dl>
           {(run.usage?.unreportedTokens ?? 0) > 0 && (
             <p className="error">未回报消耗：保留 {numberText(run.usage.unreportedTokens ?? 0)} tokens 额度。</p>

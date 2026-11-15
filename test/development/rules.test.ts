@@ -34,6 +34,7 @@ test("全局规则开头给全文，按路径规则只进目录；条件标签�
       ["R2", "仅计费任务", "仅计费任务的正文"],
     ],
   );
+  assert.deepEqual(prompt.globalTeamRules[1].scope, conditional.scope);
   assert.deepEqual(prompt.teamRuleIndex, [
     { ref: "R3", type: "engineering_rule", title: "金额用最小单位", paths: ["service/billing/**"] },
     { ref: "R4", type: "engineering_rule", title: "Go 错误包装", languages: ["go"] },
@@ -69,6 +70,19 @@ test("读到匹配文件才附规则全文，同一规则只给一次；语言�
     ["R2", { via: "read", path: "service/billing/refund.go" }],
     ["R3", { via: "read", path: "web/src/App.tsx" }],
   ]);
+});
+
+test("读写匹配文件时附上带自然语言条件的规则，并保留条件正文", () => {
+  const conditional = rule("金额用最小单位", { paths: ["src/**"], conditions: ["涉及资金变更"] });
+  for (const via of ["read", "write"] as const) {
+    const book = createRuleBook([conditional]);
+    assert.equal(book.forFile("web/a.ts", via), undefined);
+    const rules = attached(book.forFile("src/a.ts", via));
+    assert.equal(rules.length, 1);
+    assert.equal(rules[0].content, conditional.content);
+    assert.deepEqual(rules[0].scope, conditional.scope);
+    assert.deepEqual(book.snapshot()[0].delivered, { via, path: "src/a.ts" });
+  }
 });
 
 test("例外命中时一并附上尚未给出的原规则", () => {

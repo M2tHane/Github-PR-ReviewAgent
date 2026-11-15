@@ -187,6 +187,7 @@ export function createReviewProcessor(
           singleRunId = undefined;
         }
         const stored = (await publications?.saveFindings?.(job, review.result.findings, inline)) ?? [];
+        await publications?.saveReviewMemoryUsage?.(job, recalled);
         const publishedResult = {
           ...review.result,
           findings: stored.length ? [...new Map(stored.map((f) => [f.id, f])).values()] : review.result.findings,

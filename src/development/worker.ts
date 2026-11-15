@@ -208,16 +208,14 @@ export class DevelopmentWorker {
             while (!signal.aborted) {
               // 用持锁连接探活；连接失败会终止这一实例，不能继续领取或发布任务。
               await connection.query("SELECT 1");
-              if (authenticated) {
-                // 不同项目的任务并行，同一项目按顺序；最多同时做 concurrency 个。任务在后台运行，不挡完成通知。
-                while (active.size < config.concurrency) {
-                  const task = await this.store.claim(config.botId);
-                  if (!task) break;
-                  const work: Promise<void> = process(task, signal)
-                    .catch((error) => log("error", "development_task_crashed", { taskId: task.id }, error))
-                    .finally(() => active.delete(work));
-                  active.add(work);
-                }
+              // 不同项目的任务并行，同一项目按顺序；最多同时做 concurrency 个。任务在后台运行，不挡完成通知。
+              while (active.size < config.concurrency) {
+                const task = await this.store.claim(config.botId);
+                if (!task) break;
+                const work: Promise<void> = process(task, signal)
+                  .catch((error) => log("error", "development_task_crashed", { taskId: task.id }, error))
+                  .finally(() => active.delete(work));
+                active.add(work);
               }
               // 完成通知逐条发送；每个任务结束后就发，不等其他任务。
               while (authenticated && !signal.aborted) {

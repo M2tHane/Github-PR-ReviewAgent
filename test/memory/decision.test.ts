@@ -17,8 +17,10 @@ import type { Database } from "../../src/persistence/database.js";
 import type { Config } from "../../src/config/config.js";
 import type { DecisionProposal } from "../../src/memory/types.js";
 import type { ReviewJob } from "../../src/jobs/types.js";
+import type { MemoryService } from "../../src/memory/memory.service.js";
 
 const exec = promisify(execFile);
+const memories = { retrieveForReview: async () => ({ memories: [], total: 0 }) } as unknown as MemoryService;
 
 const job = {
   id: "job",
@@ -54,61 +56,76 @@ test("明确规则通过归属与双证据校验", () => {
   const result = parseDecisionProposals(
     JSON.stringify([proposal]),
     job,
+    new Set(),
     new Set([11]),
     new Set(["backend/x/dto/A.java"]),
   );
-  assert.equal(result[0]?.title, proposal.title);
+  assert.equal(result.proposals[0]?.title, proposal.title);
+  assert.deepEqual(result.discarded, []);
 });
 
-test("无决定允许空结果", () => assert.deepEqual(parseDecisionProposals("[]", job), []));
+test("无决定允许空结果，非数组或无效 JSON 仍整体报错", () => {
+  assert.deepEqual(parseDecisionProposals("[]", job, new Set()), { proposals: [], discarded: [] });
+  assert.throws(() => parseDecisionProposals("{}", job, new Set()), /输出必须是数组/);
+  assert.throws(() => parseDecisionProposals("invalid JSON", job, new Set()));
+});
 
-test("结构错误指出具体字段", () =>
-  assert.throws(
-    () =>
-      parseDecisionProposals(
-        JSON.stringify([{ ...proposal, source: { ...proposal.source, commitSha: "wrong" } }]),
-        job,
-      ),
-    /source\.commitSha/,
-  ));
+test("结构错误只丢弃该条并指出具体字段", () => {
+  const result = parseDecisionProposals(
+    JSON.stringify([{ ...proposal, source: { ...proposal.source, commitSha: "wrong" } }, proposal]),
+    job,
+    new Set(),
+  );
+  assert.deepEqual(result.proposals, [proposal]);
+  assert.deepEqual(result.discarded, [{ index: 0, reason: "invalid_structure", fields: ["source.commitSha"] }]);
+});
 
 test("争议或无有效人类证据不能伪装为决定", () => {
-  assert.throws(
-    () =>
-      parseDecisionProposals(
-        JSON.stringify([{ ...proposal, source: { ...proposal.source, commentIds: [99] } }]),
-        job,
-        new Set([11]),
-        new Set(["backend/x/dto/A.java"]),
-      ),
-    /无效人类评论/,
+  assert.deepEqual(
+    parseDecisionProposals(
+      JSON.stringify([{ ...proposal, source: { ...proposal.source, commentIds: [99] } }]),
+      job,
+      new Set(),
+      new Set([11]),
+      new Set(["backend/x/dto/A.java"]),
+    ).discarded,
+    [{ index: 0, reason: "invalid_human_comment" }],
   );
-  assert.throws(
-    () =>
-      parseDecisionProposals(
-        JSON.stringify([{ ...proposal, evidence: proposal.evidence.filter((e) => e.kind === "code") }]),
-        job,
-      ),
-    /缺少人类讨论/,
+  assert.deepEqual(
+    parseDecisionProposals(
+      JSON.stringify([{ ...proposal, evidence: proposal.evidence.filter((e) => e.kind === "code") }]),
+      job,
+      new Set(),
+    ).discarded,
+    [{ index: 0, reason: "missing_evidence" }],
   );
 });
 
 test("人类证据必须对得上真实人类评论：commentIds 非空，human_comment 的 reference 是人类评论 id", () => {
   const parse = (value: DecisionProposal) =>
-    parseDecisionProposals(JSON.stringify([value]), job, new Set([11, 12]), new Set(["backend/x/dto/A.java"]));
-  assert.throws(() => parse({ ...proposal, source: { ...proposal.source, commentIds: [] } }), /source\.commentIds/);
-  assert.throws(
-    () => parse({ ...proposal, source: { ...proposal.source, commentIds: ["11"] as unknown as number[] } }),
-    /source\.commentIds/,
+    parseDecisionProposals(
+      JSON.stringify([value]),
+      job,
+      new Set(),
+      new Set([11, 12]),
+      new Set(["backend/x/dto/A.java"]),
+    );
+  assert.deepEqual(parse({ ...proposal, source: { ...proposal.source, commentIds: [] } }).discarded[0]?.fields, [
+    "source.commentIds",
+  ]);
+  assert.deepEqual(
+    parse({ ...proposal, source: { ...proposal.source, commentIds: ["11"] as unknown as number[] } }).discarded[0]
+      ?.fields,
+    ["source.commentIds"],
   );
   const human = (reference: string) => ({
     ...proposal,
     evidence: [{ kind: "human_comment" as const, reference, detail: "d" }, proposal.evidence[1]!],
   });
-  assert.throws(() => parse(human("99")), /人类讨论证据引用了无效评论/, "不是真实人类评论 id");
-  assert.throws(() => parse(human("维护者在评论里同意")), /人类讨论证据引用了无效评论/, "不是数字");
-  assert.throws(() => parse(human("11 和 12")), /人类讨论证据引用了无效评论/);
-  assert.equal(parse(human(" 12 "))[0]?.title, proposal.title, "去掉首尾空白后是人类评论 id 即通过");
+  for (const reference of ["99", "维护者在评论里同意", "11 和 12"]) {
+    assert.deepEqual(parse(human(reference)).discarded, [{ index: 0, reason: "invalid_human_evidence" }]);
+  }
+  assert.equal(parse(human(" 12 ")).proposals[0]?.title, proposal.title, "去掉首尾空白后是人类评论 id 即通过");
 });
 
 test("局部例外与替代关系保留，指纹稳定", () => {
@@ -120,17 +137,106 @@ test("局部例外与替代关系保留，指纹稳定", () => {
   };
   const superseding = { ...proposal, relation: { supersedes: "22222222-2222-2222-2222-222222222222" } };
   assert.equal(
-    parseDecisionProposals(JSON.stringify([exception]), job)[0]?.relation?.exceptionTo,
+    parseDecisionProposals(JSON.stringify([exception]), job, new Set([exception.relation.exceptionTo])).proposals[0]
+      ?.relation?.exceptionTo,
     exception.relation.exceptionTo,
   );
   assert.equal(
-    parseDecisionProposals(JSON.stringify([superseding]), job)[0]?.relation?.supersedes,
+    parseDecisionProposals(JSON.stringify([superseding]), job, new Set([superseding.relation.supersedes])).proposals[0]
+      ?.relation?.supersedes,
     superseding.relation.supersedes,
   );
   assert.equal(
     proposalFingerprint(2, proposal),
     proposalFingerprint(2, { ...proposal, source: { ...proposal.source, commentIds: [11] } }),
   );
+  assert.equal(proposalFingerprint(2, proposal), proposalFingerprint(2, superseding), "relation 不参与去重指纹");
+  const unlinked = { ...exception, relation: undefined };
+  assert.equal(parseDecisionProposals(JSON.stringify([unlinked]), job, new Set()).proposals[0]?.type, "exception");
+});
+
+test("relation 只能引用提供的规则，duplicateOf 候选逐条丢弃", () => {
+  const relations = [
+    { supersedes: "unknown" },
+    { exceptionTo: "unknown" },
+    { conflictsWith: ["known", "unknown"] },
+    { duplicateOf: "known" },
+    { conflictsWith: ["known"] },
+  ];
+  const result = parseDecisionProposals(
+    JSON.stringify(relations.map((relation) => ({ ...proposal, relation }))),
+    job,
+    new Set(["known"]),
+  );
+  assert.deepEqual(result.proposals, [{ ...proposal, relation: { conflictsWith: ["known"] } }]);
+  assert.deepEqual(
+    result.discarded.map(({ reason }) => reason),
+    ["unknown_rule", "unknown_rule", "unknown_rule", "duplicate_relation"],
+  );
+});
+
+test("可选字段的 null 等价于未提供，合格候选保留且不带 null", () => {
+  const result = parseDecisionProposals(
+    JSON.stringify([
+      { ...proposal, relation: null },
+      { ...proposal, relation: { supersedes: null, exceptionTo: null, conflictsWith: null, duplicateOf: null } },
+      { ...proposal, scope: { paths: ["a/**"], modules: null } },
+      { ...proposal, scope: { paths: null, languages: null, modules: null, conditions: null } },
+      {
+        ...proposal,
+        relation: { supersedes: "known", exceptionTo: null, conflictsWith: ["known"], duplicateOf: null },
+      },
+      { ...proposal, relation: { duplicateOf: null } },
+    ]),
+    job,
+    new Set(["known"]),
+    new Set([11]),
+    new Set(["backend/x/dto/A.java"]),
+  );
+  assert.deepEqual(result.discarded, []);
+  assert.deepEqual(result.proposals, [
+    proposal,
+    { ...proposal, relation: {} },
+    { ...proposal, scope: { paths: ["a/**"] } },
+    { ...proposal, scope: {} },
+    { ...proposal, relation: { supersedes: "known", conflictsWith: ["known"] } },
+    { ...proposal, relation: {} },
+  ]);
+});
+
+test("畸形候选和代码证据不打断后续候选校验", () => {
+  const invalid = [
+    null,
+    [],
+    "rule",
+    1,
+    { ...proposal, evidence: [null] },
+    { ...proposal, evidence: [{ kind: "code", reference: 1, detail: "bad" }] },
+    { ...proposal, scope: { paths: "backend/**" } },
+    { ...proposal, uncertainties: [null] },
+    ...["id", [], { conflictsWith: "id" }, { supersedes: 1 }, { exceptionTo: ["id"] }].map((relation) => ({
+      ...proposal,
+      relation,
+    })),
+  ];
+  const result = parseDecisionProposals(
+    JSON.stringify([
+      ...invalid,
+      {
+        ...proposal,
+        evidence: [proposal.evidence[0], { kind: "code", reference: "other.ts:1", detail: "wrong path" }],
+      },
+      proposal,
+    ]),
+    job,
+    new Set(),
+    new Set([11]),
+    new Set(["backend/x/dto/A.java"]),
+  );
+  assert.deepEqual(result.proposals, [proposal]);
+  assert.equal(result.discarded.length, invalid.length + 1);
+  assert.ok(result.discarded.slice(0, -1).every(({ reason }) => reason === "invalid_structure"));
+  assert.equal(result.discarded.at(-1)?.reason, "invalid_code_evidence");
 });
 
 test("Decision Extractor 走统一会话入口：有人类讨论时照常运行，使用仓库预算、只给只读工具，超时记为 timeout", async () => {
@@ -179,7 +285,7 @@ test("Decision Extractor 走统一会话入口：有人类讨论时照常运行�
       status: "running",
     } as ReviewJob;
     let received: PiSessionInput | undefined;
-    await createDecisionProcessor(config, database, github, async (input) => {
+    await createDecisionProcessor(config, database, memories, github, async (input) => {
       received = input;
       return { text: "[]", durationMs: 1, model: "m", usage: emptyUsage() };
     })(target);
@@ -190,7 +296,7 @@ test("Decision Extractor 走统一会话入口：有人类讨论时照常运行�
     assert.deepEqual(inserted, [[]]);
     const timedOut = { ...target };
     await assert.rejects(
-      createDecisionProcessor(config, database, github, async () => {
+      createDecisionProcessor(config, database, memories, github, async () => {
         throw new TimeoutError();
       })(timedOut),
     );
@@ -228,7 +334,7 @@ test("没有正文非空的人类讨论时不跑规则抽取：不启动 Agent�
     const config = { modelProvider: "p", modelName: "m", modelApiKey: "k", agentTimeoutMs: 1000 } as Config;
     // 工作区地址无效：一旦走到建工作区就会报错。
     const target = { ...job, cloneUrl: join(tmpdir(), "no-such-decision-repo") } as ReviewJob;
-    const outcome = await createDecisionProcessor(config, database, github, async () => {
+    const outcome = await createDecisionProcessor(config, database, memories, github, async () => {
       executed++;
       return { text: "[]", durationMs: 1, model: "m", usage: emptyUsage() };
     })(target).then(

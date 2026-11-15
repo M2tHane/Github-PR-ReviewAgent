@@ -1,3 +1,5 @@
+import type { AgentUsage } from "../src/review/agent.js";
+
 const pad = (value: number) => String(value).padStart(2, "0");
 
 // 中文日期：今年省略年份，例如"11月4日 22:27"。
@@ -25,6 +27,42 @@ export const relativeTime = (value?: string | null, now = Date.now()) => {
 // token 等数字：整数加千分位，去掉浮点尾数。
 export const numberText = (value?: number | null) =>
   value === null || value === undefined || !Number.isFinite(value) ? "—" : Math.round(value).toLocaleString("zh-CN");
+
+type UsageSource = Partial<AgentUsage> & {
+  usage?: Partial<AgentUsage> | null;
+  usage_input_tokens?: number | null;
+  usage_output_tokens?: number | null;
+};
+
+function usageValue(source: UsageSource | null | undefined, key: keyof AgentUsage, legacy?: number | null) {
+  const usage = source?.usage ?? source;
+  return usage?.[key] ?? legacy;
+}
+
+// 用量分项：新数据按 AgentUsage 展示，旧的执行记录只回退到 input/output 两列。标签与数字之间用不换行空格，配合 .usage-text 只在分项之间换行。
+export const usageText = (source?: UsageSource | null) =>
+  [
+    ["新输入", usageValue(source, "input", source?.usage_input_tokens)],
+    ["缓存读取", usageValue(source, "cacheRead")],
+    ["缓存写入", usageValue(source, "cacheWrite")],
+    ["输出", usageValue(source, "output", source?.usage_output_tokens)],
+  ]
+    .map(([label, value]) => `${label}\u00a0${numberText(value as number | null | undefined)}`)
+    .join(" · ");
+
+// 总量也兼容早期只有 input/output 的执行记录；没有任何可用字段时保留“—”。
+export const usageTotal = (source?: UsageSource | null) => {
+  const usage = source?.usage ?? source;
+  if (usage?.totalTokens !== null && usage?.totalTokens !== undefined) return usage.totalTokens;
+  const values = [
+    usageValue(source, "input", source?.usage_input_tokens),
+    usageValue(source, "cacheRead"),
+    usageValue(source, "cacheWrite"),
+    usageValue(source, "output", source?.usage_output_tokens),
+  ];
+  if (!values.some((value) => value !== null && value !== undefined)) return undefined;
+  return values.reduce<number>((total, value) => total + (value ?? 0), 0);
+};
 
 export const jobLabels: Record<string, string> = {
   PR_REVIEW: "PR 审查",

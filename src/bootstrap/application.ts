@@ -34,7 +34,7 @@ export function createApplication() {
   );
   const memories = new MemoryService(database);
   const review = createReviewProcessor(config, undefined, database, memories);
-  const extract = createDecisionProcessor(config, database);
+  const extract = createDecisionProcessor(config, database, memories);
   const reply = createReplyProcessor(config, database, memories);
   const health = createHealthProcessor(config, database, memories);
   const runner = new PersistentRunner(

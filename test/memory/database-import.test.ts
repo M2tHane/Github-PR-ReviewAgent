@@ -193,6 +193,7 @@ test("导入 API 每次校验 CSRF 和两端权限，不信任客户端来源与
   const store = { get: async () => session, set: async () => true, delete: async () => {} };
   const allowed = new Set([target.fullName, "team/source-api"]);
   const config = {
+    allowedRepositories: new Set([target.fullName.toLowerCase(), "team/source-api"]),
     githubClientId: "test",
     githubClientSecret: "test",
     sessionSecret: secret,

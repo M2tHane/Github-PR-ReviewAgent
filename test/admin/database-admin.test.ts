@@ -22,7 +22,7 @@ import { useTestDatabase, waitFor } from "../helpers/database.js";
 
 const fixture = useTestDatabase();
 
-test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fixture.url }, async () => {
+test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fixture.url }, async (t) => {
   const database = new Database(fixture.url!);
   const allowedId = 9_000_000_006;
   const deniedId = 9_000_000_007;
@@ -144,10 +144,14 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     webhookRedelivery: false,
   } satisfies Config;
   let hasAccess = true;
+  const permissionChecks: string[] = [];
   const github = {
     exchangeOAuthCode: async () => "user-token",
     getUser: async () => ({ id: 42, login: "maintainer" }),
-    hasMaintainerPermission: async (_token: string, repository: string) => hasAccess && repository === "owner/allowed",
+    hasMaintainerPermission: async (_token: string, repository: string) => {
+      permissionChecks.push(repository);
+      return hasAccess && repository.toLowerCase() === "owner/allowed";
+    },
   };
   const server = createServer(createAdminHandler(config, database, github as any));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -285,6 +289,15 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     assert.equal(bootstrap.repositories[0].id, allowedId);
     assert.equal(bootstrap.memories.length, 1);
     assert.equal(bootstrap.memories[0].id, allowedMemory);
+    assert.deepEqual(bootstrap.memories[0].usage, {
+      provided: 0,
+      cited: 0,
+      fixed: 0,
+      withdrawn: 0,
+      exception: 0,
+      open: 0,
+      lastCitedAt: null,
+    });
     assert.equal(bootstrap.jobs, undefined, "任务列表不再随首屏下发");
     assert(!JSON.stringify(bootstrap).includes("private-audit-scope"));
     // 执行过程：列表和详情只带摘要；单条接口返回时间线，原始记录可下载；权限跟随任务所属仓库。
@@ -550,6 +563,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       { title: " " },
       { scope: [] },
       { scope: { owner: ["foreign"] } },
+      { supersedes: deniedMemory },
     ]) {
       response = await fetch(`${origin}/api/memories/${allowedMemory}`, {
         method: "PATCH",
@@ -558,6 +572,84 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       });
       assert.equal(response.status, 422);
     }
+    await t.test("PATCH 例外关联校验仓库与自身，允许清空，批准与生效版本编辑保留正确关系", async () => {
+      const service = new MemoryService(database);
+      const [exceptionId, anotherId] = await database.insertCandidates(makeJob(allowedId, "owner/allowed", "09"), [
+        { ...proposal, type: "exception", title: "局部例外", content: "exception", scope: { paths: ["src/**"] } },
+        { ...proposal, title: "另一个原规则", content: "another original" },
+      ]);
+      const headers = { cookie: sessionCookie, origin: "http://127.0.0.1", "x-csrf-token": session.csrf };
+      const patch = (value: object) =>
+        fetch(`${origin}/api/memories/${exceptionId}`, { method: "PATCH", headers, body: JSON.stringify(value) });
+      const approve = () => fetch(`${origin}/api/memories/${exceptionId}/approve`, { method: "POST", headers });
+      const rows = async () =>
+        (
+          await database.pool.query("SELECT version,status,exception_to FROM memories WHERE id=$1 ORDER BY version", [
+            exceptionId,
+          ])
+        ).rows;
+      try {
+        for (const exceptionTo of [
+          deniedMemory,
+          exceptionId,
+          exceptionId!.toUpperCase(),
+          randomUUID(),
+          "missing-rule",
+          "",
+          42,
+          {},
+          [],
+          false,
+        ]) {
+          assert.equal((await patch({ exceptionTo })).status, 422, JSON.stringify(exceptionTo));
+        }
+        assert.equal((await service.get(allowedId, exceptionId!))!.exceptionTo, undefined);
+        assert.equal((await patch({ exceptionTo: null })).status, 200, "保存时允许不关联");
+        assert.equal((await approve()).status, 500, "批准仍使用原有例外约束");
+        assert.equal((await patch({ exceptionTo: anotherId })).status, 200, "编辑只检查同仓库，不提前要求 ACTIVE");
+        assert.equal((await approve()).status, 500, "原规则未生效时不能批准");
+        const edited = await patch({ exceptionTo: allowedMemory.toUpperCase() });
+        assert.equal(edited.status, 200);
+        assert.equal((await rows())[0].exception_to, allowedMemory);
+        assert.equal((await patch({ title: "补充例外标题" })).status, 200);
+        assert.equal((await rows())[0].exception_to, allowedMemory, "未传字段保留关联");
+        assert.equal((await patch({ exceptionTo: null })).status, 200);
+        assert.equal((await rows())[0].exception_to, null, "null 清空候选关联");
+        assert.equal((await patch({ exceptionTo: allowedMemory })).status, 200);
+        const approved = await approve();
+        assert.equal(approved.status, 200);
+        const memory = (await approved.json()) as any;
+        assert.equal(memory.status, "ACTIVE");
+        assert.equal(memory.exceptionTo, allowedMemory);
+        assert.deepEqual(await rows(), [{ version: 1, status: "ACTIVE", exception_to: allowedMemory }]);
+
+        await service.transition(allowedId, anotherId!, "approve", { id: 42, login: "maintainer" });
+        assert.equal((await patch({ exceptionTo: anotherId })).status, 200);
+        assert.deepEqual(await rows(), [
+          { version: 1, status: "ACTIVE", exception_to: allowedMemory },
+          { version: 2, status: "CANDIDATE", exception_to: anotherId },
+        ]);
+        assert.equal((await approve()).status, 200);
+        assert.equal((await patch({ exceptionTo: null })).status, 200);
+        assert.deepEqual(await rows(), [
+          { version: 1, status: "SUPERSEDED", exception_to: allowedMemory },
+          { version: 2, status: "ACTIVE", exception_to: anotherId },
+          { version: 3, status: "CANDIDATE", exception_to: null },
+        ]);
+        assert.equal((await approve()).status, 500, "无关联新版本不能使旧版失效");
+        assert.equal((await rows())[1].status, "ACTIVE");
+        const audits = (
+          await database.pool.query("SELECT action,after_value FROM memory_audits WHERE memory_id=$1", [exceptionId])
+        ).rows;
+        assert.ok(audits.some((row) => row.action === "edit" && row.after_value.exceptionTo === anotherId));
+        assert.ok(audits.some((row) => row.action === "approve" && row.after_value.exceptionTo === allowedMemory));
+      } finally {
+        await database.pool.query("DELETE FROM memory_audits WHERE memory_id=ANY($1::uuid[])", [
+          [exceptionId, anotherId],
+        ]);
+        await database.pool.query("DELETE FROM memories WHERE id=ANY($1::uuid[])", [[exceptionId, anotherId]]);
+      }
+    });
     response = await fetch(`${origin}/api/repositories/${allowedId}`, {
       method: "PATCH",
       headers: { cookie: sessionCookie, origin: "http://127.0.0.1", "x-csrf-token": session.csrf },
@@ -580,6 +672,99 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       { event: "pull_request", action: "opened" },
     );
     assert.equal(paused.job, undefined);
+
+    // 用已有规则、审查与执行记录验证：即使 GitHub 仍有维护权限，服务授权也必须先拦截。
+    config.allowedRepositories.delete("owner/denied");
+    const headers = { cookie: sessionCookie, origin: "http://127.0.0.1", "x-csrf-token": session.csrf };
+    for (const reason of ["白名单外", "已撤销"]) {
+      await t.test(`${reason}仓库不出现在列表，单仓库接口返回 403 且不请求 GitHub 权限`, async () => {
+        if (reason === "白名单外") config.allowedRepositories.delete("owner/allowed");
+        else {
+          config.allowedRepositories.add("owner/allowed");
+          // 故意保留 enabled=true，确保撤销检查不依赖暂停状态。
+          await database.pool.query("UPDATE repositories SET revoked_at=now(),enabled=true WHERE id=$1", [allowedId]);
+        }
+        const before = (
+          await database.pool.query("SELECT enabled,budget_tokens FROM repositories WHERE id=$1", [allowedId])
+        ).rows[0];
+        for (const path of ["/api/bootstrap", "/api/repositories", "/api/memories", "/api/jobs", "/api/findings"]) {
+          permissionChecks.length = 0;
+          const response = await fetch(`${origin}${path}`, { headers });
+          assert.equal(response.status, 200, path);
+          const result = (await response.json()) as any;
+          if (path === "/api/bootstrap") assert.deepEqual(result, { repositories: [], memories: [] });
+          else if (path === "/api/jobs") assert.deepEqual(result, { items: [], total: 0, page: 1, pageSize: 20 });
+          else if (path === "/api/findings") assert.deepEqual(result, { items: [], nextCursor: null });
+          else assert.deepEqual(result, []);
+          assert.deepEqual(permissionChecks, [], path);
+        }
+        for (const [method, path, value] of [
+          ["PATCH", `/api/repositories/${allowedId}`, { enabled: true, budgetTokens: 321 }],
+          ["GET", `/api/memories/${allowedMemory}`],
+          ["PATCH", `/api/memories/${allowedMemory}`, { title: "不应修改" }],
+          ["GET", `/api/repositories/${allowedId}/development`],
+          ["GET", `/api/repositories/${allowedId}/notification-members`],
+          ["GET", `/api/jobs/${review.id}`],
+          ["GET", `/api/agent-sessions/${sessionId}`],
+          ["GET", `/api/agent-sessions/${sessionId}/raw`],
+        ] as const) {
+          permissionChecks.length = 0;
+          const response = await fetch(`${origin}${path}`, {
+            method,
+            headers,
+            ...(value ? { body: JSON.stringify(value) } : {}),
+          });
+          assert.equal(response.status, 403, `${method} ${path}`);
+          assert.deepEqual(await response.json(), { error: "仓库未授权" });
+          assert.deepEqual(permissionChecks, [], `${method} ${path}`);
+        }
+        const after = (
+          await database.pool.query("SELECT enabled,budget_tokens FROM repositories WHERE id=$1", [allowedId])
+        ).rows[0];
+        assert.deepEqual(after, before);
+        assert.equal((await new MemoryService(database).get(allowedId, allowedMemory))!.title, "rule");
+      });
+    }
+    await t.test("暂停但未撤销的仓库仍可见、可管理，full_name 按小写匹配白名单", async () => {
+      await database.pool.query(
+        "UPDATE repositories SET full_name='Owner/Allowed',revoked_at=NULL,enabled=false WHERE id=$1",
+        [allowedId],
+      );
+      for (const path of ["/api/bootstrap", "/api/repositories", "/api/memories"]) {
+        permissionChecks.length = 0;
+        const response = await fetch(`${origin}${path}`, { headers });
+        assert.equal(response.status, 200, path);
+        const result = (await response.json()) as any;
+        if (path === "/api/bootstrap") {
+          assert.deepEqual(
+            result.repositories.map((item: any) => item.id),
+            [allowedId],
+          );
+          assert.deepEqual(
+            result.memories.map((item: any) => item.id),
+            [allowedMemory],
+          );
+          assert.equal(result.repositories[0].enabled, false);
+        } else
+          assert.deepEqual(
+            result.map((item: any) => item.id),
+            [path === "/api/repositories" ? allowedId : allowedMemory],
+          );
+        assert.deepEqual(permissionChecks, ["Owner/Allowed"], path);
+      }
+      permissionChecks.length = 0;
+      const memory = await fetch(`${origin}/api/memories/${allowedMemory}`, { headers });
+      assert.equal(memory.status, 200);
+      assert.equal(((await memory.json()) as any).id, allowedMemory);
+      const enabled = await fetch(`${origin}/api/repositories/${allowedId}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      });
+      assert.equal(enabled.status, 200);
+      assert.equal(((await enabled.json()) as any).enabled, true);
+      assert.deepEqual(permissionChecks, ["Owner/Allowed", "Owner/Allowed"]);
+    });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await cleanup();

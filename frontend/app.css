@@ -735,6 +735,13 @@ details ul {
   margin: 0.15rem 0;
   font-variant-numeric: tabular-nums;
 }
+.agent-run-usage {
+  grid-column: 1 / -1;
+}
+/* 中文标签不在字间断开，用量分项只在"·"两侧换行。 */
+.usage-text {
+  word-break: keep-all;
+}
 
 /* ===== Agent 执行过程 ===== */
 .session-list {
@@ -1116,6 +1123,20 @@ a.stat:hover {
 .rule-section dd {
   margin: 0.3rem 0 0.9rem;
   overflow-wrap: anywhere;
+}
+.rule-usage {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem 1rem;
+  margin: 0 0 0.6rem;
+}
+.rule-usage dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.rule-usage dd {
+  margin: 0.15rem 0 0;
+  font-variant-numeric: tabular-nums;
 }
 .rule-content {
   white-space: pre-wrap;

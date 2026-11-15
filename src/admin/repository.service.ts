@@ -38,13 +38,18 @@ const listRow = ({ review_result, ...row }: Record<string, unknown>) => ({
   report_available: Boolean(review_result),
 });
 
-export function createRepositoryService(database: Database, github: GitHubClient) {
+export function createRepositoryService(
+  database: Database,
+  github: GitHubClient,
+  allowedRepositoryNames: ReadonlySet<string>,
+) {
   async function allowedRepositories(user: Session) {
-    const result = await database.pool.query("SELECT * FROM repositories ORDER BY full_name");
+    const result = await database.pool.query("SELECT * FROM repositories WHERE revoked_at IS NULL ORDER BY full_name");
+    const rows = result.rows.filter((row) => allowedRepositoryNames.has(String(row.full_name).toLowerCase()));
     const values: Repository[] = [];
     // 每次请求重新授权；只在本次聚合读取复用，不缓存权限结论。
-    for (let offset = 0; offset < result.rows.length; offset += 4) {
-      const batch = result.rows.slice(offset, offset + 4);
+    for (let offset = 0; offset < rows.length; offset += 4) {
+      const batch = rows.slice(offset, offset + 4);
       const checks = await Promise.allSettled(
         batch.map((row) => github.hasMaintainerPermission(user.token, String(row.full_name))),
       );

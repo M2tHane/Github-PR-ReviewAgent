@@ -791,6 +791,67 @@ test("智能机器人完成结果引用原消息，无成员提及；重复消�
   }
 });
 
+test("企微未认证时仍领取开发任务，认证后发送完成通知", { skip: !fixture.url }, async (t) => {
+  const { WSClient } = await import("@wecom/aibot-node-sdk");
+  const { DevelopmentWorker } = await import("../../src/development/worker.js");
+  const { waitFor } = await import("../helpers/database.js");
+  const s = await setup();
+  let bot: InstanceType<typeof WSClient> | undefined;
+  let executions = 0;
+  const replies: any[] = [];
+  t.mock.method(WSClient.prototype, "connect", function (this: InstanceType<typeof WSClient>) {
+    bot = this;
+    return this;
+  });
+  t.mock.method(WSClient.prototype, "disconnect", () => undefined);
+  t.mock.method(WSClient.prototype, "replyStream", async (...args: any[]) => {
+    replies.push(args);
+    return { headers: { req_id: "ack" }, errcode: 0 };
+  });
+  const accepted = await s.store.accept(
+    s.botId,
+    {
+      messageId: "unauthenticated-task",
+      replyRequestId: "request-unauthenticated-task",
+      receivedAt: new Date(),
+      chatId: s.settings.chatId,
+      requester: "developer",
+      text: "修改代码",
+      images: [],
+    },
+    s.config,
+  );
+  assert.equal(accepted, "accepted");
+  const queued = (
+    await s.database.pool.query("SELECT * FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
+      s.botId,
+      "unauthenticated-task",
+    ])
+  ).rows[0];
+  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+    executions++;
+    await s.store.checkpoint(task, { title: "完成", prNumber: 42 });
+    await s.store.finish(task, "succeeded", "已完成");
+  });
+  try {
+    worker.start();
+    await waitFor(async () => Boolean(bot));
+    await waitFor(async () => executions === 1 && (await s.getTask(queued.id)).status === "succeeded");
+    const beforeAuthentication = await s.getTask(queued.id);
+    assert.equal(beforeAuthentication.notification_status, "pending");
+    assert.equal(replies.length, 0);
+
+    bot!.emit("authenticated");
+    await waitFor(async () => (await s.getTask(queued.id)).notification_status === "sent", 10_000);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0][0].headers.req_id, "request-unauthenticated-task");
+    assert.match(replies[0][2], /^\*\*AI 开发任务已完成/);
+  } finally {
+    await worker.stop();
+    await s.cleanup();
+  }
+});
+
 test("多个项目并行开发，同一项目按发送顺序排队；确认消息带排队位置", { skip: !fixture.url }, async (t) => {
   const { WSClient } = await import("@wecom/aibot-node-sdk");
   const { DevelopmentWorker } = await import("../../src/development/worker.js");

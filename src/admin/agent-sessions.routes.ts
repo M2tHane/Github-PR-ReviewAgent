@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { sessionSteps } from "../pi/session-record.js";
 import type { Repository, Session } from "./dto.js";
@@ -9,7 +8,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Agent 执行过程：按步骤展示，或下载整理后的 Pi 会话原始记录（JSONL）。权限和所属任务一致。
 export function createAgentSessionsRoute(
-  config: Config,
   database: Database,
   authorize: (
     request: IncomingMessage,
@@ -24,8 +22,6 @@ export function createAgentSessionsRoute(
     if (!session) return json(response, 404, { error: "执行记录不存在" });
     const access = await authorize(request, response, Number(session.repository_id));
     if (!access) return;
-    if (session.development && !config.allowedRepositories.has(access.repository.fullName.toLowerCase()))
-      return json(response, 403, { error: "仓库未授权" });
     if (raw) {
       response
         .writeHead(200, {

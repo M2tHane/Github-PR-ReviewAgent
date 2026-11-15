@@ -232,12 +232,14 @@ repository / team 边界
   ↓
 status = ACTIVE
   ↓
-scope / path / language / condition
+scope / path / language / module
   ↓
 内容相关性排序
 ```
 
 Review 只允许 ACTIVE 且作用域匹配的 Memory 作为团队约定依据。
+
+`conditions` 是自然语言条件，不参与服务端过滤，由 Agent 结合正文判断是否适用。
 
 Review 的选取（`selectReviewMemories`）不按相关性截断：作用域命中改动文件的规则全部带上，未限定作用域的全局规则不要求最低分；选中的例外规则把未选中的 ACTIVE 原规则一并带上。内容相关性排序只在选中规则的 `title + content + rationale` 合计超过 30 000 字符时使用：限定作用域的在前、全局的在后，各自按词重叠分数从高到低、同分按 ID 保留到上限，并在 Review 的 limitations 写明“只带了 N/M 条”。发给模型的规则只保留 `id`、`version`、`type`、`title`、`content`、`rationale`、`scope`、`source`、`exceptionTo`、`supersedes`。代价是每次 Review 的首条提示变长，预算把缓存读取按全额计入，规则多的仓库每轮请求都会多算这部分。
 
@@ -253,6 +255,16 @@ Reply 与健康检查仍按词重叠计分排序后取前 10 条（`retrieve`）
 - scope 仍然适用。
 
 ## 10. 存储与搜索策略
+
+### 规则使用统计
+
+管理页按规则 ID 汇总所有版本在数据保留期内的 PR Review 使用情况，不设额外的 30 天窗口，不计 Reply、开发任务或健康检查。Review 完成模型输出校验并保存意见时，将实际提供给模型的规则 ID 和版本记入 `review_memory_usage`；同一任务重试时，同一规则只记一次，保留首次记录的版本。`provided` 是其中不同 Review 任务数，表示已完成分析并保存结果，不以 GitHub 发布成功或任务最终状态为条件。未完成分析校验的调用不计入。
+
+`cited` 统计 `review_findings.memory_id` 指向该规则的意见，与概览页“意见去向”采用相同口径：排除 `binding_status='pending'` 的意见和带 `presentation.repeatOf` 的重复意见；引用计意见条数，一次 Review 引用多次也分别计数。按意见当前状态，`fixed` 为 `FIXED`，`withdrawn` 为 `WITHDRAWN`，`exception` 为 `EXCEPTION_PENDING`，`open` 为 `OPEN`、`STILL_VALID`、`NEEDS_CLARIFICATION`；`lastCitedAt` 为符合上述条件的意见中最近的创建时间，无引用时为 null。例外仅表示本次意见的结局，不代表已形成生效团队规则。
+
+没有记录时各项为 0。提供记录从本功能启用后开始积累，不推测历史召回；现存历史意见仍可计入引用，因此历史规则的引用次数可能大于提供次数。删除或按保留期清理 Review 任务时，提供记录与意见随任务删除，统计同步减少。这组数字只用于展示，不改变规则选取、排序或生命周期。
+
+### 搜索策略
 
 M1：
 

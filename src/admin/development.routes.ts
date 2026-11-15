@@ -22,8 +22,6 @@ export function createDevelopmentRoute(
   return async (request: IncomingMessage, response: ServerResponse, repositoryId: number) => {
     const access = await authorize(request, response, repositoryId);
     if (!access) return;
-    if (!config.allowedRepositories.has(access.repository.fullName.toLowerCase()))
-      return json(response, 403, { error: "仓库未授权" });
     if (request.method === "GET")
       return json(response, 200, {
         settings: await store.settings(repositoryId),

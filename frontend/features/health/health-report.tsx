@@ -9,7 +9,7 @@ import type {
 import { groupVulnerabilities } from "../../../src/health/vulnerability-records.js";
 import { isPriorityDependency, VulnerableDependencies } from "../../components/common/vulnerable-dependencies.js";
 import { Status } from "../../components/common/status-badge.js";
-import { dateText, numberText } from "../../format.js";
+import { dateText, numberText, usageText } from "../../format.js";
 import type { HealthDetail } from "./types.js";
 
 const healthLabels: Record<HealthDimension, string> = {
@@ -714,9 +714,7 @@ export function HealthReportView({
               <p>
                 采集时间：{dateText(report.collectedAt)}；完成时间：{dateText(report.completedAt)}。
               </p>
-              <p>
-                输入 {usage.input} · 输出 {usage.output} · 缓存读取 {usage.cacheRead} · 缓存写入 {usage.cacheWrite}
-              </p>
+              <p className="usage-text">{usageText(usage)}</p>
               <small>Job {job.id}</small>
             </details>
           </details>

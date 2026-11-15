@@ -41,6 +41,10 @@ test("数据清理：过期 PR 整组删除，活跃 PR、未结束任务和最�
     // PR 1：最后一次活动在 100 天前，整组删除，连同审查结果、线程回复、规则线索和 Agent 记录。
     await delivery("old-delivery", 100);
     const stale = await job(1, 100, "succeeded", "old-delivery");
+    await db.query(
+      "INSERT INTO review_memory_usage(job_id,repository_id,memory_id,memory_version) VALUES($1,$2,$3,1)",
+      [stale, repo, randomUUID()],
+    );
     await db.query("INSERT INTO review_publications(job_id,fingerprint,status) VALUES($1,'fp-stale','published')", [
       stale,
     ]);
@@ -125,6 +129,7 @@ test("数据清理：过期 PR 整组删除，活跃 PR、未结束任务和最�
     for (const table of [
       "review_publications",
       "review_findings",
+      "review_memory_usage",
       "reply_publications",
       "decision_clues",
       "agent_runs",

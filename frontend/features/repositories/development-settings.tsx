@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { SessionTimeline } from "../../components/common/session-timeline.js";
-import { dateText } from "../../format.js";
+import { dateText, numberText, usageText, usageTotal } from "../../format.js";
 import type { Repository } from "../../types.js";
 import type { DevelopmentSettings } from "../../../src/development/types.js";
 import type { AgentSessionRow } from "../../../src/admin/dto.js";
+import type { AgentUsage } from "../../../src/review/agent.js";
 import { NotificationMembers } from "./notification-members.js";
 
 type Task = {
@@ -21,6 +22,7 @@ type Task = {
   notification_status: string;
   notification_error: string | null;
   created_at: string;
+  usage?: Partial<AgentUsage> | null;
   agent_sessions?: AgentSessionRow[];
 };
 type EditableSettings = Omit<DevelopmentSettings, "members" | "protections"> & {
@@ -386,6 +388,11 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
             </a>
           )}
           <p className="muted">目标分支：{task.target_branch}</p>
+          {usageTotal({ usage: task.usage }) !== undefined && (
+            <p className="muted usage-text">
+              用量：{numberText(usageTotal({ usage: task.usage }))} tokens · {usageText({ usage: task.usage })}
+            </p>
+          )}
           <SessionTimeline sessions={task.agent_sessions ?? []} />
           {task.status === "uncertain" && (
             <p>

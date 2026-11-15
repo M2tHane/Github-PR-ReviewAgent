@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
 import { Status } from "../../components/common/status-badge.js";
-import { dateText } from "../../format.js";
+import { dateText, numberText } from "../../format.js";
 import type { Memory, Repository as Repo } from "../../types.js";
 
 // limit：列表里只显示前几项，其余收成“+N”，完整内容在规则详情里看。
@@ -36,6 +36,7 @@ export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: n
 export function RulePanel({
   item,
   repository,
+  rules,
   candidates,
   busy,
   action,
@@ -44,6 +45,7 @@ export function RulePanel({
 }: {
   item: Memory;
   repository?: Repo;
+  rules: Memory[];
   candidates: Memory[];
   busy: boolean;
   action: (item: Memory, name: string, value?: object) => Promise<boolean>;
@@ -123,7 +125,48 @@ export function RulePanel({
               <section className="rule-section">
                 <h3>适用范围</h3>
                 <ScopeChips scope={item.scope} />
+                {(item.exceptionTo || item.supersedes) && (
+                  <dl>
+                    {item.exceptionTo && (
+                      <>
+                        <dt>例外于</dt>
+                        <dd>{rules.find((rule) => rule.id === item.exceptionTo)?.title ?? item.exceptionTo}</dd>
+                      </>
+                    )}
+                    {item.supersedes && (
+                      <>
+                        <dt>替代</dt>
+                        <dd>{rules.find((rule) => rule.id === item.supersedes)?.title ?? item.supersedes}</dd>
+                      </>
+                    )}
+                  </dl>
+                )}
               </section>
+              {/* 从没生效过的待确认规则不会交给审查，不显示使用情况。 */}
+              {(item.status !== "CANDIDATE" || item.activeVersion) && (
+                <section className="rule-section">
+                  <h3>使用情况</h3>
+                  <dl className="rule-usage">
+                    {(
+                      [
+                        ["提供给审查", `${numberText(item.usage.provided)} 次`],
+                        ["被意见引用", `${numberText(item.usage.cited)} 次`],
+                        ["已修复", numberText(item.usage.fixed)],
+                        ["已撤回", numberText(item.usage.withdrawn)],
+                        ["记为例外", numberText(item.usage.exception)],
+                        ["仍未结", numberText(item.usage.open)],
+                        ["最近引用", item.usage.lastCitedAt ? dateText(item.usage.lastCitedAt) : "暂无引用"],
+                      ] as const
+                    ).map(([label, value]) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p className="muted">统计范围：数据保留期内已完成的审查</p>
+                </section>
+              )}
               <section className="rule-section">
                 <h3>规则来源</h3>
                 <p>

@@ -6,7 +6,7 @@ import { Empty } from "../components/common/empty-state.js";
 import { Pager } from "../components/common/pager.js";
 import { Status } from "../components/common/status-badge.js";
 import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
-import { dateText } from "../format.js";
+import { dateText, numberText } from "../format.js";
 import type { Memory, Repository as Repo } from "../types.js";
 import { shortText } from "../../src/review/presentation.js";
 
@@ -102,6 +102,9 @@ export function MemoriesPage({
           title: String(data.get("title")).trim(),
           content: String(data.get("content")).trim(),
           rationale: String(data.get("rationale")).trim(),
+          ...(item.type === "exception" && data.has("exceptionTo")
+            ? { exceptionTo: String(data.get("exceptionTo")) || null }
+            : {}),
           scope: {
             ...item.scope,
             paths: lines("paths"),
@@ -167,6 +170,7 @@ export function MemoriesPage({
             <fieldset>
               <legend>适用范围</legend>
               <p className="muted">每行一项；留空表示不限制该维度。</p>
+              {selected.type === "exception" && <ExceptionSelector item={selected} items={items} />}
               <label>
                 路径
                 <textarea name="paths" defaultValue={(selected.scope.paths ?? []).join("\n")} />
@@ -312,6 +316,9 @@ export function MemoriesPage({
                 <span>
                   {repositories.find((repo) => repo.id === item.repositoryId)?.fullName} ·{" "}
                   {memorySourceLabel(item.source)}
+                  {/* 从没生效过的待确认规则不会交给审查，不显示引用次数。 */}
+                  {(item.status !== "CANDIDATE" || item.activeVersion) &&
+                    ` · 引用 ${numberText(item.usage.cited)} 次 · 修复 ${numberText(item.usage.fixed)} · 撤回 ${numberText(item.usage.withdrawn)}`}
                 </span>
                 <span>更新于 {dateText(item.updatedAt)}</span>
               </div>
@@ -352,6 +359,7 @@ export function MemoriesPage({
           key={selected.id}
           item={selected}
           repository={repositories.find((repo) => repo.id === selected.repositoryId)}
+          rules={items.filter((item) => item.repositoryId === selected.repositoryId)}
           candidates={items.filter(
             (item) =>
               item.repositoryId === selected.repositoryId && item.status === "CANDIDATE" && item.id !== selected.id,
@@ -363,5 +371,44 @@ export function MemoriesPage({
         />
       )}
     </section>
+  );
+}
+
+function ExceptionSelector({ item, items }: { item: Memory; items: Memory[] }) {
+  const [value, setValue] = useState(item.exceptionTo ?? "");
+  const rules = items.filter(
+    (rule) =>
+      rule.repositoryId === item.repositoryId &&
+      rule.id !== item.id &&
+      (rule.status === "ACTIVE" || Boolean(rule.activeVersion)),
+  );
+  const unavailable = Boolean(value && !rules.some((rule) => rule.id === value));
+  const selected = items.find((rule) => rule.repositoryId === item.repositoryId && rule.id === value);
+  return (
+    <>
+      <label style={{ minWidth: 0 }}>
+        例外于
+        <select name="exceptionTo" value={value} onChange={(event) => setValue(event.target.value)}>
+          <option value="">不关联</option>
+          {unavailable && (
+            <option value={value} disabled>
+              当前关联不可选（已失效或不存在）
+            </option>
+          )}
+          {rules.map((rule) => (
+            <option value={rule.id} key={rule.id} title={rule.title}>
+              {shortText(rule.title, 80)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {value && (
+        <p className="muted" style={{ overflowWrap: "anywhere" }}>
+          当前关联：{selected?.title ?? value}
+          {unavailable && "。请选择生效规则或不关联；未选择时保留原关联。"}
+        </p>
+      )}
+      {!rules.length && <p className="muted">同仓库暂无其他生效规则。可先保存，批准前需关联生效规则。</p>}
+    </>
   );
 }

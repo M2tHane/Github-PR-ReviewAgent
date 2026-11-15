@@ -5,6 +5,7 @@ import { GitHubApiError, GitHubClient } from "../github/client.js";
 import type { Finding, ReviewResult, StoredFinding } from "./types.js";
 import type { ReviewJob } from "../jobs/types.js";
 import type { AgentUsage } from "./agent.js";
+import type { MemoryRecord } from "../memory/types.js";
 import { inlineBody, reviewBody } from "./presentation.js";
 import { log } from "../logging.js";
 
@@ -28,6 +29,7 @@ export interface PublicationStore {
   >;
   saveReviewResult?(job: ReviewJob, result: ReviewResult): Promise<void>;
   saveFindings?(job: ReviewJob, findings: Finding[], inline: Set<Finding>): Promise<StoredFinding[]>;
+  saveReviewMemoryUsage?(job: ReviewJob, memories: Pick<MemoryRecord, "id" | "version">[]): Promise<void>;
   getOpenFindings?(job: ReviewJob): Promise<StoredFinding[]>;
   bindFindings?(job: ReviewJob, reviewId: number, comments: Array<{ id: number; body: string }>): Promise<number>;
 }

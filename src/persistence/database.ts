@@ -90,6 +90,7 @@ export class Database extends JobRepository implements JobAcceptor {
   readonly getHealthReport = this.health.getHealthReport.bind(this.health);
   readonly finishHealthReport = this.health.finishHealthReport.bind(this.health);
   readonly insertCandidates = this.memories.insertCandidates.bind(this.memories);
+  readonly saveReviewMemoryUsage = this.memories.saveReviewMemoryUsage.bind(this.memories);
   readonly purgeExpired = this.retention.purgeExpired.bind(this.retention);
   readonly withWebhookRedeliveryLock = <T>(run: () => Promise<T>) => this.webhookRedelivery.withLock(run);
 }

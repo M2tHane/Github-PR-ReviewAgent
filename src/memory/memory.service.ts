@@ -3,7 +3,7 @@ import { matchesGlob } from "node:path";
 import { languageOf, normalizeLanguage } from "../config/languages.js";
 import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
-import type { DecisionProposal, MemoryRecord } from "./types.js";
+import type { DecisionProposal, MemoryRecord, MemoryWithUsage } from "./types.js";
 
 export interface Actor {
   id: number;
@@ -11,18 +11,54 @@ export interface Actor {
 }
 export type CandidatePatch = Partial<
   Pick<MemoryRecord, "type" | "title" | "content" | "rationale" | "scope" | "uncertainties">
->;
+> & { exceptionTo?: string | null };
 
 // 人类确认与仓库隔离的理由见 .agents/decisions/team-memory.md。
 export class MemoryService {
   constructor(private database: Database) {}
 
-  async list(repositoryId: number, status?: MemoryRecord["status"]) {
+  async list(repositoryId: number, status?: MemoryRecord["status"]): Promise<MemoryWithUsage[]> {
     const result = await this.database.pool.query(
-      "SELECT DISTINCT ON (id) *,max(version) FILTER (WHERE status='ACTIVE') OVER (PARTITION BY id) active_version FROM memories WHERE repository_id=$1 ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC",
+      `WITH current AS (
+         SELECT DISTINCT ON (id) *,max(version) FILTER (WHERE status='ACTIVE') OVER (PARTITION BY id) active_version
+         FROM memories WHERE repository_id=$1 ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC
+       ), provided AS (
+         SELECT u.memory_id,count(*)::int provided FROM review_memory_usage u
+         JOIN jobs j ON j.id=u.job_id AND j.job_type='PR_REVIEW'
+         WHERE u.repository_id=$1 GROUP BY u.memory_id
+       ), cited AS (
+         SELECT f.memory_id,count(*)::int cited,
+           count(*) FILTER (WHERE f.status='FIXED')::int fixed,
+           count(*) FILTER (WHERE f.status='WITHDRAWN')::int withdrawn,
+           count(*) FILTER (WHERE f.status='EXCEPTION_PENDING')::int exception,
+           count(*) FILTER (WHERE f.status IN ('OPEN','STILL_VALID','NEEDS_CLARIFICATION'))::int open,
+           max(f.created_at) last_cited_at
+         FROM review_findings f JOIN jobs j ON j.id=f.job_id AND j.job_type='PR_REVIEW'
+         WHERE f.repository_id=$1 AND f.memory_id IS NOT NULL
+           AND f.binding_status<>'pending' AND NOT (f.presentation ? 'repeatOf')
+         GROUP BY f.memory_id
+       )
+       SELECT m.*,COALESCE(p.provided,0) provided,COALESCE(c.cited,0) cited,
+         COALESCE(c.fixed,0) fixed,COALESCE(c.withdrawn,0) withdrawn,
+         COALESCE(c.exception,0) exception,COALESCE(c.open,0) open,c.last_cited_at
+       FROM current m LEFT JOIN provided p ON p.memory_id=m.id LEFT JOIN cited c ON c.memory_id=m.id
+       ORDER BY m.id`,
       [repositoryId],
     );
-    return result.rows.map(toMemory).filter((memory) => !status || memory.status === status);
+    return result.rows
+      .map((row) => ({
+        ...toMemory(row),
+        usage: {
+          provided: row.provided,
+          cited: row.cited,
+          fixed: row.fixed,
+          withdrawn: row.withdrawn,
+          exception: row.exception,
+          open: row.open,
+          lastCitedAt: row.last_cited_at?.toISOString() ?? null,
+        },
+      }))
+      .filter((memory) => !status || memory.status === status);
   }
 
   async get(repositoryId: number, id: string) {
@@ -43,10 +79,14 @@ export class MemoryService {
         );
         if (!currentResult.rows[0]) throw new Error("Memory 不存在或不属于当前仓库");
         const current = toMemory(currentResult.rows[0]);
-        const after = { ...current, ...patch };
+        const after = {
+          ...current,
+          ...patch,
+          exceptionTo: patch.exceptionTo === undefined ? current.exceptionTo : (patch.exceptionTo ?? undefined),
+        };
         if (current.status === "CANDIDATE") {
           await client.query(
-            "UPDATE memories SET type=$3,title=$4,content=$5,rationale=$6,scope=$7,uncertainties=$8,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$9",
+            "UPDATE memories SET type=$3,title=$4,content=$5,rationale=$6,scope=$7,uncertainties=$8,exception_to=$10,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$9",
             [
               repositoryId,
               id,
@@ -57,6 +97,7 @@ export class MemoryService {
               after.scope,
               JSON.stringify(after.uncertainties),
               current.version,
+              after.exceptionTo,
             ],
           );
         } else if (current.status === "ACTIVE") {
@@ -69,7 +110,7 @@ export class MemoryService {
             ).rows[0].version,
           );
           await client.query(
-            "INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,expires_at,supersedes) SELECT id,$3::integer,repository_id,installation_id,$4,$5,$6,$7,$8,source,evidence,confidence,$9,'CANDIDATE',source_fingerprint||':v'||$3::text,exception_to,expires_at,supersedes FROM memories WHERE repository_id=$1 AND id=$2 AND version=$10",
+            "INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,expires_at,supersedes) SELECT id,$3::integer,repository_id,installation_id,$4,$5,$6,$7,$8,source,evidence,confidence,$9,'CANDIDATE',source_fingerprint||':v'||$3::text,$11,expires_at,supersedes FROM memories WHERE repository_id=$1 AND id=$2 AND version=$10",
             [
               repositoryId,
               id,
@@ -81,6 +122,7 @@ export class MemoryService {
               after.scope,
               JSON.stringify(after.uncertainties),
               current.version,
+              after.exceptionTo,
             ],
           );
           after.version = version;
@@ -106,6 +148,13 @@ export class MemoryService {
         const before = toMemory(result.rows[0]);
         const expected = action === "deprecate" ? "ACTIVE" : "CANDIDATE";
         if (before.status !== expected) throw new Error(`只有 ${expected} 可以 ${action}`);
+        if (action === "approve" && before.supersedes && before.supersedes !== before.id) {
+          const oldRow = await client.query(
+            "SELECT * FROM memories WHERE repository_id=$1 AND id=$2 AND status='ACTIVE' ORDER BY version DESC LIMIT 1 FOR UPDATE",
+            [repositoryId, before.supersedes],
+          );
+          if (oldRow.rows[0]) return supersedeMemories(client, toMemory(oldRow.rows[0]), before, actor);
+        }
         if (action === "approve") await validateException(client, before);
         const status = action === "approve" ? "ACTIVE" : action === "reject" ? "REJECTED" : "DEPRECATED";
         if (action === "approve")
@@ -142,25 +191,7 @@ export class MemoryService {
         const candidate = candidateRow.rows[0] ? toMemory(candidateRow.rows[0]) : undefined;
         if (old?.status !== "ACTIVE" || candidate?.status !== "CANDIDATE")
           throw new Error("替代要求同仓库 ACTIVE 原规则和 CANDIDATE 新规则");
-        if (candidate.type === "exception" && candidate.exceptionTo === oldId)
-          throw new Error("例外必须保留原规则，不能用例外替代原规则");
-        await validateException(client, candidate);
-        await client.query(
-          "UPDATE memories SET status='SUPERSEDED',superseded_by=$3,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$4",
-          [repositoryId, oldId, candidateId, old.version],
-        );
-        await client.query(
-          "UPDATE memories SET status='SUPERSEDED',superseded_by=$2,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version<$3 AND status='ACTIVE'",
-          [repositoryId, candidateId, candidate.version],
-        );
-        const result = await client.query(
-          "UPDATE memories SET status='ACTIVE',supersedes=$3,approved_by=$4,approved_at=now(),updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$5 RETURNING *",
-          [repositoryId, candidateId, oldId, actor.id, candidate.version],
-        );
-        const after = toMemory(result.rows[0]);
-        await audit(client, old, { ...old, status: "SUPERSEDED", supersededBy: candidateId }, actor, "supersede-old");
-        await audit(client, candidate, after, actor, "supersede-new");
-        return after;
+        return supersedeMemories(client, old, candidate, actor);
       });
     } finally {
       client.release();
@@ -188,7 +219,6 @@ export class MemoryService {
 export interface RetrieveInput {
   paths: string[];
   text: string;
-  conditions?: string[];
   limit?: number;
   // 未限定 Scope 的全局规则至少要和变更文本共有几个词才召回；健康检查需要全部候选时传 0。
   minGlobalScore?: number;
@@ -215,7 +245,7 @@ export function rankMemories(memories: MemoryRecord[], input: RetrieveInput) {
   const minGlobalScore = input.minGlobalScore ?? 2;
   return (
     memories
-      .filter((memory) => scopeMatches(memory, input.paths, input.conditions ?? []))
+      .filter((memory) => scopeMatches(memory, input.paths))
       .map((memory) => {
         const memoryWords = matchWords(`${memory.title} ${memory.content} ${memory.rationale}`);
         return { memory, score: [...memoryWords].filter((word) => queryWords.has(word)).length };
@@ -239,7 +269,7 @@ export function selectReviewMemories(
   input: Pick<RetrieveInput, "paths" | "text">,
   maxChars = REVIEW_MEMORY_CHARS,
 ) {
-  const selected = memories.filter((memory) => scopeMatches(memory, input.paths, []));
+  const selected = memories.filter((memory) => scopeMatches(memory, input.paths));
   const ids = new Set(selected.map((memory) => memory.id));
   for (const memory of [...selected]) {
     const original =
@@ -276,7 +306,7 @@ export function selectReviewMemories(
   return { memories: kept, total: selected.length };
 }
 
-export function scopeMatches(memory: Pick<MemoryRecord, "scope">, paths: string[], conditions: string[]) {
+export function scopeMatches(memory: Pick<MemoryRecord, "scope">, paths: string[]) {
   const scope = memory.scope;
   if (scope.paths?.length && !paths.some((path) => scope.paths!.some((pattern) => matchesGlob(path, pattern))))
     return false;
@@ -286,8 +316,34 @@ export function scopeMatches(memory: Pick<MemoryRecord, "scope">, paths: string[
   }
   if (scope.modules?.length && !paths.some((path) => scope.modules!.some((module) => path.split("/").includes(module))))
     return false;
-  if (scope.conditions?.length && !scope.conditions.every((condition) => conditions.includes(condition))) return false;
   return true;
+}
+
+async function supersedeMemories(
+  client: import("pg").PoolClient,
+  old: MemoryRecord,
+  candidate: MemoryRecord,
+  actor: Actor,
+) {
+  if (candidate.type === "exception" && candidate.exceptionTo === old.id)
+    throw new Error("例外必须保留原规则，不能用例外替代原规则");
+  await validateException(client, candidate);
+  await client.query(
+    "UPDATE memories SET status='SUPERSEDED',superseded_by=$3,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$4",
+    [old.repositoryId, old.id, candidate.id, old.version],
+  );
+  await client.query(
+    "UPDATE memories SET status='SUPERSEDED',superseded_by=$2,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version<$3 AND status='ACTIVE'",
+    [candidate.repositoryId, candidate.id, candidate.version],
+  );
+  const result = await client.query(
+    "UPDATE memories SET status='ACTIVE',supersedes=$3,approved_by=$4,approved_at=now(),updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$5 RETURNING *",
+    [candidate.repositoryId, candidate.id, old.id, actor.id, candidate.version],
+  );
+  const after = toMemory(result.rows[0]);
+  await audit(client, old, { ...old, status: "SUPERSEDED", supersededBy: candidate.id }, actor, "supersede-old");
+  await audit(client, candidate, after, actor, "supersede-new");
+  return after;
 }
 
 async function validateException(client: import("pg").PoolClient, memory: MemoryRecord) {

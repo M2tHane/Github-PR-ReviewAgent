@@ -69,6 +69,7 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     },
   };
   const config: any = {
+    allowedRepositories: new Set(repos.map((repo) => repo.full_name)),
     githubClientId: "client",
     githubClientSecret: "secret",
     githubOAuthCallbackUrl: "http://localhost/auth/github/callback",

@@ -21,8 +21,6 @@ export function createNotificationMembersRoute(
     if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) return json(response, 422, { error: "仓库标识无效" });
     const access = await authorize(request, response, repositoryId);
     if (!access) return;
-    if (!config.allowedRepositories.has(access.repository.fullName.toLowerCase()))
-      return json(response, 403, { error: "仓库未授权" });
     if (request.method === "GET" && !login)
       return json(response, 200, { members: await members.list(repositoryId), configured: Boolean(config.wecom) });
     if (request.method === "PUT" && !login) {

@@ -12,7 +12,7 @@ export interface DecisionProposal {
   scope: { paths?: string[]; languages?: string[]; modules?: string[]; conditions?: string[] };
   source: { pullRequestNumber: number; commitSha: string; commentIds: number[] };
   evidence: Array<{ kind: "human_comment" | "code"; reference: string; detail: string }>;
-  relation?: { duplicateOf?: string; conflictsWith?: string[]; supersedes?: string; exceptionTo?: string };
+  relation?: { conflictsWith?: string[]; supersedes?: string; exceptionTo?: string };
   confidence: number;
   uncertainties: string[];
 }
@@ -65,3 +65,15 @@ export interface MemoryRecord {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface MemoryUsage {
+  provided: number;
+  cited: number;
+  fixed: number;
+  withdrawn: number;
+  exception: number;
+  open: number;
+  lastCitedAt: string | null;
+}
+
+export type MemoryWithUsage = MemoryRecord & { usage: MemoryUsage };

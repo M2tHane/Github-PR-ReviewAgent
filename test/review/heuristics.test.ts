@@ -9,10 +9,10 @@ test("语言识别与规则 Scope 共用一份映射，覆盖常见扩展名和�
   assert.equal(languageOf("svc/main.go"), "go");
   assert.equal(languageOf("README"), undefined);
   const rule = (languages: string[]) => ({ scope: { languages } }) as unknown as MemoryRecord;
-  assert.equal(scopeMatches(rule(["TypeScript"]), ["web/App.tsx"], []), true);
-  assert.equal(scopeMatches(rule(["kotlin"]), ["app/Main.kt"], []), true);
-  assert.equal(scopeMatches(rule(["C#"]), ["src/Program.cs"], []), true);
-  assert.equal(scopeMatches(rule(["java"]), ["app/Main.kt"], []), false);
+  assert.equal(scopeMatches(rule(["TypeScript"]), ["web/App.tsx"]), true);
+  assert.equal(scopeMatches(rule(["kotlin"]), ["app/Main.kt"]), true);
+  assert.equal(scopeMatches(rule(["C#"]), ["src/Program.cs"]), true);
+  assert.equal(scopeMatches(rule(["java"]), ["app/Main.kt"]), false);
 });
 
 test("规则召回按整词打分，全局规则要有足够重合，限定 Scope 的规则不受最低分限制", () => {
@@ -56,6 +56,46 @@ test("规则召回按整词打分，全局规则要有足够重合，限定 Scop
     ["csv", "port"],
   );
   assert(matchWords("getAccessToken").has("access") && matchWords("getAccessToken").has("getaccesstoken"));
+});
+
+test("带自然语言条件的规则按路径召回，条件随规则交给 Agent 判断", () => {
+  const memory = {
+    id: "conditional",
+    version: 1,
+    status: "ACTIVE",
+    repositoryId: 1,
+    title: "金额计算",
+    content: "金额必须使用定点小数",
+    rationale: "避免精度损失",
+    scope: { paths: ["src/**"], conditions: ["涉及资金变更"] },
+  } as MemoryRecord;
+
+  const matching = { paths: ["src/a.ts"], text: "" };
+  assert.deepEqual(selectReviewMemories([memory], matching), { memories: [memory], total: 1 });
+  assert.deepEqual(rankMemories([memory], matching), [memory]);
+
+  const elsewhere = { paths: ["web/a.ts"], text: memory.content };
+  assert.deepEqual(selectReviewMemories([memory], elsewhere), { memories: [], total: 0 });
+  assert.deepEqual(rankMemories([memory], elsewhere), []);
+});
+
+test("只有自然语言条件的规则按全局规则召回，保留全局规则的最低分要求", () => {
+  const memory = {
+    id: "conditional-global",
+    version: 1,
+    status: "ACTIVE",
+    repositoryId: 1,
+    title: "金额计算",
+    content: "金额必须使用定点小数",
+    rationale: "避免精度损失",
+    scope: { conditions: ["涉及资金变更"] },
+  } as MemoryRecord;
+  const input = { paths: ["web/a.ts"], text: "" };
+
+  assert.deepEqual(selectReviewMemories([memory], input), { memories: [memory], total: 1 });
+  assert.deepEqual(rankMemories([memory], input), []);
+  assert.deepEqual(rankMemories([memory], { ...input, text: memory.content }), [memory]);
+  assert.deepEqual(rankMemories([memory], { ...input, minGlobalScore: 0 }), [memory]);
 });
 
 test("Review 带上所有范围命中的规则：不截断、全局规则不要求最低分，例外带出原规则", () => {

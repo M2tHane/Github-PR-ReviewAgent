@@ -40,6 +40,7 @@ test("服务设置接口：管理员可以改，仓库维护者只读，没有�
     },
   };
   const config: any = {
+    allowedRepositories: new Set(["owner/repo"]),
     githubClientId: "client",
     githubClientSecret: "secret",
     githubOAuthCallbackUrl: "http://localhost/auth/github/callback",

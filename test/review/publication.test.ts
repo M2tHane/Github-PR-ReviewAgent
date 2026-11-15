@@ -12,6 +12,7 @@ import { emptyUsage } from "../../src/review/agent.js";
 import { GitHubApiError, type GitHubClient } from "../../src/github/client.js";
 import type { Database } from "../../src/persistence/database.js";
 import type { MemoryService } from "../../src/memory/memory.service.js";
+import type { MemoryRecord } from "../../src/memory/types.js";
 import type { Config } from "../../src/config/config.js";
 import type { Finding, StoredFinding } from "../../src/review/types.js";
 import type { ReviewJob } from "../../src/jobs/types.js";
@@ -805,6 +806,8 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
     });
     const publish = async (findings: Finding[], memories?: MemoryService) => {
       let posted: { body: string; comments: unknown[] } | undefined, saved: any;
+      let provided: Pick<MemoryRecord, "id" | "version">[] | undefined;
+      let findingsSaved = false;
       const github = {
         installationToken: async () => "t",
         getPullRequest: async () => ({ state: "open", draft: false, base: { sha: baseSha }, head: { sha: headSha } }),
@@ -817,6 +820,15 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
         isPrivateRepository: async () => true,
       } as unknown as GitHubClient;
       const store = {
+        saveFindings: async () => {
+          findingsSaved = true;
+          return [];
+        },
+        saveReviewMemoryUsage: async (value: ReviewJob, recalled: Pick<MemoryRecord, "id" | "version">[]) => {
+          assert.equal(value.id, job.id);
+          assert.equal(findingsSaved, true, "规则提供记录在模型校验并保存意见后写入");
+          provided = recalled;
+        },
         saveReviewResult: async (_job: ReviewJob, result: unknown) => {
           saved = result;
         },
@@ -829,7 +841,7 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
         durationMs: 1,
         usage: emptyUsage(),
       }))({ ...job });
-      return { posted: posted!, saved };
+      return { posted: posted!, saved, provided };
     };
 
     const partly = await publish([
@@ -859,6 +871,15 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
       retrieveForReview: async () => ({ memories: [], total: 3 }),
     } as unknown as MemoryService);
     assert.deepEqual(truncated.saved.limitations, ["团队规则超过上限，本次只带了 0/3 条。"]);
+    assert.deepEqual(truncated.provided, [], "未提供的规则不记使用记录");
+    const recalled = [
+      { id: "rule-1", version: 1, repositoryId: 1, status: "ACTIVE" },
+      { id: "rule-2", version: 2, repositoryId: 1, status: "ACTIVE" },
+    ] as MemoryRecord[];
+    const unused = await publish([], {
+      retrieveForReview: async () => ({ memories: recalled, total: 3 }),
+    } as unknown as MemoryService);
+    assert.deepEqual(unused.provided, recalled, "即使没有意见引用，仍记录真正交给模型的两条规则");
   } finally {
     await rm(source, { recursive: true, force: true });
   }

@@ -40,12 +40,16 @@ export function createAdminHandler(
   settings = new ServiceSettings(config, database.pool),
 ) {
   const memories = new MemoryService(database);
-  const { allowedRepositories, listJobs, overview } = createRepositoryService(database, github);
+  const { allowedRepositories, listJobs, overview } = createRepositoryService(
+    database,
+    github,
+    config.allowedRepositories,
+  );
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
   const ruleImportRoute = createRuleImportRoute(database, authorize);
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
-  const agentSessionsRoute = createAgentSessionsRoute(config, database, authorize);
+  const agentSessionsRoute = createAgentSessionsRoute(database, authorize);
   const serviceSettingsRoute = createServiceSettingsRoute(config, settings, allowedRepositories);
   const configured = Boolean(
     config.githubClientId &&
@@ -86,6 +90,13 @@ export function createAdminHandler(
     const result = await database.pool.query("SELECT * FROM repositories WHERE id=$1", [repositoryId]);
     if (!result.rows[0]) {
       json(response, 404, { error: "仓库不存在" });
+      return undefined;
+    }
+    if (
+      result.rows[0].revoked_at !== null ||
+      !config.allowedRepositories.has(String(result.rows[0].full_name).toLowerCase())
+    ) {
+      json(response, 403, { error: "仓库未授权" });
       return undefined;
     }
     if (!(await github.hasMaintainerPermission(user.token, String(result.rows[0].full_name)))) {
@@ -326,7 +337,8 @@ export function createAdminHandler(
               typeof value !== "object" ||
               Array.isArray(value) ||
               Object.keys(value).some(
-                (key) => !["type", "title", "content", "rationale", "scope", "uncertainties"].includes(key),
+                (key) =>
+                  !["type", "title", "content", "rationale", "scope", "uncertainties", "exceptionTo"].includes(key),
               )
             )
               return json(response, 422, { error: "只允许编辑规则内容与适用范围" });
@@ -343,6 +355,9 @@ export function createAdminHandler(
               (value.title !== undefined && (typeof value.title !== "string" || !value.title.trim())) ||
               (value.content !== undefined && (typeof value.content !== "string" || !value.content.trim())) ||
               (value.rationale !== undefined && (typeof value.rationale !== "string" || !value.rationale.trim())) ||
+              (value.exceptionTo !== undefined &&
+                value.exceptionTo !== null &&
+                typeof value.exceptionTo !== "string") ||
               (value.uncertainties !== undefined &&
                 (!Array.isArray(value.uncertainties) || !value.uncertainties.every((x) => typeof x === "string"))) ||
               (value.scope !== undefined &&
@@ -357,6 +372,13 @@ export function createAdminHandler(
                   )))
             )
               return json(response, 422, { error: "Memory 修改无效" });
+            if (value.exceptionTo !== undefined && value.exceptionTo !== null) {
+              const original = await database.pool.query(
+                "SELECT 1 FROM memories WHERE repository_id=$1 AND id::text=lower($2) AND id<>$3 LIMIT 1",
+                [access.repository.id, value.exceptionTo, memoryMatch[1]],
+              );
+              if (!original.rowCount) return json(response, 422, { error: "例外必须关联同仓库的其他规则" });
+            }
             return json(response, 200, await memories.edit(access.repository.id, memoryMatch[1]!, value, user));
           }
           if (request.method === "POST" && memoryMatch[2] === "supersede")

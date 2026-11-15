@@ -33,6 +33,7 @@ M3 的产品范围见 [PRD-MVP 的 F06](docs/PRD-MVP.md#f06仓库健康检查与
 | 内容 | 入口 |
 | --- | --- |
 | 产品与阶段范围 | [PRD-MVP](docs/PRD-MVP.md) |
+| 目标架构评估与实施路线 | [架构评估](docs/architecture-evaluation.md)、[ARCH 清单](docs/tasks/ARCH.md) |
 | 群内开发当前任务和证据 | [DEV](docs/tasks/DEV.md) |
 | 体验收口当前任务和证据 | [UX](docs/tasks/UX.md) |
 | M3 任务和证据 | [M3](docs/tasks/M3.md) |
