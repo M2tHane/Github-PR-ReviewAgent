@@ -46,7 +46,7 @@
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
 | ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 已完成（`23831f0`）；真实 GitHub 安装清单未验证 |
-| ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 进行中 |
+| ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 已完成（`b0e888a`）；团队规则要等 2-C 才进入审查 |
 | ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，冲突时项目规则胜出；Review、Reply、健康检查、开发任务、规则提取统一从这里取规则 | 待做（依赖 2-B） |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；按后续提交推断"疑似已修复"（和开发者确认的修复分开统计） | 待做（依赖 2-B） |
 | ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
@@ -192,3 +192,13 @@
 - 最终验证：`npm test` 306 项，181 通过、125 跳过、0 失败（39.20 秒，普通命令未加载数据库）；随后 `npm run test:db` 157/157 通过，0 跳过（106.43 秒）。定向恢复、长评论分页核对与执行权边界测试均通过。GitHub 和模型均为替身，临时 schema 在结束后删除；无真实 delivery/Job/finding/Review/reply URL。developer 用量累计断言为 150+150=300 tokens，revision 为 120 tokens，均非真实模型耗费。
 - 开销与限制：普通 commit/ref/PR 每步约增加 6 次短 SQL；快照多遍历工作区并编码压缩一次，峰值内存随改动量增长，未做生产压测。硬崩溃最多丢失最近约 5 分钟未保存改动（保存故障另记日志），耗时保守计到租约截止；正常 stop 等待最终快照。新 issue 核对最近 100 个，评论完整分页。未运行真实 GitHub/模型、真实 Webhook、跨物理机器或 OS kill 演练；未修改进程角色拆分相关文件。
 - 收尾检查：全量后 `npm run format` 检查 201 个文件，无需修改；`npm run check:docs` 36 个 Markdown 文件、306 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。
+
+**ARCH-2-B**（2026-11-15，基于 `e4bc57c`，分支 `arch/p2-b-teams`，提交 `b0e888a`，合并 `c126221`）
+
+- 迁移 `019_teams.sql`：`teams`、`team_members`（admin／member）、`team_repositories`；`memories` 加 `team_id`、`level`（must／should／info，默认 should），`repository_id` 与 `team_id` 恰好一个非空；`rule_overrides`（停用或改级别，理由必填，仓库移出团队时级联删除，触发器核对规则属于该团队）；导入预览可归属团队。
+- 管理：服务管理员建团队、设仓库和团队管理员；团队管理员管成员与团队规则（编辑、确认、忽略、替代、停用、Markdown 导入）。项目维护者在规则详情里对团队规则做本项目覆盖，设置和取消都要写理由并记审计。项目 ACTIVE 规则可提升为所属团队的候选，团队管理员批准时原项目规则在同一事务转为已替代。
+- 这一批不改取规则：Review、Reply、健康检查、开发任务、提取仍只取项目规则，有专门断言。**提升批准后原项目规则已替代、团队规则尚未进入审查**，2-C 合并前不能部署。
+- 验证（实施者）：`npm test` 179 通过、0 失败、104 跳过；`npm run test:db` 143/143；页面在 1600／1024 宽看过 30 个团队、长团队名、0 仓库、一个仓库属于 5 个团队、长覆盖理由、三种级别，实际操作了提升→改级别→批准、覆盖设置与取消。
+- 验收（合并后）：`node --test dist/test/admin/*.test.js dist/test/memory/*.test.js dist/test/review/*.test.js dist/test/reply/*.test.js dist/test/github/*.test.js` 91 通过、22 跳过；`node --env-file=.env --test dist/test/admin/database-*.test.js dist/test/memory/database-*.test.js` 31/31。看过团队列表、规则列表、覆盖详情截图。
+- 遗留：选了仓库后，规则列表里的团队规则仍显示团队级别，没有标出本项目的覆盖（详情里有），放进 2-C。
+
