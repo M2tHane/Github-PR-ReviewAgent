@@ -300,7 +300,7 @@ Reply 与健康检查仍按词重叠计分排序后取前 10 条（`retrieve`）
 
 项目规则的统计限定本仓库；团队规则按规则 ID 汇总团队各仓库的使用，包括仓库维护者看到的继承规则列表。版本和任务保留期口径相同。
 
-合并后的规则提取任务在“无人类讨论”提前结束之前执行修复推断，不调用模型：取该 PR 仍为 OPEN / STILL_VALID / NEEDS_CLARIFICATION、带路径和 RIGHT 侧行号且不带 `presentation.repeatOf` 的意见，按意见的 head SHA 到实际合并提交调用 GitHub compare。该文件 patch 的旧侧行范围与意见行号 ±3 行相交时，记录 `inferred_fixed_at` 与 `inferred_fixed_sha`。不改变意见状态，也不自动停用规则。compare 失败记录日志，继续规则提取；没有 patch、纯新增的零旧侧范围及 compare 未返回的文件不推断。GitHub compare 文件列表最多 300 项，因此“未推断”不能说明问题仍然存在。
+合并后的规则提取任务在“无人类讨论”提前结束之前执行修复推断，不调用模型：取该 PR 仍为 OPEN / STILL_VALID / NEEDS_CLARIFICATION、带路径和 RIGHT 侧行号且不带 `presentation.repeatOf` 的意见，按意见的 head SHA 到 PR 合并前最后的 head 调用 GitHub compare（不用合并提交：squash／rebase 合并的提交不以意见的 head 为祖先，行号对不上）；只有 compare 状态为 ahead（意见的 head 是祖先）才推断，强推过的不推断。该文件 patch 的旧侧行范围（纯新增按插入位置）与意见行号 ±3 行相交时，记录 `inferred_fixed_at` 与 `inferred_fixed_sha`。不改变意见状态，也不自动停用规则。compare 失败记录日志，继续规则提取；没有 patch 及 compare 未返回的文件不推断。GitHub compare 文件列表最多 300 项，因此“未推断”不能说明问题仍然存在。
 
 管理页“需要复查”队列仅显示当前用户可管理的 ACTIVE 规则；存在候选更新时按仍生效的版本检查。原因在请求时计算，阈值集中在 `RULE_REVIEW`，没有定时任务或配置项：
 

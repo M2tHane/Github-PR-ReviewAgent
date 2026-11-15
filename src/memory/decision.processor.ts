@@ -202,7 +202,7 @@ export function createDecisionProcessor(
       database.getDecisionClues(job.repositoryId, job.prNumber),
     ]);
     if (!pr.merged || pr.merge_commit_sha !== job.headSha) throw new Error("merged snapshot 与 Job 不一致");
-    await inferMergedFixes(database.pool, github, token, job);
+    await inferMergedFixes(database.pool, github, token, job, pr.head.sha);
     const discussions = [...comments, ...reviews, ...reviewComments].map((entry) => ({
       id: entry.id,
       url: entry.html_url,

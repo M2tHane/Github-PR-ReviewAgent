@@ -547,7 +547,13 @@ test("提取器只带相关生效规则，逐条丢弃并保存替代、例外�
 
     const github = {
       installationToken: async () => "token",
-      getPullRequest: async () => ({ merged: true, merge_commit_sha: headSha, title: "变更标题", body: "变更说明" }),
+      getPullRequest: async () => ({
+        merged: true,
+        merge_commit_sha: headSha,
+        head: { sha: headSha },
+        title: "变更标题",
+        body: "变更说明",
+      }),
       getFiles: async () => [{ filename: "a.ts" }],
       getConversationComments: async () => [
         {

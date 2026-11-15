@@ -521,11 +521,12 @@ export class GitHubClient {
   }
 
   // compare 的文件变化只在第一页返回，最多 300 个文件；缺失的 patch 不作为修复证据。
+  // status 为 ahead 时 base 是 head 的祖先，patch 的旧侧行号就是 base 上的行号。
   async compareFiles(token: string, repository: string, base: string, head: string) {
-    const result = await this.request<{
+    return this.request<{
+      status: "ahead" | "behind" | "diverged" | "identical";
       files: Array<{ filename: string; previous_filename?: string; patch?: string }>;
     }>(token, `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`);
-    return result.files;
   }
 
   async defaultBranchTree(token: string, repository: string) {

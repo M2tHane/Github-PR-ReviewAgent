@@ -17,15 +17,19 @@ test("合并 compare 读取文件 patch，默认分支 recursive tree 保留截�
     requests.push(path);
     assert.equal((init!.headers as Record<string, string>).authorization, "Bearer installation-token");
     if (path === "/repos/o/r/compare/old...merged?per_page=1")
-      return Response.json({ files: [{ filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" }] });
+      return Response.json({
+        status: "ahead",
+        files: [{ filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" }],
+      });
     if (path === "/repos/o/r") return Response.json({ default_branch: "release/main" });
     assert.equal(path, "/repos/o/r/git/trees/release%2Fmain?recursive=1");
     return Response.json({ sha: "tree", truncated: true, tree: [{ path: "src/a.ts", type: "blob" }] });
   });
   const client = new GitHubClient("1", "");
-  assert.deepEqual(await client.compareFiles("installation-token", "o/r", "old", "merged"), [
-    { filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" },
-  ]);
+  assert.deepEqual(await client.compareFiles("installation-token", "o/r", "old", "merged"), {
+    status: "ahead",
+    files: [{ filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" }],
+  });
   assert.equal((await client.defaultBranchTree("installation-token", "o/r")).truncated, true);
   assert.equal(requests.length, 3);
 });

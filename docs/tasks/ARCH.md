@@ -225,6 +225,7 @@
 - 页面：按 `work/ui-review/preview.mjs` 的方式，用临时 schema＋真实管理 handler＋替身 GitHub，ego-browser 检查 1600／1024 宽的 0 条、30 条、三原因、长中文／无空格英文名称、长团队名和详情统计；30 条分页为 20＋10。实际填写理由保存成功，数据库记录 `memory_id=71e7438b-68e2-400d-80ef-907fa0050900`、reason=noisy、actor=preview，另外两项原因仍显示。截图在被忽略的 `work/ui-review/review-*.png`；预览进程和 schema 已删除。
 - 开销：合并推断每次执行增加最多 D 次 compare（D 为待推断意见不同 head SHA 数，无意见则 0）；取树缓存失效时每仓库 2 次 GitHub 读取，另按 installation 签发 token，同请求共用，缓存命中无新增 GitHub 读取；同进程相同仓库并发刷新共用请求，最多同时读取 4 个仓库。预览 30 条／2 仓库实测打开前取树 0 次，首次 2 次取树方法调用＋1 次 token，重复打开仍为 2／1；缓存命中的真实管理 API 连续 10 次成功响应为 6.34–34.59 ms、28,148 字节（GitHub 为替身、没有生产压测）。内存随所查仓库完整路径数增长，未测大仓库内存峰值。
 - 限制：GitHub compare 最多返回 300 个文件，二进制或缺失 patch 不推断；改动附近代码只能说明疑似修复。没有真实 Webhook、真实 GitHub／模型发布输入；本项没有真实 delivery、Review 或 reply URL，没有模型角色运行及 token 消耗。未部署、未 push，不把整个阶段 2 标为完成。
+- 合并时主脑修正（2026-11-15）：compare 原来以合并提交为目标，squash／rebase 合并时合并提交不以意见的 head 为祖先，旧侧行号是 PR 基点的行号，推断会错位。改为和 PR 合并前最后的 head 比较，只在 compare 状态为 ahead 时推断（强推过的跳过）；纯新增块按插入位置计入 ±3（常见的"补一个判断"）。`node --env-file=.env --test dist/test/memory/*.test.js dist/test/github/client.test.js dist/test/review/database-crash.test.js` 76/76。
 - 新增拒绝路径：暂不处理请求缺少有效四类 reason 或 note 为空返回 422，依据任务书的四类原因和“理由必填”；登录、CSRF、项目／团队管理权限沿用现有 401／403／404。compare 与文件树网络失败不会新增用户拒绝规则。
 
 - 收尾检查：`npm run format` 检查 248 个文件、格式化 10 个本次改动文件；`npm run check:docs` 36 个 Markdown 文件／310 个本地链接与锚点通过；`npm run check:format`、`git diff --check` 通过。

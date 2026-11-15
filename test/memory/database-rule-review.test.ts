@@ -280,22 +280,24 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
       s.finding(job, memory, "OPEN", { line: null }),
     ]);
     const failed = await s.finding(job, memory, "OPEN", { head: "fail-head" });
+    const forcePushed = await s.finding(job, memory, "OPEN", { head: "force-pushed-head" });
     let calls = 0;
     const github = {
       installationToken: async () => "token",
-      getPullRequest: async () => ({ merged: true, merge_commit_sha: "merged" }),
+      getPullRequest: async () => ({ merged: true, merge_commit_sha: "merged", head: { sha: "final" } }),
       getFiles: async () => [],
       getConversationComments: async () => [],
       getReviews: async () => [],
       getReviewComments: async () => [],
-      compareFiles: async (_t: string, _r: string, head: string, merge: string) => {
-        assert.equal(merge, "merged");
+      compareFiles: async (_t: string, _r: string, head: string, target: string) => {
+        assert.equal(target, "final", "和 PR 最后的 head 比较，不用合并提交");
         calls++;
         if (head === "fail-head") throw new Error("compare unavailable");
-        return [
+        const files = [
           { filename: "src/a.ts", patch: "@@ -18,4 +18,4 @@\n-a\n+b" },
           { filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@\n-a\n+b" },
         ];
+        return { status: head === "force-pushed-head" ? "diverged" : "ahead", files };
       },
     } as unknown as GitHubClient;
     const log = t.mock.method(console, "error", () => {});
@@ -303,14 +305,14 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
       throw new Error("不能启动模型");
     });
     await process({ ...job, headSha: "merged", jobType: "DECISION_EXTRACT" });
-    assert.equal(calls, 2, "同一个 finding head 只 compare 一次");
+    assert.equal(calls, 3, "同一个 finding head 只 compare 一次");
     const rows = (await database.pool.query("SELECT * FROM review_findings WHERE job_id=$1", [job.id])).rows;
     for (const id of [yes, renamed]) {
-      assert.equal(rows.find((row) => row.id === id).inferred_fixed_sha, "merged");
+      assert.equal(rows.find((row) => row.id === id).inferred_fixed_sha, "final");
       assert.ok(rows.find((row) => row.id === id).inferred_fixed_at);
     }
     assert.equal(rows.find((row) => row.id === yes).status, "OPEN");
-    for (const id of [no, failed, ...skipped]) assert.equal(rows.find((row) => row.id === id).inferred_fixed_at, null);
+    for (const id of [no, failed, forcePushed, ...skipped]) assert.equal(rows.find((row) => row.id === id).inferred_fixed_at, null);
     assert.equal(log.mock.callCount(), 1);
     const timestamp = rows.find((row) => row.id === yes).inferred_fixed_at;
     await process({ ...job, headSha: "merged", jobType: "DECISION_EXTRACT" });
