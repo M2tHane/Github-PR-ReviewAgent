@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { gzipSync } from "node:zlib";
+import type { Pool, PoolClient } from "pg";
+import { DevelopmentSideEffects } from "../../src/development/side-effects.js";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { createHmac, randomUUID, randomBytes } from "node:crypto";
@@ -8,6 +11,7 @@ import { PersistentRunner, TaskLeaseLostError } from "../../src/jobs/runner.js";
 import { Database } from "../../src/persistence/database.js";
 import { useTestDatabase, waitFor } from "../helpers/database.js";
 import { DevelopmentStore, developmentSource } from "../../src/development/store.js";
+import { pullRequestThread } from "../../src/development/revisions.js";
 import { snapshotRecorder } from "../../src/development/snapshots.js";
 import { createDevelopmentProcessor } from "../../src/development/processor.js";
 import { applySnapshot, collectChanges, collectSnapshot, repositoryFiles } from "../../src/development/changes.js";
@@ -552,6 +556,7 @@ test("PR 回调先于创建响应仍免审查；后续新提交也免审查，�
   const { server } = createApp(s.config, s.database);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const addr = server.address() as { port: number };
+  let callback: Promise<void> | undefined;
   try {
     const task = await s.enqueue();
     s.github.createDevelopmentPullRequest = async () => {
@@ -571,7 +576,7 @@ test("PR 回调先于创建响应仍免审查；后续新提交也免审查，�
       };
       const body = JSON.stringify(payload),
         signature = "sha256=" + createHmac("sha256", s.config.webhookSecret).update(body).digest("hex");
-      const response = await fetch(`http://127.0.0.1:${addr.port}/github/webhook`, {
+      callback = fetch(`http://127.0.0.1:${addr.port}/github/webhook`, {
         method: "POST",
         body,
         headers: {
@@ -579,12 +584,24 @@ test("PR 回调先于创建响应仍免审查；后续新提交也免审查，�
           "x-github-delivery": randomUUID(),
           "x-hub-signature-256": signature,
         },
+      }).then(async (response) => {
+        assert.equal(response.status, 200);
+        assert.equal(((await response.json()) as any).reason, "development_pull_request");
       });
-      assert.equal(response.status, 200);
-      assert.equal(((await response.json()) as any).reason, "development_pull_request");
+      // 回调已到，但它绑定 PR 号的 UPDATE 会等待创建请求释放任务锁；GitHub 不等 Webhook 响应。
+      await waitFor(async () =>
+        Boolean(
+          (
+            await s.database.pool.query(
+              "SELECT 1 FROM pg_stat_activity WHERE query LIKE 'UPDATE development_tasks SET pr_number=$2%' AND wait_event_type='Lock'",
+            )
+          ).rowCount,
+        ),
+      );
       return { number: 42, head: { sha: s.head } };
     };
     await s.process()(task, new AbortController().signal);
+    await callback;
     assert.equal(await s.database.isDevelopmentPullRequest(s.repoId, 42, task.branch, "e".repeat(40)), true);
     assert.equal(await s.database.isDevelopmentPullRequest(s.repoId, 43, "bot/development/fake", s.head), false);
     assert.equal((await s.database.pool.query("SELECT 1 FROM jobs WHERE repository_id=$1", [s.repoId])).rowCount, 0);
@@ -2058,15 +2075,15 @@ test("管理页和 issue 标签派的任务没有企微 Bot，也由执行器领
   }
 });
 
-// 接手用另一个真实执行器，初次执行不再续租；过期的 owner 不能写回。
-async function expireDevelopment(s: Awaited<ReturnType<typeof setup>>, task: DevelopmentTask): Promise<never> {
-  await s.database.pool.query(
-    "UPDATE development_tasks SET lease_expires_at=now()-interval '1 millisecond' WHERE id=$1",
-    [task.id],
-  );
+// 请求替身只抛出中断；等原事务退出后再过期租约，避免在持锁请求内用第二个连接 UPDATE 自锁。
+async function interruptDevelopment(): Promise<never> {
   throw new TaskLeaseLostError("模拟 worker 崩溃");
 }
 async function reclaimDevelopment(s: Awaited<ReturnType<typeof setup>>, id: string, agent: typeof runAgentSession) {
+  await s.database.pool.query(
+    "UPDATE development_tasks SET lease_expires_at=now()-interval '1 millisecond' WHERE id=$1 AND status IN ('running','publishing')",
+    [id],
+  );
   const runner = new PersistentRunner(developmentSource(s.store), s.process(agent), 10, {
     leaseMs: 5000,
     heartbeatMs: 100,
@@ -2101,7 +2118,7 @@ for (const stage of ["agent", "proposal", "commit", "branch", "pr"] as const) {
         await checkpoint(task, fields);
         if (stage === "proposal" && fields.proposal && !interrupted) {
           interrupted = true;
-          await expireDevelopment(s, task);
+          await interruptDevelopment();
         }
       };
       const sideEffects = s.store.sideEffects.bind(s.store);
@@ -2112,7 +2129,7 @@ for (const stage of ["agent", "proposal", "commit", "branch", "pr"] as const) {
           const result = await once(key, options);
           if (stage === key && !interrupted) {
             interrupted = true;
-            await expireDevelopment(s, task);
+            await interruptDevelopment();
           }
           return result;
         };
@@ -2121,10 +2138,10 @@ for (const stage of ["agent", "proposal", "commit", "branch", "pr"] as const) {
       const agent: typeof runAgentSession = async (input) => {
         const result = await s.agent()(input);
         if (stage === "agent") {
-          // 代表五分钟定时保存已落盘；后续硬中断的 finally 不能覆盖它。
+          // 代表五分钟定时保存已落盘，之后执行中断。
           const files = await repositoryFiles(input.root, s.sha, input.signal!);
           await s.store.saveSnapshot(task, s.sha, await collectSnapshot(input.root, s.sha, files, input.signal!));
-          await expireDevelopment(s, task);
+          await interruptDevelopment();
         }
         return result;
       };
@@ -2163,7 +2180,7 @@ for (const stage of ["branch", "pr"] as const) {
         const create = s.github.createDevelopmentBranch;
         s.github.createDevelopmentBranch = async () => {
           await create();
-          return expireDevelopment(s, task);
+          return interruptDevelopment();
         };
         s.github.developmentSnapshot = async (..._args: unknown[]) => ({ sha: s.head, tree: "b".repeat(40) });
         // 首次工作区仍固定在真正的基线。
@@ -2173,7 +2190,7 @@ for (const stage of ["branch", "pr"] as const) {
         const create = s.github.createDevelopmentPullRequest;
         s.github.createDevelopmentPullRequest = async (...args) => {
           await create(...args);
-          return expireDevelopment(s, task);
+          return interruptDevelopment();
         };
         s.github.findDevelopmentPullRequest = async () =>
           s.calls.includes("pr")
@@ -2256,7 +2273,7 @@ test("revise 推进分支生效、回复前崩溃：不重建工作区，分支�
     const push = s.github.updateDevelopmentBranch;
     s.github.updateDevelopmentBranch = async (...args) => {
       await push(...args);
-      return expireDevelopment(s, task);
+      return interruptDevelopment();
     };
     await assert.rejects(
       s.process(revisionAgent({ action: "change", reply: "已修改", commitMessage: "fix: 修改常量" }))(
@@ -2295,13 +2312,13 @@ for (const stage of ["issue", "discuss", "notice"] as const) {
         const create = s.github.createIssue;
         s.github.createIssue = async (...args) => {
           await create(...args);
-          return expireDevelopment(s, task);
+          return interruptDevelopment();
         };
       } else {
         const create = s.github.createIssueComment;
         s.github.createIssueComment = async (...args) => {
           await create(...args);
-          return expireDevelopment(s, task);
+          return interruptDevelopment();
         };
       }
       await assert.rejects(
@@ -2331,7 +2348,7 @@ test("快照不套发布文件数/大小限制，gzip 超过 20 MB 清除旧快�
     assert.equal(changes.length, 31);
     assert.equal(await s.store.saveSnapshot(task, s.sha, changes), false);
     assert.equal(await s.store.loadSnapshot(task.id), undefined);
-    await assert.rejects(expireDevelopment(s, task));
+    await assert.rejects(interruptDevelopment());
     const row = await reclaimDevelopment(s, task.id, async (input) => {
       assert.equal((input.prompt as any).resume, undefined);
       return s.agent()(input);
@@ -2399,7 +2416,10 @@ test("五分钟定时快照、最终快照串行落盘；失去执行权的旧 w
     await s.store.release(task);
     const successor = (await s.store.claim())!;
     await s.store.saveSnapshot(successor, s.sha, [{ path: "new.txt", content: "bmV3", mode: "100644" }]);
-    await s.store.saveSnapshot(task, s.sha, [{ path: "stale.txt", content: "b2xk", mode: "100644" }]);
+    await assert.rejects(
+      s.store.saveSnapshot(task, s.sha, [{ path: "stale.txt", content: "b2xk", mode: "100644" }]),
+      TaskLeaseLostError,
+    );
     assert.equal((await s.store.loadSnapshot(task.id))!.changes[0]!.path, "new.txt");
     await assert.rejects(
       s.store.sideEffects(task).once("stale-comment", {
@@ -2496,7 +2516,7 @@ test("commit 请求成功但台账未落盘：允许孤立提交重做，只有�
     const referenced: string[] = [];
     s.github.createDevelopmentCommit = async () => {
       commits++;
-      if (commits === 1) return expireDevelopment(s, task);
+      if (commits === 1) return interruptDevelopment();
       return s.head;
     };
     s.github.createDevelopmentBranch = async (...args: unknown[]) => {
@@ -2530,7 +2550,7 @@ for (const stage of ["proposal", "commit", "reply"] as const) {
         await checkpoint(current, fields);
         if (!interrupted && stage === "proposal" && fields.proposal) {
           interrupted = true;
-          await expireDevelopment(s, current);
+          await interruptDevelopment();
         }
       };
       const sideEffects = s.store.sideEffects.bind(s.store);
@@ -2541,7 +2561,7 @@ for (const stage of ["proposal", "commit", "reply"] as const) {
           const result = await once(key, options);
           if (!interrupted && stage === "commit" && key === "commit") {
             interrupted = true;
-            await expireDevelopment(s, current);
+            await interruptDevelopment();
           }
           return result;
         };
@@ -2551,7 +2571,7 @@ for (const stage of ["proposal", "commit", "reply"] as const) {
         const comment = s.github.createIssueComment;
         s.github.createIssueComment = async (...args) => {
           await comment(...args);
-          return expireDevelopment(s, task);
+          return interruptDevelopment();
         };
       }
       await assert.rejects(
@@ -2565,7 +2585,7 @@ for (const stage of ["proposal", "commit", "reply"] as const) {
       s.prComments.push({
         id: 8302,
         body: "期间又发的新问题",
-        created_at: new Date(new Date(observed).getTime() + 1000).toISOString(),
+        created_at: observed,
         user: { login: "carol", type: "User" },
       });
       const row = await reclaimDevelopment(s, task.id, async () => {
@@ -2576,8 +2596,362 @@ for (const stage of ["proposal", "commit", "reply"] as const) {
       assert.equal(row.last_revision_comment_at.toISOString(), observed);
       assert.equal(s.pushes.length, 1);
       assert.equal(s.issueComments.length, 1);
+      assert.deepEqual(row.last_revision_comment_ids, ["comment:8301"]);
+      await prComment(s, 8302, "carol", "期间又发的新问题");
+      const prompts: any[] = [];
+      await s.process(revisionAgent({ action: "none" }, prompts))(
+        (await s.store.claim())!,
+        new AbortController().signal,
+      );
+      assert.deepEqual(
+        prompts[0].pullRequest.comments.map((c: any) => c.new),
+        [false, true],
+      );
     } finally {
       await s.cleanup();
     }
   });
 }
+
+// 等真实时钟越过租约；不能用 UPDATE 过期，因为被测事务必须持有任务行锁。
+async function shortLease(s: Awaited<ReturnType<typeof setup>>, task: DevelopmentTask) {
+  await s.database.pool.query(
+    "UPDATE development_tasks SET lease_expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+    [task.id],
+  );
+}
+async function leaseElapsed(s: Awaited<ReturnType<typeof setup>>, task: DevelopmentTask) {
+  await waitFor(
+    async () =>
+      (
+        await s.database.pool.query(
+          "SELECT lease_expires_at<clock_timestamp() expired FROM development_tasks WHERE id=$1",
+          [task.id],
+        )
+      ).rows[0].expired,
+  );
+}
+
+// 同时包装 pool.query 与事务 client.query，卡在执行权检查之后、记账 SQL 发出之前。
+function pauseLedgerDone(pool: Pool) {
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const wrapQuery = (target: Pool | PoolClient) => async (sql: string, args?: unknown[]) => {
+    if (sql.startsWith("UPDATE side_effects SET status='done'") && args?.[1] === JSON.stringify({ sha: "old" })) {
+      entered.resolve();
+      await released.promise;
+    }
+    return target.query(sql, args);
+  };
+  const wrapped = {
+    query: wrapQuery(pool),
+    connect: async () => {
+      const client = await pool.connect();
+      return { query: wrapQuery(client), release: () => client.release() };
+    },
+  } as unknown as Pool;
+  return { pool: wrapped, entered: entered.promise, release: released.resolve };
+}
+
+test("审查回归 1：旧 owner 请求在途时接手跳过，评论只创建一次", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  let old: Promise<unknown> | undefined;
+  try {
+    const task = await s.enqueue();
+    await shortLease(s, task);
+    let writes = 0;
+    const options = {
+      kind: "issue_comment",
+      verify: async () => (writes ? { id: writes } : undefined),
+      perform: async () => {
+        entered.resolve();
+        await released.promise;
+        return { id: ++writes };
+      },
+    };
+    old = s.store
+      .sideEffects(task)
+      .once("comment", options)
+      .catch((error) => error);
+    await entered.promise;
+    await leaseElapsed(s, task);
+    const overlapping = await s.store.claim();
+    if (overlapping)
+      await s.store.sideEffects(overlapping).once("comment", { ...options, perform: async () => ({ id: ++writes }) });
+    released.resolve();
+    const result = await old;
+    assert.equal(overlapping, undefined, "在途请求锁住任务，新 owner 不能领取");
+    assert.deepEqual(result, { id: 1 });
+    const next = (await s.store.claim())!;
+    assert.notEqual(next.owner_token, task.owner_token);
+    assert.deepEqual(await s.store.sideEffects(next).once("comment", options), { id: 1 });
+    assert.equal(writes, 1);
+  } finally {
+    released.resolve();
+    await old;
+    await s.cleanup();
+  }
+});
+
+test("审查回归 2：检查通过后暂停记账时接手跳过，done 结果不被旧 owner 覆盖", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  const gate = pauseLedgerDone(s.database.pool);
+  let old: Promise<unknown> | undefined;
+  try {
+    const task = await s.enqueue();
+    await shortLease(s, task);
+    old = new DevelopmentSideEffects(gate.pool, task)
+      .once("commit", {
+        kind: "commit",
+        verify: async () => undefined,
+        perform: async () => ({ sha: "old" }),
+      })
+      .catch((error) => error);
+    await gate.entered;
+    await leaseElapsed(s, task);
+    const overlapping = await s.store.claim();
+    if (overlapping)
+      await s.store.sideEffects(overlapping).once("commit", {
+        kind: "commit",
+        verify: async () => undefined,
+        perform: async () => ({ sha: "new" }),
+      });
+    gate.release();
+    const result = await old;
+    assert.equal(overlapping, undefined, "台账写事务完成前不能接手");
+    assert.deepEqual(result, { sha: "old" });
+    const next = (await s.store.claim())!;
+    assert.deepEqual(
+      await s.store.sideEffects(next).once("commit", {
+        kind: "commit",
+        verify: async () => undefined,
+        perform: async () => {
+          throw new Error("不能重复创建提交");
+        },
+      }),
+      { sha: "old" },
+    );
+    await assert.rejects(
+      s.store.sideEffects(task).once("commit", {
+        kind: "commit",
+        verify: async () => undefined,
+        perform: async () => ({ sha: "stale" }),
+      }),
+      TaskLeaseLostError,
+    );
+  } finally {
+    gate.release();
+    await old;
+    await s.cleanup();
+  }
+});
+
+test("审查回归 3：旧快照 SQL 等待行锁时接手跳过，恢复后保存的新快照不被覆盖", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  let locker: PoolClient | undefined;
+  let pending: Promise<unknown> | undefined;
+  const changes = (path: string) => [{ path, content: "dGVzdA==", mode: "100644" }];
+  try {
+    const task = await s.enqueue();
+    await s.store.saveSnapshot(task, s.sha, changes("initial"));
+    await shortLease(s, task);
+    locker = await s.database.pool.connect();
+    await locker.query("BEGIN");
+    await locker.query("SELECT * FROM development_snapshots WHERE task_id=$1 FOR UPDATE", [task.id]);
+    pending = s.store.saveSnapshot(task, s.sha, changes("stale")).catch((error) => error);
+    await waitFor(async () =>
+      Boolean(
+        (
+          await s.database.pool.query(
+            "SELECT 1 FROM pg_stat_activity WHERE query LIKE 'INSERT INTO development_snapshots%' AND wait_event_type='Lock'",
+          )
+        ).rowCount,
+      ),
+    );
+    await leaseElapsed(s, task);
+    const overlapping = await s.store.claim();
+    if (overlapping)
+      await locker.query("UPDATE development_snapshots SET changes=$2 WHERE task_id=$1", [
+        task.id,
+        gzipSync(JSON.stringify({ changes: changes("new") })),
+      ]);
+    await locker.query("COMMIT");
+    const saved = await pending;
+    assert.equal(overlapping, undefined, "快照 SQL 在途期间不能交接执行权");
+    assert.equal(saved, true);
+    const next = (await s.store.claim())!;
+    await s.store.saveSnapshot(next, s.sha, changes("new"));
+    await assert.rejects(s.store.saveSnapshot(task, s.sha, changes("stale")), TaskLeaseLostError);
+    assert.equal((await s.store.loadSnapshot(task.id))!.changes[0]!.path, "new");
+  } finally {
+    if (locker) {
+      await locker.query("ROLLBACK");
+      locker.release();
+    }
+    await pending;
+    await s.cleanup();
+  }
+});
+
+test("审查回归 4：pending issue 恢复取 token 失败回队列，后续核对不重建 issue", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    const create = s.github.createIssue;
+    s.github.createIssue = async (...args) => {
+      await create(...args);
+      throw new TaskLeaseLostError("模拟 worker 崩溃");
+    };
+    await assert.rejects(
+      s.process(issueAgent(s, [issueAnswer]))(task, new AbortController().signal),
+      TaskLeaseLostError,
+    );
+    await s.database.pool.query(
+      "UPDATE development_tasks SET lease_expires_at=now()-interval '1 millisecond' WHERE id=$1",
+      [task.id],
+    );
+    const next = (await s.store.claim())!;
+    const token = s.github.installationToken;
+    s.github.installationToken = async () => {
+      throw new Error("network unavailable");
+    };
+    // 模拟 runner：只有处理器抛出错误才调用 fail；直接 finish(failed) 的旧实现会在断言中暴露。
+    await s
+      .process()(next, new AbortController().signal)
+      .catch(() => s.store.fail(next));
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "queued");
+    assert.equal(row.attempt, 3);
+    assert.equal(
+      (await s.database.pool.query("SELECT status FROM side_effects WHERE key=$1", [`${task.id}:issue`])).rows[0]
+        .status,
+      "pending",
+    );
+    s.github.installationToken = token;
+    const recovered = (await s.store.claim())!;
+    await s.process(async () => {
+      throw new Error("不能重跑 Agent");
+    })(recovered, new AbortController().signal);
+    assert.equal((await s.getTask(task.id)).status, "discussing");
+    assert.equal(s.issues.length, 1);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("审查回归 5：同一 GitHub 秒内后到的评论为 new，已处理的评论不重复", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const origin = await s.enqueue();
+    await s.process()(origin, new AbortController().signal);
+    s.pull.ref = origin.branch;
+    const prompts: any[] = [];
+    await prComment(s, 9901, "carol", "第一个问题");
+    s.prComments[0].created_at = "2026-11-15T01:00:00Z";
+    await s.process(revisionAgent({ action: "reply", reply: "答复" }, prompts))(
+      (await s.store.claim())!,
+      new AbortController().signal,
+    );
+    await prComment(s, 9902, "carol", "后到的新问题");
+    s.prComments[1].created_at = "2026-11-15T01:00:00Z";
+    await s.process(revisionAgent({ action: "reply", reply: "答复" }, prompts))(
+      (await s.store.claim())!,
+      new AbortController().signal,
+    );
+    assert.deepEqual(
+      prompts[1].pullRequest.comments.map((c: any) => c.new),
+      [false, true],
+    );
+  } finally {
+    await s.cleanup();
+  }
+});
+
+for (const kind of ["discuss", "notice", "revise"] as const) {
+  test(`发布恢复准备失败：${kind} 有 pending/done 台账时重排，耗尽才 uncertain`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    try {
+      const origin = await s.enqueue();
+      if (kind === "revise") {
+        await s.process()(origin, new AbortController().signal);
+        s.pull.ref = origin.branch;
+        await prComment(s, 9951, "carol", "请解释");
+      } else {
+        await s.process(issueAgent(s, [issueAnswer]))(origin, new AbortController().signal);
+        await comment(s, 9951, "bob", kind === "notice" ? "开始" : "请解释");
+      }
+      let task = (await s.store.claim())!;
+      assert.equal(task.kind, kind);
+      const create = s.github.createIssueComment;
+      s.github.createIssueComment = async (...args) => {
+        await create(...args);
+        return interruptDevelopment();
+      };
+      await assert.rejects(
+        s.process(kind === "revise" ? revisionAgent({ action: "reply", reply: "答复" }) : issueAgent(s, []))(
+          task,
+          new AbortController().signal,
+        ),
+        TaskLeaseLostError,
+      );
+      await s.store.release(task);
+      // 即使状态回到 running，也须从持久化台账辨认发布阶段。
+      task = (await s.store.claim())!;
+      await s.database.pool.query("UPDATE development_tasks SET status='running' WHERE id=$1", [task.id]);
+      task.status = "running";
+      s.github.installationToken = async () => {
+        throw new Error("token network unavailable");
+      };
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        if (attempt > 1) task = (await s.store.claim())!;
+        await assert.rejects(s.process()(task, new AbortController().signal), /token network unavailable/);
+        await s.store.fail(task);
+        const row = await s.getTask(task.id);
+        assert.equal(row.status, attempt === 4 ? "uncertain" : "queued");
+        assert.equal(row.attempt, attempt + 1);
+        if (attempt === 2)
+          await s.database.pool.query("UPDATE side_effects SET status='done',result='{}' WHERE task_id=$1", [task.id]);
+      }
+      assert.equal(s.issueComments.length, 1);
+    } finally {
+      await s.cleanup();
+    }
+  });
+}
+
+test("同秒评论身份包含种类：comment/review_comment/review 共用 ID 时仍各自处理", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    const at = "2026-11-15T01:00:00Z";
+    const user = { id: 2, login: "carol", type: "User" };
+    const github: Parameters<typeof pullRequestThread>[0] = {
+      getConversationComments: async () => [{ id: 7, body: "对话", created_at: at, user, html_url: "" }],
+      getReviewComments: async () => [
+        { id: 7, body: "代码行", created_at: at, user, path: "a.ts", line: 1, html_url: "", commit_id: s.sha },
+      ],
+      getReviews: async () => [
+        { id: 7, body: "review", submitted_at: at, user, html_url: "", commit_id: s.sha, state: "COMMENTED" },
+      ],
+    };
+    const result = await pullRequestThread(
+      github,
+      "token",
+      task,
+      { title: "PR", body: "" },
+      { at: new Date(at), ids: ["comment:7"] },
+    );
+    assert.deepEqual(
+      result.comments.map((c) => [c.kind, c.new]),
+      [
+        ["comment", false],
+        ["review_comment", true],
+        ["review", true],
+      ],
+    );
+  } finally {
+    await s.cleanup();
+  }
+});

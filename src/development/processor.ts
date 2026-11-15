@@ -130,7 +130,7 @@ function createDeveloper(
           checking = undefined;
         });
     }, 1000);
-    let publishing = false;
+    let publishing = task.status === "publishing";
     let token: string | undefined;
     const effects = store.sideEffects(task);
     // issue 里的后续：PR 建好贴链接；没建成把原因贴回去，issue 回到讨论中，可以再说“开始”。
@@ -196,6 +196,7 @@ function createDeveloper(
       return recorder;
     };
     try {
+      publishing ||= await effects.started();
       await record(1);
       access = await guard();
       token = await github.installationToken(Number(task.installation_id), signal);
@@ -607,6 +608,7 @@ function createDeveloper(
         await recorder?.finish("cancelled", parentSignal.reason.message);
         throw parentSignal.reason;
       }
+      publishing ||= await effects.started();
       // 请求已经开始写远端时只做只读核对，不重发创建请求。
       if (publishing && token && task.head_sha && !parentSignal.aborted) {
         try {

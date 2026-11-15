@@ -12,7 +12,7 @@ import { parseModelJson, requiredText, strictObject } from "../shared/model-json
 import { redactSecrets } from "../health/secrets.js";
 import { log } from "../logging.js";
 import { AgentSessionRecorder, AgentSessionRepository } from "../persistence/repositories/agent-session.repository.js";
-import { DevelopmentError, type DevelopmentTask } from "./types.js";
+import { DevelopmentError, type DevelopmentTask, type RevisionCursor } from "./types.js";
 import { enforceProtections, safePath, WRITING_LIMITS } from "./policy.js";
 import { applySnapshot, collectChanges, NoChangesError, repositoryFiles } from "./changes.js";
 import { createRuleBook } from "./rules.js";
@@ -46,6 +46,7 @@ export interface PullRequestThread {
   body: string;
   comments: Array<{
     kind: "comment" | "review_comment" | "review";
+    id: number;
     author: string;
     bot: boolean;
     createdAt: string;
@@ -63,7 +64,7 @@ export async function pullRequestThread(
   token: string,
   task: DevelopmentTask,
   pr: { title: string; body: string | null },
-  since: Date | undefined,
+  since: RevisionCursor | undefined,
 ): Promise<PullRequestThread> {
   const number = task.pr_number!;
   const [conversation, inline, reviews] = await Promise.all([
@@ -71,10 +72,18 @@ export async function pullRequestThread(
     github.getReviewComments(token, task.repository, number),
     github.getReviews(token, task.repository, number),
   ]);
+  const seen = new Set(since?.ids);
   const all: PullRequestThread["comments"] = [
-    ...conversation.map((c) => ({ kind: "comment" as const, user: c.user, createdAt: c.created_at, body: c.body })),
+    ...conversation.map((c) => ({
+      kind: "comment" as const,
+      id: c.id,
+      user: c.user,
+      createdAt: c.created_at,
+      body: c.body,
+    })),
     ...inline.map((c) => ({
       kind: "review_comment" as const,
+      id: c.id,
       user: c.user,
       createdAt: c.created_at,
       body: c.body,
@@ -83,14 +92,17 @@ export async function pullRequestThread(
     })),
     ...reviews
       .filter((r) => r.body?.trim() && r.submitted_at)
-      .map((r) => ({ kind: "review" as const, user: r.user, createdAt: r.submitted_at!, body: r.body })),
+      .map((r) => ({ kind: "review" as const, id: r.id, user: r.user, createdAt: r.submitted_at!, body: r.body })),
   ]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map(({ user, ...comment }) => ({
       ...comment,
       author: user.login,
       bot: user.type !== "User",
-      new: !since || new Date(comment.createdAt) > since,
+      new:
+        !since ||
+        new Date(comment.createdAt) > since.at ||
+        (new Date(comment.createdAt).getTime() === since.at.getTime() && !seen.has(`${comment.kind}:${comment.id}`)),
       body: redactSecrets(comment.body ?? ""),
     }));
   const comments: PullRequestThread["comments"] = [];
@@ -179,8 +191,9 @@ export function createRevisionProcessor(
         });
     }, 1000);
     let token: string | undefined;
-    let publishing = false;
+    let publishing = task.status === "publishing";
     const effects = store.sideEffects(task);
+    let branchConflict = false;
     let recorder: AgentSessionRecorder | undefined;
     const record = async (attempt: number) => {
       recorder = new AgentSessionRecorder(sessions, { developmentTaskId: task.id, role: "revision", attempt });
@@ -209,7 +222,8 @@ export function createRevisionProcessor(
           ),
       });
     try {
-      if (!task.proposal && (await store.laterRevision(task))) {
+      publishing ||= await effects.started();
+      if (!publishing && !task.proposal && (await store.laterRevision(task))) {
         await store.finish(task, "cancelled", "后面还有新评论，合并到下一次一起处理。", elapsed());
         await store.skipNotification(task);
         return;
@@ -229,16 +243,24 @@ export function createRevisionProcessor(
             tree: await github.developmentCommitTree(token!, task.repository, task.base_sha, signal),
           }
         : latestSnapshot;
-      const since = await store.lastRevisionAt(task);
+      const since = await store.lastRevisionCursor(task);
       const thread = await recorder!.step("comments", "读取 PR 评论", () =>
         pullRequestThread(github, token!, task, pr, since),
       );
-      const latestCommentAt =
-        task.last_revision_comment_at ??
-        thread.comments.reduce<Date | undefined>((latest, comment) => {
-          const date = new Date(comment.createdAt);
-          return !latest || date > latest ? date : latest;
-        }, since);
+      let observedCursor = since;
+      for (const comment of thread.comments) {
+        const at = new Date(comment.createdAt);
+        const identity = `${comment.kind}:${comment.id}`;
+        if (!observedCursor || at > observedCursor.at) observedCursor = { at, ids: [identity] };
+        else if (at.getTime() === observedCursor.at.getTime())
+          observedCursor = { at, ids: [...new Set([...observedCursor.ids, identity])] };
+      }
+      // proposal 只代表中断前看过的评论，接手期间新到的同秒评论留给下一轮。
+      let cursor = task.proposal
+        ? task.last_revision_comment_at
+          ? { at: task.last_revision_comment_at, ids: task.last_revision_comment_ids }
+          : undefined
+        : observedCursor;
       const originalRequest = await store.pullRequestOrigin(task);
       const ruleRows = (
         await store.pool.query(
@@ -306,7 +328,7 @@ export function createRevisionProcessor(
                   });
                 if (now?.sha === sha) return { sha };
                 if (error instanceof GitHubApiError && error.status === 422) {
-                  publishing = false;
+                  branchConflict = true;
                   throw new DevelopmentError("PR 分支在修改期间有新提交，这次的改动没有推上去；请再评论一次。");
                 }
                 throw error;
@@ -315,7 +337,7 @@ export function createRevisionProcessor(
           });
         });
         await current.step("reply", "在 PR 里回复", () => comment(`${commit.body}\n\n提交：${sha.slice(0, 7)}`));
-        await store.checkpoint(task, { lastRevisionCommentAt: latestCommentAt });
+        await store.checkpoint(task, { lastRevisionCommentAt: cursor?.at, lastRevisionCommentIds: cursor?.ids });
         await store.finish(task, "succeeded", `已按评论更新 PR #${task.pr_number}。`, elapsed());
         await current.finish("succeeded");
       };
@@ -357,6 +379,7 @@ export function createRevisionProcessor(
             let result = task.proposal as RevisionResult | null;
             if (result?.action === "change" && !savedSnapshot) result = null;
             if (!result) {
+              cursor = observedCursor;
               const snapshots = snapshotRecorder(store, task, root, snapshot.sha, files);
               let run: Awaited<ReturnType<typeof agent>>;
               try {
@@ -442,7 +465,8 @@ export function createRevisionProcessor(
               await store.checkpoint(task, {
                 proposal: result,
                 rules: rules.snapshot(),
-                lastRevisionCommentAt: latestCommentAt,
+                lastRevisionCommentAt: cursor?.at,
+                lastRevisionCommentIds: cursor?.ids,
               });
             }
             await guard();
@@ -455,7 +479,7 @@ export function createRevisionProcessor(
                   comment(redactSecrets((result as { reply: string }).reply), "reply"),
                 );
               }
-              await store.checkpoint(task, { lastRevisionCommentAt: latestCommentAt });
+              await store.checkpoint(task, { lastRevisionCommentAt: cursor?.at, lastRevisionCommentIds: cursor?.ids });
               await store.finish(
                 task,
                 "succeeded",
@@ -533,9 +557,12 @@ export function createRevisionProcessor(
         await recorder?.finish("cancelled", parentSignal.reason.message);
         throw parentSignal.reason;
       }
+      publishing ||= await effects.started();
       const cause = signal.aborted ? signal.reason : error;
       const manualPublishingFailure =
-        cause instanceof DevelopmentError && cause.status === "failed" && /人工核对/.test(cause.message);
+        cause instanceof DevelopmentError &&
+        cause.status === "failed" &&
+        (branchConflict || /人工核对/.test(cause.message));
       if (publishing && !manualPublishingFailure) {
         await recorder?.finish("failed", (cause as Error | undefined)?.message ?? "发布步骤中断，等待下一次接手");
         throw error;

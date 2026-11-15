@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { TaskLeaseLostError } from "../jobs/runner.js";
+import { withDevelopmentLease } from "./lease.js";
 import type { DevelopmentTask } from "./types.js";
 
 export interface SideEffectOptions<T> {
@@ -28,52 +28,49 @@ export class DevelopmentSideEffects {
     return row?.status === "done" ? (row.result as T) : undefined;
   }
 
-  private async assertOwner() {
-    const owned = await this.pool.query(
-      "SELECT 1 FROM development_tasks WHERE id=$1 AND owner_token=$2 AND (status IN ('running','publishing') OR status=$3) AND lease_expires_at>now()",
-      [this.task.id, this.task.owner_token, this.task.status],
+  async started(): Promise<boolean> {
+    return Boolean(
+      (await this.pool.query("SELECT 1 FROM side_effects WHERE task_id=$1 LIMIT 1", [this.task.id])).rowCount,
     );
-    if (!owned.rowCount) throw new TaskLeaseLostError("任务执行权已失效");
   }
 
   async once<T>(key: string, options: SideEffectOptions<T>): Promise<T> {
-    await this.assertOwner();
     const fullKey = `${this.task.id}:${key}`;
-    const existing = (
-      await this.pool.query<{ status: "pending" | "done"; result: T | null }>(
-        "SELECT status,result FROM side_effects WHERE key=$1",
-        [fullKey],
-      )
-    ).rows[0];
-    if (existing?.status === "done") return existing.result as T;
-    if (existing?.status === "pending") {
-      const verified = await options.verify();
-      if (verified !== undefined) {
-        await this.assertOwner();
-        await this.pool.query(
-          "UPDATE side_effects SET status='done',result=$2,updated_at=now() WHERE key=$1 AND status='pending'",
-          [fullKey, JSON.stringify(verified)],
-        );
-        return verified;
-      }
-    } else {
-      await this.pool.query(
+    // 意图先独立提交：进程在远端写入后硬退出，接手者仍然能看到 pending。
+    const inserted = await withDevelopmentLease(this.pool, this.task, async (client) =>
+      client.query(
         `INSERT INTO side_effects(key,task_id,kind,status,result,attempts)
-         VALUES($1,$2,$3,'pending',NULL,1)
-         ON CONFLICT(key) DO UPDATE SET attempts=side_effects.attempts+1,updated_at=now()`,
+         VALUES($1,$2,$3,'pending',NULL,0) ON CONFLICT(key) DO NOTHING`,
         [fullKey, this.task.id, options.kind],
-      );
-    }
-    if (existing?.status === "pending")
-      await this.pool.query("UPDATE side_effects SET attempts=attempts+1,updated_at=now() WHERE key=$1", [fullKey]);
-    // perform 抛错时故意保留 pending：响应可能在远端已生效，下次接手必须先核对。
-    await this.assertOwner();
-    const result = await options.perform();
-    await this.assertOwner();
-    await this.pool.query("UPDATE side_effects SET status='done',result=$2,updated_at=now() WHERE key=$1", [
-      fullKey,
-      JSON.stringify(result),
-    ]);
-    return result;
+      ),
+    );
+    const outcome = await withDevelopmentLease(this.pool, this.task, async (client) => {
+      const existing = (
+        await client.query<{ status: "pending" | "done"; result: T | null }>(
+          "SELECT status,result FROM side_effects WHERE key=$1 FOR UPDATE",
+          [fullKey],
+        )
+      ).rows[0];
+      if (existing.status === "done") return { ok: true as const, value: existing.result as T };
+      let value: T;
+      try {
+        const verified = inserted.rowCount ? undefined : await options.verify();
+        if (verified !== undefined) value = verified;
+        else {
+          await client.query("UPDATE side_effects SET attempts=attempts+1,updated_at=now() WHERE key=$1", [fullKey]);
+          value = await options.perform();
+        }
+      } catch (error) {
+        // 响应可能丢失；提交 pending 与尝试次数，释放锁之后再把错误交给执行器。
+        return { ok: false as const, error };
+      }
+      await client.query("UPDATE side_effects SET status='done',result=$2,updated_at=now() WHERE key=$1", [
+        fullKey,
+        JSON.stringify(value),
+      ]);
+      return { ok: true as const, value };
+    });
+    if (!outcome.ok) throw outcome.error;
+    return outcome.value;
   }
 }

@@ -166,6 +166,8 @@ repository
 - **租约**：领取时写 `lease_token`、`locked_by`、`lease_expires_at`（60 秒），Worker 每 5 秒续租。只有持有租约的实例能写回结果。
 - **实例崩溃**：租约过期的任务在下一次领取时重新排队；已被要求取消的直接结束；失联满 3 次的标为 failed，防止一个任务反复拖垮实例。对应的 running agent run 标为 cancelled。
 - **正常停止（部署）**：不再领取新任务，中止正在跑的会话，开发任务（包括 `publishing`）放回队列且不计入尝试次数。开发 Agent 的工作区改动在放回前写入数据库 gzip 快照；接手时从固定 `base_sha` 恢复，若最终 `proposal` 和所需快照已保存则跳过 Agent；commit 台账已完成时直接继续发布，不再建立工作区。快照每 5 分钟及 Agent 结束时保存，超过 20 MB 清除旧快照并记日志；保存按顺序完成并检查 owner_token，旧实例不能覆盖接手实例。开发任务的提交、分支、PR、issue 和评论都经 `side_effects` 台账处理：`pending` 先只读核对远端，核对到补记 `done`，核对不到才重做。issue/评论核对同时检查本 App 身份与隐藏标记；分支 SHA 不一致时停止并交人工核对。任务耗时和 token 用量跨接手累计，排队时间不计入时限，未回报用量仍占预算。只有核对不可用且尝试耗尽才进入 `uncertain`；PR Review 的发布台账和企微通知状态保持原规则。
+- **开发写入与接手互斥**：台账先独立提交 pending 意图；每次台账写入、远端核对/写请求、快照保存都在事务开始按 owner_token 和有效租约取得任务行 `FOR SHARE` 锁。锁覆盖请求在途和快照 UPSERT 等锁的区间，失效执行权抛 `TaskLeaseLostError`。过期扫描与领取都用 `FOR UPDATE SKIP LOCKED`，跳过仍在写入的任务；同任务心跳与回调更新等事务结束。只要已有 pending/done 台账，恢复准备（包括取 token）的错误也按发布阶段重排并增加 attempt，耗尽才 uncertain；已确认的分支冲突仍按既有人工核对规则停止。锁随请求结束、超时或连接断开释放，不能据此承诺远端 exactly-once。
+
 - **跨实例取消**：PR 关闭、有新提交、仓库停用时，本实例的会话立即中止；其他实例上的任务写入 `cancel_requested`，执行实例续租时看到即中止。
 - **升级**：迁移给已有 running 任务 10 分钟租约，让旧版本进程跑完。
 - **探针**：`GET /healthz` 只看进程；`GET /readyz` 检查数据库，停止中返回 503。

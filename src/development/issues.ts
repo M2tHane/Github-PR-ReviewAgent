@@ -107,10 +107,11 @@ export function createDiscussionProcessor(
     ]);
     const recorder = new AgentSessionRecorder(sessions, { developmentTaskId: task.id, role: "discussion", attempt: 1 });
     const effects = store.sideEffects(task);
-    let publishing = false;
+    let publishing = task.status === "publishing";
     await recorder.start();
     try {
-      if (!task.proposal && (await store.laterDiscussion(task))) {
+      publishing ||= await effects.started();
+      if (!publishing && !task.proposal && (await store.laterDiscussion(task))) {
         await store.finish(task, "cancelled", "后面还有新回复，合并到下一条一起回。", elapsed());
         await recorder.finish("cancelled", "后面还有新回复，合并到下一条一起回。");
         return;
@@ -231,7 +232,7 @@ export function createDiscussionProcessor(
         await recorder?.finish("cancelled", parentSignal.reason.message);
         throw parentSignal.reason;
       }
-      if (publishing || error instanceof TaskLeaseLostError) {
+      if (error instanceof TaskLeaseLostError || publishing || (await effects.started())) {
         await recorder.finish("failed", (error as Error).message);
         throw error;
       }
@@ -258,8 +259,9 @@ export function createNoticeProcessor(
     const started = Date.now();
     const elapsed = () => (task.duration_ms ?? 0) + Date.now() - started;
     const effects = store.sideEffects(task);
-    let publishing = false;
+    let publishing = task.status === "publishing";
     try {
+      publishing ||= await effects.started();
       const token = await github.installationToken(Number(task.installation_id), signal);
       // issue 里的提示发到 issue，开发 PR 里的发到 PR。
       const number = task.issue_number ?? task.pr_number!;
@@ -290,7 +292,7 @@ export function createNoticeProcessor(
     } catch (error) {
       if (signal.reason instanceof RunnerStoppedError || signal.reason instanceof TaskLeaseLostError)
         throw signal.reason;
-      if (publishing || error instanceof TaskLeaseLostError) throw error;
+      if (error instanceof TaskLeaseLostError || publishing || (await effects.started())) throw error;
       log("error", "development_notice_failed", { taskId: task.id, repository: task.repository }, error);
       await store.finish(task, "failed", "issue 提示发送失败。", elapsed());
     }
