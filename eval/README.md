@@ -2,6 +2,12 @@
 
 这两套评测使用 `cases/*.json` 中的合成数据。期望答案只由评分代码读取，不进入 Prompt、Skill、`agent/` 或模型工作区。仓库的业务行为保持不变，提取评测复用生产的 Prompt、Pi 会话入口和结果解析。
 
+## Review UX 真实模型回归
+
+`node --env-file=.env eval/evaluate-ux.mjs` 使用固定 SHA 的订单样本，每次运行开始时建立独立临时 PostgreSQL schema、执行最新迁移、导入 [固定规则样本](ux/rule-reference.json)，结束时删除 schema。需要 `DATABASE_URL`、模型配置，以及 `work/e2e-order-api` 和 `work/e2e-order-followup` 两个样本仓库 clone；不修改共享 schema，不发布 GitHub 评论。连续运行三次并分别保存 `work/ux-model-evaluation.json`，用于比较逐 case 通过率、findings、用量与耗时；原有聚合和规则引用断言保持不变。
+
+规则样本依据 [PR #8 维护者的原始设计决定](https://github.com/M2tHane/pi-review-test-repository/pull/8#issuecomment-5645822573) 重建，沿用原 ID、版本 2、ACTIVE 状态与项目范围；级别沿用新增级别字段时的默认值 should。原数据库记录已不存在，重建样本的标题、正文和理由与历史版本的措辞可能不同，历史结果不能直接比较。本任务的改前、改后都必须使用同一份重建样本。评测通过当前 `MemoryService.context()` 入口读取规则，不依赖已删除的 `retrieveForReview()`。
+
 ## 召回评测（确定性，不调模型）
 
 从仓库根目录运行：

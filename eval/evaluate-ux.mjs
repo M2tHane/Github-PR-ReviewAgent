@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { Database } from "../dist/src/persistence/database.js";
 import { MemoryService } from "../dist/src/memory/memory.service.js";
 import { readBaseFile, withWorkspace } from "../dist/src/workspace/workspace.js";
@@ -53,10 +53,37 @@ const report = {
   note: "固定 SHA 的本地真实模型验证（单 Agent + Skills）。没有 Webhook 或 GitHub 发布。",
   cases: [],
 };
-const database = new Database(process.env.DATABASE_URL),
+const rule = JSON.parse(await readFile(new URL("./ux/rule-reference.json", import.meta.url), "utf8"));
+const control = new Database(process.env.DATABASE_URL),
+  schema = "ux_eval_" + randomUUID().replaceAll("-", ""),
+  isolatedUrl = new URL(process.env.DATABASE_URL);
+await control.pool.query(`CREATE SCHEMA "${schema}"`);
+isolatedUrl.searchParams.set("options", `-c search_path=${schema}`);
+const database = new Database(isolatedUrl.toString()),
   memories = new MemoryService(database);
 await mkdir("work", { recursive: true });
 try {
+  await database.migrate();
+  await database.pool.query(
+    `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,status,source_fingerprint,level)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [
+      rule.id,
+      rule.version,
+      repositoryId,
+      160592861,
+      rule.type,
+      rule.title,
+      rule.content,
+      rule.rationale,
+      rule.scope,
+      rule.source,
+      JSON.stringify(rule.evidence),
+      rule.status,
+      "ux-reconstructed-rule-v2",
+      rule.level,
+    ],
+  );
   for (const sample of cases.filter((sample) => !process.argv[2] || sample.name === process.argv[2])) {
     const entry = { name: sample.name, baseSha: sample.base, headSha: sample.head };
     report.cases.push(entry);
@@ -75,11 +102,11 @@ try {
           sample.prNumber === 8
             ? []
             : (
-                await memories.retrieveForReview(repositoryId, {
+                await memories.context(repositoryId, {
                   paths: files.map((file) => file.filename),
                   text: files.map((file) => file.patch).join(" "),
                 })
-              ).memories;
+              ).full;
         entry.memoryReferences = recalled.map(({ id, version }) => ({ id, version }));
         const job = {
           id: randomUUID(),
@@ -172,5 +199,10 @@ try {
   }
 } finally {
   await database.close();
+  try {
+    await control.pool.query(`DROP SCHEMA "${schema}" CASCADE`);
+  } finally {
+    await control.close();
+  }
 }
 process.exitCode = report.cases.every((entry) => entry.passed) ? 0 : 1;
