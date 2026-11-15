@@ -292,13 +292,55 @@ export class GitHubClient {
   }
 
   // 开发需求的讨论 issue：开 issue、发评论、读正文和全部评论。需要 App 的 Issues 读写权限。
-  async findDevelopmentIssue(token: string, repository: string, marker: string, signal: AbortSignal) {
-    const issues = await this.request<Array<{ number: number; title: string; body: string | null }>>(
-      token,
-      `/repos/${repository}/issues?state=all&sort=created&direction=desc&per_page=100`,
-      { signal },
+  async findDevelopmentIssue(
+    token: string,
+    repository: string,
+    marker: string,
+    signal: AbortSignal,
+  ): Promise<{ number: number } | undefined> {
+    const issues = await this.request<
+      Array<{
+        number: number;
+        body: string | null;
+        pull_request?: unknown;
+        user: { type: string };
+        performed_via_github_app: { id: number } | null;
+      }>
+    >(token, `/repos/${repository}/issues?state=all&sort=created&direction=desc&per_page=100`, { signal });
+    return issues.find(
+      (issue) =>
+        !issue.pull_request &&
+        issue.user.type === "Bot" &&
+        String(issue.performed_via_github_app?.id) === this.appId &&
+        issue.body?.includes(marker),
     );
-    return issues.find((issue) => issue.body?.includes(marker));
+  }
+
+  async findDevelopmentComment(
+    token: string,
+    repository: string,
+    number: number,
+    marker: string,
+    signal: AbortSignal,
+  ): Promise<{ id: number } | undefined> {
+    // 核对不能沿用给模型读讨论的 1000 条截断，否则长线程会漏掉已发出的标记。
+    for (let page = 1; ; page++) {
+      const comments = await this.request<
+        Array<{
+          id: number;
+          body: string;
+          user: { type: string };
+          performed_via_github_app: { id: number } | null;
+        }>
+      >(token, `/repos/${repository}/issues/${number}/comments?per_page=100&page=${page}`, { signal });
+      const found = comments.find(
+        (comment) =>
+          comment.user.type === "Bot" &&
+          String(comment.performed_via_github_app?.id) === this.appId &&
+          comment.body.includes(marker),
+      );
+      if (found || comments.length < 100) return found;
+    }
   }
 
   async createIssue(token: string, repository: string, input: { title: string; body: string }, signal: AbortSignal) {
@@ -328,7 +370,12 @@ export class GitHubClient {
   }
 
   async listIssueComments(token: string, repository: string, number: number, signal: AbortSignal) {
-    const comments: Array<{ id: number; body: string; created_at: string; user: { login: string; type: string } }> = [];
+    const comments: Array<{
+      id: number;
+      body: string;
+      created_at: string;
+      user: { login: string; type: string };
+    }> = [];
     // 最多读 10 页（1000 条）；讨论再长也只需要最近的内容。
     for (let page = 1; page <= 10; page++) {
       const batch = await this.request<typeof comments>(

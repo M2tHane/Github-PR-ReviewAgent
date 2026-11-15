@@ -159,7 +159,7 @@ export async function collectSnapshot(
   const result: SnapshotChange[] = [];
   for (const [path, file] of files) {
     signal.throwIfAborted();
-    safePath(path);
+    await snapshotPath(root, path);
     const stat = await lstat(join(root, path)).catch(() => undefined);
     if (file.mode === "160000") continue;
     if (file.mode === "120000") {
@@ -179,7 +179,7 @@ export async function collectSnapshot(
   }
   for (const path of await untracked(root, sha, signal)) {
     signal.throwIfAborted();
-    safePath(path);
+    await snapshotPath(root, path);
     if (path.split("/")[0] === ".codegraph") continue;
     if (path.endsWith("/")) throw new DevelopmentError(`不能新增嵌套的 Git 仓库：${path}`);
     const stat = await lstat(join(root, path));
@@ -204,10 +204,29 @@ export function decodeSnapshot(data: Buffer | Uint8Array): SnapshotChange[] {
   return parsed.changes;
 }
 
+async function snapshotPath(root: string, path: string) {
+  safePath(path);
+  // Agent 可用 bash 替换父目录；只检查文件本身会沿父目录链接读到宿主机。
+  let parent = dirname(path);
+  while (parent !== ".") {
+    const stat = await lstat(join(root, parent)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (stat?.isSymbolicLink()) throw new DevelopmentError(`快照路径经过符号链接：${path}`);
+    parent = dirname(parent);
+  }
+}
+
 export async function applySnapshot(root: string, changes: SnapshotChange[]) {
   for (const change of changes) {
-    safePath(change.path);
+    await snapshotPath(root, change.path);
     const path = join(root, change.path);
+    const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (stat && !stat.isFile()) throw new DevelopmentError(`快照不能覆盖符号链接或目录：${change.path}`);
     if (change.content === null) {
       await unlink(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;

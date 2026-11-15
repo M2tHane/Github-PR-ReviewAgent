@@ -18,7 +18,10 @@ export interface TeamRuleRow {
 type Delivery = { via: "prompt" | "read" | "write" | "follow_up"; path?: string };
 
 // 全局规则随任务给全文；按路径生效的规则先给目录，读到匹配文件或新建文件命中时再给全文，每条只给一次。
-export function createRuleBook(rows: TeamRuleRow[]) {
+export function createRuleBook(
+  rows: TeamRuleRow[],
+  previous: Array<TeamRuleRow & { delivered: Delivery | null }> = [],
+) {
   // 每个任务的标记不同，仓库文件无法预先伪造服务附加的规则块。
   const marker = `团队规则-${randomUUID().slice(0, 8)}`;
   const refs = new Map(rows.map((row, index) => [row.id, `R${index + 1}`]));
@@ -26,6 +29,9 @@ export function createRuleBook(rows: TeamRuleRow[]) {
   const delivered = new Map<string, Delivery>(
     rows.filter((row) => !hasSpecificScope(row)).map((row) => [row.id, { via: "prompt" }]),
   );
+  for (const saved of previous)
+    if (saved.delivered && rows.some((row) => row.id === saved.id && row.version === saved.version))
+      delivered.set(saved.id, saved.delivered);
   const view = (row: TeamRuleRow) => ({
     ref: refs.get(row.id)!,
     type: row.type,

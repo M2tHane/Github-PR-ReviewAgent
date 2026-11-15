@@ -22,3 +22,6 @@ CREATE TABLE development_snapshots (
 
 ALTER TABLE development_tasks ADD COLUMN proposal jsonb;
 ALTER TABLE development_tasks ADD COLUMN last_revision_comment_at timestamptz;
+
+-- 每次领取时冻结历史耗时，心跳/停止/租约到期按本次执行区间累计，排队时间不计。
+ALTER TABLE development_tasks ADD COLUMN attempt_duration_base_ms integer NOT NULL DEFAULT 0;
