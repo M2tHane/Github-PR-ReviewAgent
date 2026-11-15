@@ -520,6 +520,22 @@ export class GitHubClient {
     }
   }
 
+  // compare 的文件变化只在第一页返回，最多 300 个文件；缺失的 patch 不作为修复证据。
+  async compareFiles(token: string, repository: string, base: string, head: string) {
+    const result = await this.request<{
+      files: Array<{ filename: string; previous_filename?: string; patch?: string }>;
+    }>(token, `/repos/${repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`);
+    return result.files;
+  }
+
+  async defaultBranchTree(token: string, repository: string) {
+    const info = await this.request<{ default_branch: string }>(token, `/repos/${repository}`);
+    return this.request<{ sha: string; truncated: boolean; tree: Array<{ path: string; type: string }> }>(
+      token,
+      `/repos/${repository}/git/trees/${encodeURIComponent(info.default_branch)}?recursive=1`,
+    );
+  }
+
   createReview(
     token: string,
     job: ReviewJob,

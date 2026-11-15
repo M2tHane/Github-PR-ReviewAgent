@@ -170,6 +170,7 @@ export function RulePanel({
                         ["提供给审查", `${numberText(item.usage.provided)} 次`],
                         ["被意见引用", `${numberText(item.usage.cited)} 次`],
                         ["已修复", numberText(item.usage.fixed)],
+                        ["疑似已修复", numberText(item.usage.inferredFixed)],
                         ["已撤回", numberText(item.usage.withdrawn)],
                         ["记为例外", numberText(item.usage.exception)],
                         ["仍未结", numberText(item.usage.open)],
@@ -182,7 +183,10 @@ export function RulePanel({
                       </div>
                     ))}
                   </dl>
-                  <p className="muted">统计范围：数据保留期内已完成的审查</p>
+                  <p className="muted">
+                    统计范围：数据保留期内已完成的审查{item.teamId ? "，汇总团队所有仓库" : ""}
+                    。疑似已修复表示合并时附近代码有改动，由服务推断，尚未经过回复确认。
+                  </p>
                 </section>
               )}
               <section className="rule-section">

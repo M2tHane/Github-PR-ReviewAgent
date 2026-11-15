@@ -9,6 +9,8 @@ import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
 import { dateText, numberText } from "../format.js";
 import type { Memory, Team, Repository as Repo } from "../types.js";
 import { shortText } from "../../src/review/presentation.js";
+import type { RuleReviewQueue } from "../../src/memory/types.js";
+import { RuleReviewRows } from "../features/memories/rule-review.js";
 
 const PAGE_SIZE = 20;
 
@@ -29,7 +31,9 @@ export function MemoriesPage({
   const params = new URLSearchParams(query);
   const [ownership, setOwnership] = useState(params.has("team") ? "team" : "ALL"),
     [teamId, setTeamId] = useState(params.get("team") ?? "ALL");
-  const [filter, setFilter] = useState(route === "rules/pending" ? "CANDIDATE" : "ALL"),
+  const [filter, setFilter] = useState(
+      path === "rules/review" ? "REVIEW" : path === "rules/pending" ? "CANDIDATE" : "ALL",
+    ),
     [repositoryId, setRepositoryId] = useState(params.get("repo") ?? "ALL"),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(1);
@@ -37,6 +41,28 @@ export function MemoriesPage({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [reviewQueue, setReviewQueue] = useState<RuleReviewQueue | null>(null),
+    [reviewLoading, setReviewLoading] = useState(false),
+    [reviewError, setReviewError] = useState("");
+  async function refreshReview() {
+    setReviewQueue(await api<RuleReviewQueue>("/api/rule-review"));
+    setNotice("已记录理由，所选原因将在 90 天后重新检查。");
+  }
+  useEffect(() => {
+    if (filter !== "REVIEW") return;
+    const controller = new AbortController();
+    setReviewLoading(true);
+    setReviewError("");
+    void api<RuleReviewQueue>("/api/rule-review", { signal: controller.signal })
+      .then(setReviewQueue)
+      .catch((cause) => {
+        if (!controller.signal.aborted) setReviewError(messageOf(cause));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setReviewLoading(false);
+      });
+    return () => controller.abort();
+  }, [filter, items]);
   const match = path!.match(/^rules\/([0-9a-f-]{36})(\/edit)?$/i),
     selected = items.find((item) => item.id === match?.[1]),
     editing = Boolean(match?.[2]);
@@ -50,6 +76,7 @@ export function MemoriesPage({
     }
     if (params.has("repo")) setRepositoryId(params.get("repo")!);
     if (path === "rules/pending") setFilter("CANDIDATE");
+    if (path === "rules/review") setFilter("REVIEW");
     setError("");
   }, [route]);
   const matches = (item: Memory, status: string) =>
@@ -59,25 +86,27 @@ export function MemoriesPage({
       : status === "ACTIVE"
         ? item.status === "ACTIVE" || Boolean(item.activeVersion)
         : item.status === status);
-  const scoped = items.filter(
-    (item) =>
-      (ownership === "ALL" || (ownership === "team" ? Boolean(item.teamId) : !item.teamId)) &&
-      (teamId === "ALL" || item.teamId === teamId) &&
-      (repositoryId === "ALL" ||
-        item.repositoryId === Number(repositoryId) ||
-        teams.some((team) => team.id === item.teamId && team.repositoryIds.includes(Number(repositoryId)))) &&
-      [item.title, item.content, ...Object.values(item.scope).flat()]
-        .join(" ")
-        .toLowerCase()
-        .includes(search.trim().toLowerCase()),
-  );
+  const inScope = (item: Memory) =>
+    (ownership === "ALL" || (ownership === "team" ? Boolean(item.teamId) : !item.teamId)) &&
+    (teamId === "ALL" || item.teamId === teamId) &&
+    (repositoryId === "ALL" ||
+      item.repositoryId === Number(repositoryId) ||
+      teams.some((team) => team.id === item.teamId && team.repositoryIds.includes(Number(repositoryId)))) &&
+    [item.title, item.content, ...Object.values(item.scope).flat()]
+      .join(" ")
+      .toLowerCase()
+      .includes(search.trim().toLowerCase());
+  const scoped = items.filter(inScope);
+  const reviewItems = reviewQueue?.items.filter((item) => inScope(item.memory)) ?? [];
   const shown = scoped.filter((item) => matches(item, filter)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   // 确认或忽略后列表会变短，页码超出时落到最后一页。
-  const current = Math.min(page, Math.max(1, Math.ceil(shown.length / PAGE_SIZE))),
+  const total = filter === "REVIEW" ? reviewItems.length : shown.length;
+  const current = Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE))),
     visible = shown.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
   useEffect(() => setPage(1), [filter, repositoryId, teamId, ownership, search]);
   const close = () => {
-    location.hash = (filter === "CANDIDATE" ? "rules/pending" : "rules") + suffix;
+    location.hash =
+      (filter === "REVIEW" ? "rules/review" : filter === "CANDIDATE" ? "rules/pending" : "rules") + suffix;
   };
   async function action(item: Memory, name: string, value: object = {}) {
     setBusy(true);
@@ -345,6 +374,7 @@ export function MemoriesPage({
           ["ALL", "全部"],
           ["ACTIVE", "生效中"],
           ["CANDIDATE", "待确认"],
+          ["REVIEW", "需要复查"],
           ["INACTIVE", "已停用 / 已忽略"],
         ].map(([status, label]) => (
           <button
@@ -354,7 +384,13 @@ export function MemoriesPage({
             onClick={() => setFilter(status!)}
           >
             {label}
-            <span>{scoped.filter((item) => matches(item, status!)).length}</span>
+            <span>
+              {status === "REVIEW"
+                ? reviewQueue === null
+                  ? "—"
+                  : reviewItems.length
+                : scoped.filter((item) => matches(item, status!)).length}
+            </span>
           </button>
         ))}
       </nav>
@@ -366,7 +402,38 @@ export function MemoriesPage({
           </button>
         </p>
       )}
-      {!shown.length ? (
+      {filter === "REVIEW" ? (
+        <>
+          <p className="muted">按生效规则的使用情况、适用路径和到期时间提示复查，由维护者决定是否修改或停用。</p>
+          {reviewLoading ? (
+            <p role="status">正在检查规则与默认分支文件树…</p>
+          ) : reviewError ? (
+            <p className="alert" role="alert">
+              {reviewError}
+            </p>
+          ) : (
+            <>
+              {Boolean(reviewQueue?.uncheckedRepositories.length) && (
+                <p className="alert">
+                  以下仓库的文件树不完整或暂时无法读取，涉及它们的规则未判断路径失效：
+                  {reviewQueue!.uncheckedRepositories.join("、")}
+                </p>
+              )}
+              {reviewItems.length ? (
+                <RuleReviewRows
+                  items={reviewItems.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)}
+                  teams={teams}
+                  repositories={repositories}
+                  suffix={suffix}
+                  refresh={refreshReview}
+                />
+              ) : (
+                <Empty>没有需要复查的规则。</Empty>
+              )}
+            </>
+          )}
+        </>
+      ) : !shown.length ? (
         <Empty>
           {filter === "CANDIDATE"
             ? "没有待确认规则。合并 PR 中的新约定会出现在这里。"
@@ -395,7 +462,7 @@ export function MemoriesPage({
                   · {memorySourceLabel(item.source)}
                   {/* 从没生效过的待确认规则不会交给审查，不显示引用次数。 */}
                   {(item.status !== "CANDIDATE" || item.activeVersion) &&
-                    ` · 引用 ${numberText(item.usage.cited)} 次 · 修复 ${numberText(item.usage.fixed)} · 撤回 ${numberText(item.usage.withdrawn)}`}
+                    ` · 引用 ${numberText(item.usage.cited)} 次 · 修复 ${numberText(item.usage.fixed)} · 疑似已修复 ${numberText(item.usage.inferredFixed)} · 撤回 ${numberText(item.usage.withdrawn)}`}
                 </span>
                 <span>更新于 {dateText(item.updatedAt)}</span>
               </div>
@@ -420,11 +487,11 @@ export function MemoriesPage({
           ))}
         </div>
       )}
-      {shown.length > 0 && (
+      {total > 0 && !reviewLoading && (
         <Pager
           page={current}
           pageSize={PAGE_SIZE}
-          total={shown.length}
+          total={total}
           onPage={(value) => {
             setPage(value);
             document.getElementById("rules-title")?.scrollIntoView();

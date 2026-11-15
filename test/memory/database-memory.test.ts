@@ -28,7 +28,16 @@ test("规则使用统计：提供、引用结局、重试、跨版本和任务�
   const service = new MemoryService(database);
   const repositoryId = 9_000_000_010;
   const actor = { id: 42, login: "maintainer" };
-  const zero = { provided: 0, cited: 0, fixed: 0, withdrawn: 0, exception: 0, open: 0, lastCitedAt: null };
+  const zero = {
+    provided: 0,
+    cited: 0,
+    fixed: 0,
+    inferredFixed: 0,
+    withdrawn: 0,
+    exception: 0,
+    open: 0,
+    lastCitedAt: null,
+  };
   const source = { repositoryId, installationId: 1, repository: "owner/memory-usage", prNumber: 1 } as ReviewJob;
   let prNumber = 1;
   const review = async (repo = repositoryId) => {
@@ -167,6 +176,7 @@ test("规则使用统计：提供、引用结局、重试、跨版本和任务�
         provided: 2,
         cited: 6,
         fixed: 1,
+        inferredFixed: 0,
         withdrawn: 1,
         exception: 1,
         open: 3,

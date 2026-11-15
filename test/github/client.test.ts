@@ -10,6 +10,26 @@ function hangingFetch(): typeof fetch {
     })) as typeof fetch;
 }
 
+test("合并 compare 读取文件 patch，默认分支 recursive tree 保留截断标记", async (t) => {
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string | URL, init?: RequestInit) => {
+    const path = String(url).replace("https://api.github.com", "");
+    requests.push(path);
+    assert.equal((init!.headers as Record<string, string>).authorization, "Bearer installation-token");
+    if (path === "/repos/o/r/compare/old...merged?per_page=1")
+      return Response.json({ files: [{ filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" }] });
+    if (path === "/repos/o/r") return Response.json({ default_branch: "release/main" });
+    assert.equal(path, "/repos/o/r/git/trees/release%2Fmain?recursive=1");
+    return Response.json({ sha: "tree", truncated: true, tree: [{ path: "src/a.ts", type: "blob" }] });
+  });
+  const client = new GitHubClient("1", "");
+  assert.deepEqual(await client.compareFiles("installation-token", "o/r", "old", "merged"), [
+    { filename: "new.ts", previous_filename: "old.ts", patch: "@@ -20 +20 @@" },
+  ]);
+  assert.equal((await client.defaultBranchTree("installation-token", "o/r")).truncated, true);
+  assert.equal(requests.length, 3);
+});
+
 test("GitHub 请求挂住时按上限超时并可重试，调用方主动取消不算超时", async (t) => {
   const original = globalThis.fetch;
   t.after(() => {

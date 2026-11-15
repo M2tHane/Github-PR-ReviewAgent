@@ -27,6 +27,7 @@ import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repos
 import { RepositoryAccess } from "../config/repository-access.js";
 import { createRepositoryOnboardingRoute } from "./repository-onboarding.routes.js";
 import { MaintainerPermissionCache } from "./permission-cache.js";
+import { RuleReviewService, RULE_REVIEW_REASONS } from "../memory/rule-review.service.js";
 
 export interface AdminStores {
   sessions: SessionStore<Session>;
@@ -47,6 +48,7 @@ export function createAdminHandler(
   repositoryAccess = new RepositoryAccess(config, database.pool),
 ) {
   const memories = new MemoryService(database);
+  const ruleReview = new RuleReviewService(database, github, config.allowedRepositories);
   const permissions = new MaintainerPermissionCache(github);
   const { allowedRepositories, listJobs, overview } = createRepositoryService(
     database,
@@ -345,8 +347,20 @@ export function createAdminHandler(
           const teamRules = await teams.visibleMemories(await teams.list(user, repositories), repositories);
           return json(response, 200, [...values, ...teamRules.filter((memory) => !status || memory.status === status)]);
         }
+        if (request.method === "GET" && url.pathname === "/api/rule-review") {
+          const repositories = await allowedRepositories(user);
+          const managedTeams = (await teams.list(user, repositories)).filter((team) => team.canManage);
+          return json(
+            response,
+            200,
+            await ruleReview.list([
+              ...repositories.map((repository) => repository.id),
+              ...managedTeams.map((team) => ({ teamId: team.id })),
+            ]),
+          );
+        }
         const memoryMatch = url.pathname.match(
-          /^\/api\/memories\/([0-9a-f-]+)(?:\/(approve|reject|deprecate|supersede))?$/i,
+          /^\/api\/memories\/([0-9a-f-]+)(?:\/(approve|reject|deprecate|supersede|dismiss-review))?$/i,
         );
         if (memoryMatch) {
           const result = await database.pool.query(
@@ -372,6 +386,26 @@ export function createAdminHandler(
               return json(response, 200, { ...toMemory(active.rows[0]), versions: active.rows });
             } else await teams.requireManager(user, row.team_id);
           } else if (!(await authorize(request, response, Number(row.repository_id)))) return;
+          if (request.method === "POST" && memoryMatch[2] === "dismiss-review") {
+            const value = (await body(request)) as { reason?: unknown; note?: unknown } | null;
+            if (
+              !value ||
+              !RULE_REVIEW_REASONS.includes(value.reason as any) ||
+              typeof value.note !== "string" ||
+              !value.note.trim()
+            )
+              return json(response, 422, { error: "请选择复查原因并填写暂不处理的理由" });
+            return json(
+              response,
+              200,
+              await ruleReview.dismiss(
+                memoryMatch[1]!,
+                value.reason as (typeof RULE_REVIEW_REASONS)[number],
+                value.note.trim(),
+                user.login,
+              ),
+            );
+          }
           if (request.method === "GET" && !memoryMatch[2]) {
             const current = await memories.get(owner, memoryMatch[1]!);
             const versions = await database.pool.query(

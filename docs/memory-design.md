@@ -292,9 +292,24 @@ Reply 与健康检查仍按词重叠计分排序后取前 10 条（`retrieve`）
 
 管理页按规则 ID 汇总所有版本在数据保留期内的 PR Review 使用情况，不设额外的 30 天窗口，不计 Reply、开发任务或健康检查。Review 完成模型输出校验并保存意见时，将实际提供给模型的规则 ID 和版本记入 `review_memory_usage`；同一任务重试时，同一规则只记一次，保留首次记录的版本。`provided` 是其中不同 Review 任务数，表示已完成分析并保存结果，不以 GitHub 发布成功或任务最终状态为条件。未完成分析校验的调用不计入。
 
-`cited` 统计 `review_findings.memory_id` 指向该规则的意见，与概览页“意见去向”采用相同口径：排除 `binding_status='pending'` 的意见和带 `presentation.repeatOf` 的重复意见；引用计意见条数，一次 Review 引用多次也分别计数。按意见当前状态，`fixed` 为 `FIXED`，`withdrawn` 为 `WITHDRAWN`，`exception` 为 `EXCEPTION_PENDING`，`open` 为 `OPEN`、`STILL_VALID`、`NEEDS_CLARIFICATION`；`lastCitedAt` 为符合上述条件的意见中最近的创建时间，无引用时为 null。例外仅表示本次意见的结局，不代表已形成生效团队规则。
+`cited` 统计 `review_findings.memory_id` 指向该规则的意见，与概览页“意见去向”采用相同口径：排除 `binding_status='pending'` 的意见和带 `presentation.repeatOf` 的重复意见；引用计意见条数，一次 Review 引用多次也分别计数。按意见当前状态，`fixed` 为 `FIXED`，`inferredFixed` 为已记录合并推断且当前状态不是 `FIXED` 的意见（与回复确认的修复分开计），`withdrawn` 为 `WITHDRAWN`，`exception` 为 `EXCEPTION_PENDING`，`open` 为 `OPEN`、`STILL_VALID`、`NEEDS_CLARIFICATION`；`lastCitedAt` 为符合上述条件的意见中最近的创建时间，无引用时为 null。例外仅表示本次意见的结局，不代表已形成生效团队规则。
 
 没有记录时各项为 0。提供记录从本功能启用后开始积累，不推测历史召回；现存历史意见仍可计入引用，因此历史规则的引用次数可能大于提供次数。删除或按保留期清理 Review 任务时，提供记录与意见随任务删除，统计同步减少。这组数字只用于展示，不改变规则选取、排序或生命周期。
+
+### 合并推断与规则复查
+
+项目规则的统计限定本仓库；团队规则按规则 ID 汇总团队各仓库的使用，包括仓库维护者看到的继承规则列表。版本和任务保留期口径相同。
+
+合并后的规则提取任务在“无人类讨论”提前结束之前执行修复推断，不调用模型：取该 PR 仍为 OPEN / STILL_VALID / NEEDS_CLARIFICATION、带路径和 RIGHT 侧行号且不带 `presentation.repeatOf` 的意见，按意见的 head SHA 到实际合并提交调用 GitHub compare。该文件 patch 的旧侧行范围与意见行号 ±3 行相交时，记录 `inferred_fixed_at` 与 `inferred_fixed_sha`。不改变意见状态，也不自动停用规则。compare 失败记录日志，继续规则提取；没有 patch、纯新增的零旧侧范围及 compare 未返回的文件不推断。GitHub compare 文件列表最多 300 项，因此“未推断”不能说明问题仍然存在。
+
+管理页“需要复查”队列仅显示当前用户可管理的 ACTIVE 规则；存在候选更新时按仍生效的版本检查。原因在请求时计算，阈值集中在 `RULE_REVIEW`，没有定时任务或配置项：
+
+- 噪声大：引用至少 3 次，当前 WITHDRAWN 占比至少 40%。
+- 沉睡：当前版本生效满 90 天，最近 90 天没有被引用。
+- 路径失效：`scope.paths` 非空，在所有适用仓库默认分支中均匹配不到文件。项目规则查本仓库；团队规则查团队全部仓库。只有打开队列时才按需读取 recursive Git tree，按仓库缓存 24 小时。截断、无访问权限或读取失败的仓库不作失效依据，页面列出未检查仓库；团队任一仓库未能完整检查时，不判定该规则路径失效。团队没有仓库时也不判定。
+- 到期：`expires_at` 已到，不自动修改规则状态。
+
+`GET /api/rule-review` 返回复查规则、原因与依据数字；`POST /api/memories/:id/dismiss-review` 接受 `{reason, note}`，理由必填，沿用规则编辑的登录、CSRF 和项目维护者／团队管理员权限。暂不处理按规则 ID 与原因保存操作人、理由、时间，90 天内不再显示这一原因，即使依据变化；其他原因仍显示，到期后按当时依据重新计算。
 
 ### 搜索策略
 

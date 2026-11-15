@@ -25,11 +25,11 @@ export type CandidatePatch = Partial<
 export class MemoryService {
   constructor(private database: Database) {}
 
-  async list(owner: MemoryOwner, status?: MemoryRecord["status"]): Promise<MemoryWithUsage[]> {
+  async list(owner: MemoryOwner, status?: MemoryRecord["status"], activeOnly = false): Promise<MemoryWithUsage[]> {
     const result = await this.database.pool.query(
       `WITH current AS (
          SELECT DISTINCT ON (id) *,max(version) FILTER (WHERE status='ACTIVE') OVER (PARTITION BY id) active_version
-         FROM memories WHERE ${ownerColumn(owner)}=$1 ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC
+         FROM memories WHERE ${ownerColumn(owner)}=$1 ${activeOnly ? "AND status='ACTIVE'" : ""} ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC
        ), provided AS (
          SELECT u.memory_id,count(*)::int provided FROM review_memory_usage u
          JOIN jobs j ON j.id=u.job_id AND j.job_type='PR_REVIEW'
@@ -37,6 +37,7 @@ export class MemoryService {
        ), cited AS (
          SELECT f.memory_id,count(*)::int cited,
            count(*) FILTER (WHERE f.status='FIXED')::int fixed,
+           count(*) FILTER (WHERE f.inferred_fixed_at IS NOT NULL AND f.status<>'FIXED')::int inferred_fixed,
            count(*) FILTER (WHERE f.status='WITHDRAWN')::int withdrawn,
            count(*) FILTER (WHERE f.status='EXCEPTION_PENDING')::int exception,
            count(*) FILTER (WHERE f.status IN ('OPEN','STILL_VALID','NEEDS_CLARIFICATION'))::int open,
@@ -47,7 +48,7 @@ export class MemoryService {
          GROUP BY f.memory_id
        )
        SELECT m.*,COALESCE(p.provided,0) provided,COALESCE(c.cited,0) cited,
-         COALESCE(c.fixed,0) fixed,COALESCE(c.withdrawn,0) withdrawn,
+         COALESCE(c.fixed,0) fixed,COALESCE(c.inferred_fixed,0) inferred_fixed,COALESCE(c.withdrawn,0) withdrawn,
          COALESCE(c.exception,0) exception,COALESCE(c.open,0) open,c.last_cited_at
        FROM current m LEFT JOIN provided p ON p.memory_id=m.id LEFT JOIN cited c ON c.memory_id=m.id
        ORDER BY m.id`,
@@ -60,6 +61,7 @@ export class MemoryService {
           provided: row.provided,
           cited: row.cited,
           fixed: row.fixed,
+          inferredFixed: row.inferred_fixed,
           withdrawn: row.withdrawn,
           exception: row.exception,
           open: row.open,
@@ -439,6 +441,7 @@ export function toMemory(row: Record<string, any>): MemoryRecord {
     supersededBy: row.superseded_by ?? undefined,
     approvedBy: row.approved_by ? Number(row.approved_by) : undefined,
     approvedAt: row.approved_at?.toISOString(),
+    expiresAt: row.expires_at?.toISOString(),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };

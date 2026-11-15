@@ -291,6 +291,7 @@ test("Decision Extractor 走统一会话入口：有人类讨论时照常运行�
     } as unknown as GitHubClient;
     const inserted: unknown[] = [];
     const database = {
+      pool: { query: async () => ({ rows: [] }) },
       getDecisionClues: async () => [],
       getRepositoryConfig: async () => ({ budgetTokens: 1234 }),
       insertCandidates: async (_job: unknown, proposals: unknown[]) => {
@@ -353,6 +354,7 @@ test("没有正文非空的人类讨论时不跑规则抽取：不启动 Agent�
     let executed = 0,
       inserted = 0;
     const database = {
+      pool: { query: async () => ({ rows: [] }) },
       getDecisionClues: async () => [],
       getRepositoryConfig: async () => undefined,
       insertCandidates: async () => {

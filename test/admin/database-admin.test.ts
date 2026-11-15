@@ -300,6 +300,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       provided: 0,
       cited: 0,
       fixed: 0,
+      inferredFixed: 0,
       withdrawn: 0,
       exception: 0,
       open: 0,
