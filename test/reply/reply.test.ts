@@ -27,6 +27,7 @@ const finding = {
 } satisfies StoredFinding;
 const memory = {
   id: "11111111-1111-1111-1111-111111111111",
+  level: "should",
   version: 2,
   repositoryId: 1,
   installationId: 1,

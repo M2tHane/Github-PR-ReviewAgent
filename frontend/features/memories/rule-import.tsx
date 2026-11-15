@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
-import type { Memory, Repository } from "../../types.js";
+import type { Memory, Repository, Team } from "../../types.js";
 import { memorySourceLabel } from "../../../src/memory/types.js";
 import {
   RULE_IMPORT_EXAMPLE,
@@ -14,18 +14,22 @@ import { ScopeChips } from "./memory-detail.js";
 
 export function RuleImport({
   repositories,
+  teams,
   initialTarget,
   mode,
   close,
   imported,
 }: {
   repositories: Repository[];
+  teams: Team[];
   initialTarget: string;
   mode: "markdown" | "project";
   close: () => void;
-  imported: (result: ImportResult, target: number) => Promise<void>;
+  imported: (result: ImportResult, target: string) => Promise<void>;
 }) {
-  const [target, setTarget] = useState(initialTarget === "ALL" ? "" : initialTarget);
+  const [target, setTarget] = useState(
+    initialTarget === "ALL" || (mode === "project" && initialTarget.startsWith("team:")) ? "" : initialTarget,
+  );
   const [source, setSource] = useState("");
   const [rules, setRules] = useState<Memory[]>([]);
   const [chosen, setChosen] = useState<string[]>([]);
@@ -78,10 +82,13 @@ export function RuleImport({
                   .filter(Boolean),
               })),
             };
-      const value = await api<ImportPreview>(`/api/repositories/${target}/rule-import/preview`, {
-        method: "POST",
-        body: JSON.stringify(input),
-      });
+      const value = await api<ImportPreview>(
+        `${target.startsWith("team:") ? `/api/teams/${target.slice(5)}` : `/api/repositories/${target}`}/rule-import/preview`,
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        },
+      );
       setPreview(value);
       setSelected(value.rules.map((rule) => rule.key));
     } catch (cause) {
@@ -94,12 +101,15 @@ export function RuleImport({
     setBusy(true);
     setError("");
     try {
-      const value = await api<ImportResult>(`/api/repositories/${target}/rule-import/confirm`, {
-        method: "POST",
-        body: JSON.stringify({ previewId: preview!.id, keys: selected }),
-      });
+      const value = await api<ImportResult>(
+        `${target.startsWith("team:") ? `/api/teams/${target.slice(5)}` : `/api/repositories/${target}`}/rule-import/confirm`,
+        {
+          method: "POST",
+          body: JSON.stringify({ previewId: preview!.id, keys: selected }),
+        },
+      );
       setResult(value);
-      await imported(value, Number(target));
+      await imported(value, target);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -125,9 +135,9 @@ export function RuleImport({
       </div>
       <div className="drawer-body rule-import">
         <h2 id="import-title">{mode === "markdown" ? "从 Markdown 导入" : "从其他项目导入"}</h2>
-        <p className="muted">1. 选择规则与目标项目 → 2. 预览 → 3. 确认生效</p>
+        <p className="muted">1. 选择规则与归属 → 2. 预览 → 3. 确认生效</p>
         <label>
-          目标项目
+          目标归属
           <select
             value={target}
             disabled={busy || Boolean(preview)}
@@ -136,7 +146,13 @@ export function RuleImport({
               if (source === event.target.value) setSource("");
             }}
           >
-            <option value="">请选择目标项目</option>
+            <option value="">请选择项目或团队</option>
+            {mode === "markdown" &&
+              teams.map((team) => (
+                <option key={team.id} value={`team:${team.id}`}>
+                  团队 · {team.name}
+                </option>
+              ))}
             {repositories.map((repo) => (
               <option key={repo.id} value={repo.id}>
                 {repo.fullName}
@@ -157,8 +173,7 @@ export function RuleImport({
           <>
             <h3>确认这些规则</h3>
             <p className="muted">
-              选中 {selected.length} / {preview.rules.length} 条。确认后立即用于目标项目的后续审查和开发任务。预览 30
-              分钟内有效。
+              选中 {selected.length} / {preview.rules.length} 条。确认后在所选归属下生效。预览 30 分钟内有效。
             </p>
             <p>重复规则会跳过，已有规则保留原状态。同名提示只做内容比较，请人工核对语义冲突。</p>
             <div className="actions">

@@ -4,7 +4,7 @@ import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
 import type { Repository } from "../admin/dto.js";
 import { toMemory, type Actor } from "./memory.service.js";
-import type { MemoryRecord } from "./types.js";
+import { ownerColumn, ownerId, type MemoryRecord } from "./types.js";
 import {
   parseRuleMarkdown,
   RuleImportError,
@@ -13,6 +13,9 @@ import {
   type ImportResult,
   type PreviewRule,
 } from "./import-format.js";
+
+type ImportTarget = Repository | { teamId: string };
+const targetOwner = (target: ImportTarget) => ("teamId" in target ? target : target.id);
 
 export interface StoredPreviewRule extends PreviewRule {
   targetId: string;
@@ -30,12 +33,15 @@ function canonical(value: unknown): unknown {
     );
   return value;
 }
-function signature(rule: Pick<MemoryRecord, "type" | "title" | "content" | "rationale" | "scope" | "exceptionTo">) {
+function signature(
+  rule: Pick<MemoryRecord, "type" | "title" | "content" | "rationale" | "scope" | "exceptionTo" | "level">,
+) {
   const scope = Object.fromEntries(Object.entries(rule.scope).filter(([, values]) => values?.length));
   return hash(
     JSON.stringify(
       canonical({
         type: rule.type,
+        level: rule.level,
         title: rule.title.trim(),
         content: rule.content.trim(),
         rationale: rule.rationale.trim(),
@@ -57,12 +63,13 @@ export class RuleImportService {
     return result.rows.map(toMemory);
   }
 
-  async preview(target: Repository, actor: Actor, input: ImportInput, source?: Repository): Promise<ImportPreview> {
+  async preview(target: ImportTarget, actor: Actor, input: ImportInput, source?: Repository): Promise<ImportPreview> {
     const provenance = { importedBy: actor.id, importedByLogin: actor.login, importedAt: new Date().toISOString() };
     let drafts: PreviewRule[];
     if (input.kind === "markdown") {
       drafts = parseRuleMarkdown(input.markdown).map((rule) => ({
         ...rule,
+        level: "should",
         sameTitleIds: [],
         source: {
           ...provenance,
@@ -80,6 +87,7 @@ export class RuleImportService {
         return {
           key: rule.id,
           type: rule.type,
+          level: rule.level,
           title: rule.title,
           content: rule.content,
           rationale: rule.rationale,
@@ -101,14 +109,17 @@ export class RuleImportService {
       });
     }
     const existing = (
-      await this.database.pool.query("SELECT * FROM memories WHERE repository_id=$1 ORDER BY version DESC", [target.id])
+      await this.database.pool.query(
+        `SELECT * FROM memories WHERE ${ownerColumn(targetOwner(target))}=$1 ORDER BY version DESC`,
+        [ownerId(targetOwner(target))],
+      )
     ).rows.map(toMemory);
     const rules = this.prepare(drafts, existing);
     const id = randomUUID();
     await this.database.pool.query("DELETE FROM memory_import_previews WHERE expires_at < now()");
     const saved = await this.database.pool.query(
-      "INSERT INTO memory_import_previews(id,repository_id,actor_id,source_repository_id,rules) VALUES($1,$2,$3,$4,$5) RETURNING expires_at",
-      [id, target.id, actor.id, source?.id ?? null, JSON.stringify(rules)],
+      `INSERT INTO memory_import_previews(id,${ownerColumn(targetOwner(target))},actor_id,source_repository_id,rules) VALUES($1,$2,$3,$4,$5) RETURNING expires_at`,
+      [id, ownerId(targetOwner(target)), actor.id, source?.id ?? null, JSON.stringify(rules)],
     );
     return { id, rules, expiresAt: saved.rows[0].expires_at.toISOString() };
   }
@@ -169,14 +180,14 @@ export class RuleImportService {
     return result.rows[0].source_repository_id ? Number(result.rows[0].source_repository_id) : undefined;
   }
 
-  async confirm(target: Repository, actor: Actor, id: string, selection: string[]): Promise<ImportResult> {
+  async confirm(target: ImportTarget, actor: Actor, id: string, selection: string[]): Promise<ImportResult> {
     const client = await this.database.pool.connect();
     try {
       return await transaction(client, async () => {
         const row = (
           await client.query(
-            "SELECT * FROM memory_import_previews WHERE id=$1 AND repository_id=$2 AND actor_id=$3 AND expires_at>now() FOR UPDATE",
-            [id, target.id, actor.id],
+            `SELECT * FROM memory_import_previews WHERE id=$1 AND ${ownerColumn(targetOwner(target))}=$2 AND actor_id=$3 AND expires_at>now() FOR UPDATE`,
+            [id, ownerId(targetOwner(target)), actor.id],
           )
         ).rows[0];
         if (!row) throw new RuleImportError("预览不存在或已过期，请重新预览");
@@ -189,7 +200,9 @@ export class RuleImportService {
         const selected = drafts.filter((rule) => selection.includes(rule.key));
         if (selected.length !== selection.length) throw new RuleImportError("选择的规则不属于本次预览");
         // Serialize imports into the same repository, including different previews and service instances.
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`rule-import:${target.id}`]);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+          `rule-import:${ownerColumn(targetOwner(target))}:${ownerId(targetOwner(target))}`,
+        ]);
         if (row.source_repository_id) {
           const source = (
             await client.query(
@@ -204,9 +217,10 @@ export class RuleImportService {
           }
         }
         const existing = (
-          await client.query("SELECT * FROM memories WHERE repository_id=$1 ORDER BY id,version DESC FOR UPDATE", [
-            target.id,
-          ])
+          await client.query(
+            `SELECT * FROM memories WHERE ${ownerColumn(targetOwner(target))}=$1 ORDER BY id,version DESC FOR UPDATE`,
+            [ownerId(targetOwner(target))],
+          )
         ).rows.map(toMemory);
         const outcome: ImportResult = { imported: [], skipped: [] };
         const mapped = new Map<string, string>();
@@ -254,15 +268,15 @@ export class RuleImportService {
     }
   }
 
-  private async insert(client: PoolClient, target: Repository, actor: Actor, rule: StoredPreviewRule) {
+  private async insert(client: PoolClient, target: ImportTarget, actor: Actor, rule: StoredPreviewRule) {
     const source = { ...rule.source, importedAt: new Date().toISOString() };
     const result = await client.query(
-      `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,approved_by,approved_at)
-       VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'ACTIVE',$12,$13,$14,now()) RETURNING *`,
+      `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,approved_by,approved_at,team_id,level)
+       VALUES($1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,'ACTIVE',$12,$13,$14,now(),$15,$16) RETURNING *`,
       [
         rule.targetId,
-        target.id,
-        target.installationId,
+        "teamId" in target ? null : target.id,
+        "teamId" in target ? null : target.installationId,
         rule.type,
         rule.title,
         rule.content,
@@ -274,6 +288,8 @@ export class RuleImportService {
         `import:${signature(rule)}`,
         rule.exceptionTo ?? null,
         actor.id,
+        "teamId" in target ? target.teamId : null,
+        rule.level,
       ],
     );
     const saved = toMemory(result.rows[0]);

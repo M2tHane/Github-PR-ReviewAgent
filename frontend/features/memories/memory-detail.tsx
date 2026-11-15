@@ -1,10 +1,11 @@
-import { memorySourceLabel } from "../../../src/memory/types.js";
+import { memorySourceLabel, ruleLevelLabels } from "../../../src/memory/types.js";
+import { TeamRuleActions } from "./team-rule-actions.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
-import type { Memory, Repository as Repo } from "../../types.js";
+import type { Memory, Team, Repository as Repo } from "../../types.js";
 
 // limit：列表里只显示前几项，其余收成“+N”，完整内容在规则详情里看。
 export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: number }) {
@@ -35,6 +36,11 @@ export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: n
 
 export function RulePanel({
   item,
+  teams,
+  canManage,
+  reload,
+  suffix,
+  repositoryContext,
   repository,
   rules,
   candidates,
@@ -44,6 +50,11 @@ export function RulePanel({
   error,
 }: {
   item: Memory;
+  teams: Team[];
+  canManage: boolean;
+  reload: () => Promise<void>;
+  suffix: string;
+  repositoryContext?: Repo;
   repository?: Repo;
   rules: Memory[];
   candidates: Memory[];
@@ -75,14 +86,18 @@ export function RulePanel({
     <>
       <Modal drawer titleId="rule-detail-title" onClose={close}>
         <div className="drawer-head">
-          <span className="eyebrow">团队规则</span>
+          <span className="eyebrow">{item.teamId ? "团队规则" : "项目规则"}</span>
           <button className="icon-button" aria-label="关闭规则详情" onClick={close}>
             ×
           </button>
         </div>
         <div className="drawer-body">
           <h2 id="rule-detail-title">{item.title}</h2>
+          <p className="muted rule-owner">
+            {item.teamId ? teams.find((team) => team.id === item.teamId)?.name : repository?.fullName}
+          </p>
           <div className="rule-status-line" role="status">
+            <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
             <Status
               value={item.status}
               label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
@@ -100,7 +115,9 @@ export function RulePanel({
             <p className="pending-note">
               {item.activeVersion
                 ? `当前 v${item.activeVersion} 继续用于审查；确认后才采用这次更新。`
-                : "待确认的团队约定，确认后用于后续审查。"}
+                : item.teamId
+                  ? "待确认的团队共享规则。"
+                  : "待确认的项目约定，确认后用于后续审查。"}
               {item.activeVersion && (
                 <>
                   {" "}
@@ -142,6 +159,7 @@ export function RulePanel({
                   </dl>
                 )}
               </section>
+              <TeamRuleActions item={item} teams={teams} repository={repositoryContext} reload={reload} />
               {/* 从没生效过的待确认规则不会交给审查，不显示使用情况。 */}
               {(item.status !== "CANDIDATE" || item.activeVersion) && (
                 <section className="rule-section">
@@ -175,7 +193,11 @@ export function RulePanel({
                   {item.source.kind ? (
                     <>
                       {memorySourceLabel(item.source)}
-                      <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
+                      {item.source.kind !== "promotion" && (
+                        <>
+                          <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
+                        </>
+                      )}
                     </>
                   ) : (
                     <>
@@ -321,20 +343,26 @@ export function RulePanel({
           )}
         </div>
         <footer className="drawer-footer">
-          {item.status === "CANDIDATE" ? (
+          {item.status === "CANDIDATE" && canManage ? (
             <>
               <button className="secondary" disabled={busy} onClick={() => void action(item, "reject")}>
                 忽略
               </button>
-              <a className="button secondary" href={`#rules/${item.id}/edit`}>
+              <a className="button secondary" href={`#rules/${item.id}/edit${suffix}`}>
                 编辑
               </a>
               <button disabled={busy} onClick={() => void action(item, "approve")}>
-                {busy ? "处理中…" : item.activeVersion ? "确认更新规则" : "确认加入团队规则"}
+                {busy ? "处理中…" : item.activeVersion ? "确认更新规则" : "确认规则生效"}
               </button>
             </>
           ) : (
-            <span className="muted">{item.status === "ACTIVE" ? "用于后续 PR 审查" : "保留来源与历史"}</span>
+            <span className="muted">
+              {item.status === "ACTIVE"
+                ? item.teamId
+                  ? "团队规则已生效，共享应用将在后续版本启用"
+                  : "用于后续 PR 审查"
+                : "保留来源与历史"}
+            </span>
           )}
           <details className="more-menu">
             <summary aria-label="更多规则操作">···</summary>
@@ -345,10 +373,10 @@ export function RulePanel({
                 menu.querySelector("summary")?.focus();
               }}
             >
-              {item.status === "ACTIVE" && <a href={`#rules/${item.id}/edit`}>编辑规则</a>}
+              {item.status === "ACTIVE" && canManage && <a href={`#rules/${item.id}/edit${suffix}`}>编辑规则</a>}
               <button onClick={() => setTab("history")}>查看历史</button>
               <button onClick={() => setTab("technical")}>查看技术信息</button>
-              {item.status === "ACTIVE" && (
+              {item.status === "ACTIVE" && canManage && (
                 <>
                   {candidates.length > 0 && <button onClick={() => setConfirm("supersede")}>用待确认规则替代</button>}
                   <button className="danger" onClick={() => setConfirm("deprecate")}>
@@ -367,7 +395,7 @@ export function RulePanel({
             if (!busy) setConfirm(null);
           }}
         >
-          <h2 id="rule-confirm-title">{confirm === "deprecate" ? "停用这条团队规则？" : "用另一条规则替代？"}</h2>
+          <h2 id="rule-confirm-title">{confirm === "deprecate" ? "停用这条规则？" : "用另一条规则替代？"}</h2>
           <p>{item.title}</p>
           {confirm === "deprecate" ? (
             <p className="muted">停用后将不再参与 PR Review，来源与历史仍然保留。</p>

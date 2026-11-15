@@ -56,6 +56,7 @@ export interface ImportRule {
   exceptionKey?: string;
 }
 export interface PreviewRule extends ImportRule {
+  level: import("./types.js").RuleLevel;
   source: ImportedMemorySource;
   sourceSnapshot?: MemoryRecord;
   duplicateId?: string;

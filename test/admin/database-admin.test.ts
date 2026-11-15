@@ -694,7 +694,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
           const response = await fetch(`${origin}${path}`, { headers });
           assert.equal(response.status, 200, path);
           const result = (await response.json()) as any;
-          if (path === "/api/bootstrap") assert.deepEqual(result, { repositories: [], memories: [] });
+          if (path === "/api/bootstrap") assert.deepEqual(result, { repositories: [], teams: [], memories: [] });
           else if (path === "/api/jobs") assert.deepEqual(result, { items: [], total: 0, page: 1, pageSize: 20 });
           else if (path === "/api/findings") assert.deepEqual(result, { items: [], nextCursor: null });
           else assert.deepEqual(result, []);

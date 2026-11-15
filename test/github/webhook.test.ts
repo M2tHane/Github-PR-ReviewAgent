@@ -642,6 +642,7 @@ test("ReviewResult 只接受约定结构和有限输出", () => {
 test("模型不能引用未召回或跨仓库 Memory", () => {
   const memory = {
     id: "memory",
+    level: "should",
     version: 1,
     repositoryId: 2,
     installationId: 1,
