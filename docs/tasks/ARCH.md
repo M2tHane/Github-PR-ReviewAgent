@@ -27,11 +27,11 @@
 
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
-| ARCH-1-A | 开发任务由统一执行器在 worker 上领取（租约、心跳），和企微解耦；重启和部署不再取消任务；去掉"目标分支有新提交就放弃" | 进行中 |
-| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 待做（依赖 1-A） |
-| ARCH-1-C | 不经企微派任务：管理页／管理 API、给 issue 打 `pi-dev` 标签；仓库可以不绑群 | 进行中 |
-| ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 待做（依赖 1-A） |
-| ARCH-1-E | 线程回复加隐藏标记与发布前核对，中断后不重复回复；Review／Reply／规则提取的中断回归测试 | 进行中 |
+| ARCH-1-A | 开发任务由统一执行器在 worker 上领取（租约、心跳），和企微解耦；重启和部署不再取消任务；去掉"目标分支有新提交就放弃" | 已完成（`d477ef6`，合并 `03040e5`） |
+| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 进行中 |
+| ARCH-1-C | 不经企微派任务：管理页／管理 API、给 issue 打 `pi-dev` 标签；仓库可以不绑群 | 已完成（`f51d9ad`，合并 `c2ad48f`） |
+| ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 进行中 |
+| ARCH-1-E | 线程回复加隐藏标记与发布前核对，中断后不重复回复；Review／Reply／规则提取的中断回归测试 | 已完成（`37e957c`，合并 `c72d824`） |
 
 阶段验收（来自设计文档）：
 
@@ -101,3 +101,24 @@
 - `npm run test:db`：87 项全部通过（基线 72 项）。
 - `npm run check:docs`：35 个 Markdown 文件、304 个本地链接和锚点通过；`npm run check:format`、`git diff --check` 通过。
 - 未运行：`npm audit`（本阶段没有改依赖）；真实模型、真实 Webhook 和 GitHub 发布验收（本阶段没有改 Review Prompt，提取器 Prompt 不在现有 eval 覆盖范围）。
+
+**ARCH-1-A**（2026-11-15，`d477ef6`）
+
+- 改动：`PersistentRunner` 改为从任务来源领取（`TaskSource`：claim／renew／finish／fail／release／describe），jobs 与开发任务各一个来源、各自的并发设置。开发任务有租约和心跳，领取不再看 Bot ID；租约过期由其他实例接手（attempt+1，第 4 次过期标 failed）；停止时放回队列、不计次数、不写取消结果和通知。企微 Worker 只收消息、回执、发通知。`config.development` 总是存在，企微凭据改为可选的 `development.wecom`。删除"确认目标分支没有新提交"。迁移 `015_development_lease.sql`。
+- 合并时主脑补：`job_failed`／`job_released` 日志恢复任务类型、仓库、PR、SHA、尝试次数（首版只剩 jobId）。
+- 验证：分支上 `npm test` 178 通过、0 失败；`npm run test:db` 97/97。新增用例覆盖无企微执行、停心跳后接手与旧实例隔离、第 4 次过期失败、停止回队（四类任务）、跨实例串行、心跳发现取消后中止、目标分支推进仍以原基线发布。
+
+**ARCH-1-C**（2026-11-15，`f51d9ad`）
+
+- 改动：迁移 `016_development_sources.sql`（`source`、`requester_login`，企微相关字段可空，群绑定可空）。管理 API `POST /api/repositories/:id/development/tasks`（会话 + CSRF + 维护权限；`SERVICE_ADMINS` 内为 admin，否则 developer）和页面上的"新建开发任务"；`issues.labeled` 且标签为 `pi-dev`、发起人对仓库有写权限时入队（developer），按 delivery 和 issue 去重；这两类来源不发企微通知，标签来源的结果贴回 issue。GitHub App 需要订阅 Issues 事件。
+- 决定：不新增机器令牌，"API"即管理 API；程序化派任务用 GitHub API 打标签。
+- 验证：分支上 `npm test` 179 通过；`npm run test:db` 94/94；页面在 1600／1024 宽看过未启用、12,000 字需求、issue #2147483647（主脑复核了截图）。合并后主脑补了"执行器领取管理页任务（无 Bot）并完成"的端到端用例。
+
+**ARCH-1-E**（2026-11-15，`37e957c`）
+
+- 根因：线程回复发出后、记账前实例退出时，台账没有结果、正文也没有能定位到具体来源评论的标记，接手实例会重跑 Agent 再发一条；网络错误直接标 uncertain 终态。
+- 改动：回复正文加 `<!-- pi-reply:<sourceCommentId> -->`，发出前先把结果存进 `reply_publications`（pending）；接手时按线程根评论、Bot 作者、标记三项核对，找到就只补记账，找不到就用存好的结果发布，都不重跑 Agent；网络错误按错误分类重试，核对也做不到且尝试用完才 uncertain。
+- 验证：修复前新增用例中"回复已发出未记账"得到 2 条回复（失败），修复后中断用例 30/30；Review（Agent 中、建 Review 后未记账、记账后未结束）与规则提取（候选写入后未结束）的中断用例确认现有台账已能防重。
+
+**阶段 1 第一批合并后**（2026-11-15，`03040e5`）：`npm test` 282 项，182 通过、0 失败、100 跳过（数据库用例）；`npm run test:db` 135/135；`check:docs`、`check:format` 通过。
+
