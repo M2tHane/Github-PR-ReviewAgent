@@ -8,6 +8,8 @@ import { HealthPanel } from "./features/health/health-panel.js";
 import { DiscussionPage } from "./features/reviews/discussions.js";
 import { ReviewDetails } from "./features/reviews/review-detail.js";
 import { JobsPage } from "./pages/jobs-page.js";
+import { TeamsPage } from "./pages/teams-page.js";
+import type { Team } from "./types.js";
 import { MemoriesPage } from "./pages/memories-page.js";
 import { OverviewPage } from "./pages/overview-page.js";
 import { ReviewsPage } from "./pages/reviews-page.js";
@@ -28,6 +30,7 @@ function App() {
     [initializing, setInitializing] = useState(true),
     [route, setRoute] = useState(currentRoute);
   const [repos, setRepos] = useState<Repo[]>([]),
+    [teams, setTeams] = useState<Team[]>([]),
     [memories, setMemories] = useState<Memory[]>([]),
     [error, setError] = useState("");
   const main = useRef<HTMLElement>(null),
@@ -40,6 +43,7 @@ function App() {
       const data = await api<BootstrapResponse>("/api/bootstrap");
       setRepos(data.repositories);
       setMemories(data.memories);
+      setTeams(data.teams);
       setError("");
     } catch (cause) {
       setError(messageOf(cause));
@@ -102,7 +106,8 @@ function App() {
   return (
     <AppLayout
       navigation={{
-        overview: !reviews && !rules && !repositories && !settings,
+        overview: !reviews && !rules && !repositories && !settings && route !== "teams",
+        teams: route === "teams",
         reviews,
         rules,
         repositories,
@@ -132,11 +137,14 @@ function App() {
           )}
           {rules ? (
             <MemoriesPage
+              teams={teams}
               items={memories}
               repositories={repos}
               reload={load}
               route={route === "memories" ? "rules" : route}
             />
+          ) : route === "teams" ? (
+            <TeamsPage reload={load} />
           ) : repositoryRoute ? (
             repository ? (
               <RepositorySettingsPage

@@ -41,7 +41,8 @@ export interface Finding {
     title?: string;
     source:
       | { kind?: never; pullRequestNumber?: number; commentIds?: number[] }
-      | import("../memory/types.js").ImportedMemorySource;
+      | import("../memory/types.js").ImportedMemorySource
+      | import("../memory/types.js").PromotionSource;
   };
 }
 
