@@ -2,6 +2,14 @@
 
 这两套评测使用 `cases/*.json` 中的合成数据。期望答案只由评分代码读取，不进入 Prompt、Skill、`agent/` 或模型工作区。仓库的业务行为保持不变，提取评测复用生产的 Prompt、Pi 会话入口和结果解析。
 
+## Review UX 真实模型回归
+
+`node --env-file=.env eval/evaluate-ux.mjs` 使用固定 SHA 的订单样本，每次运行开始时建立独立临时 PostgreSQL schema、执行最新迁移、导入 [固定规则样本](ux/rule-reference.json)，结束时删除 schema。需要 `DATABASE_URL`、模型配置，以及 `work/e2e-order-api` 和 `work/e2e-order-followup` 两个样本仓库 clone；不修改共享 schema，不发布 GitHub 评论。连续运行三次并分别保存 `work/ux-model-evaluation.json`，用于比较逐 case 通过率、findings、用量与耗时；原有聚合和规则引用断言保持不变。
+
+可选新能力用例（默认不跑）：`node --env-file=.env eval/evaluate-ux.mjs rule-reference-must` 或 `node --env-file=.env eval/evaluate-ux.mjs rule-reference-index`，分别把同一规则设为 must，或在同一临时 schema 加入 40 条与订单无关的构建诊断规则使目标进入索引；各运行三次，输出记录 ruleChecks、修复要求、实际读取工具调用和引用。
+
+规则样本依据 [PR #8 维护者的原始设计决定](https://github.com/M2tHane/pi-review-test-repository/pull/8#issuecomment-5645822573) 重建，沿用原 ID、版本 2、ACTIVE 状态与项目范围；级别沿用新增级别字段时的默认值 should。原数据库记录已不存在，重建样本的标题、正文和理由与历史版本的措辞可能不同，历史结果不能直接比较。本任务的改前、改后都必须使用同一份重建样本。评测通过当前 `MemoryService.context()` 入口读取规则，不依赖已删除的 `retrieveForReview()`。
+
 ## 召回评测（确定性，不调模型）
 
 从仓库根目录运行：
@@ -43,7 +51,7 @@ node eval/evaluate-recall.mjs --max-chars=60000 --output=work/recall-60k.json
 node eval/evaluate-recall.mjs --adapter=./eval/recall/context-adapter.mjs --output=work/recall-context.json
 ```
 
-第二条命令使用上下文编译器，分别评估 `full` 全文与 `full + index` 的覆盖率；本批生产 Review 仍只接收 `full`。适配器导出 `async function select({ memories, input, maxChars })`，`input` 为 `{ paths, text }`，返回 `{ rulesFull, rulesIndex }`。全文数组至少保留规则的 `id/title/content/rationale`，索引数组至少保留 `id`；应返回实际提供给 Agent 的字段，以便比较载荷。评测对每个用例调用两次：指定预算和 `Number.MAX_SAFE_INTEGER`，后者只用于识别哪些缺失来自预算。适配器必须无副作用、结果确定，且尊重预算参数；旧样例未标级别时按数据库默认的 should 处理；默认适配器保留旧算法，便于对照。
+第二条命令使用上下文编译器，分别评估 `full` 全文与 `full + index` 的覆盖率；生产 Review 接收全文与索引，并可按需读取索引规则正文。索引覆盖不代表模型实际读取或检查过全文。适配器导出 `async function select({ memories, input, maxChars })`，`input` 为 `{ paths, text }`，返回 `{ rulesFull, rulesIndex }`。全文数组至少保留规则的 `id/title/content/rationale`，索引数组至少保留 `id`；应返回实际提供给 Agent 的字段，以便比较载荷。评测对每个用例调用两次：指定预算和 `Number.MAX_SAFE_INTEGER`，后者只用于识别哪些缺失来自预算。适配器必须无副作用、结果确定，且尊重预算参数；旧样例未标级别时按数据库默认的 should 处理；默认适配器保留旧算法，便于对照。
 
 ## 提取评测（真实模型，手动运行）
 

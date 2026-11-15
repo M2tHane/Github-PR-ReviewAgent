@@ -50,7 +50,7 @@
 | ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，项目差异通过例外或停用覆盖表达；各类 Agent 共用规则入口 | 已完成（`4db020a`）；Review 这一批仍只给全文，索引按需读取留给 2-G |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；合并时推断"疑似已修复"（和开发者确认的修复分开统计） | 已完成（`3587c59`）；真实 GitHub 未验收 |
 | ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
-| ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 进行中 |
+| ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 已完成（`f3ce238`、`df8ca02`）；普通输入逐字相同，must／索引新能力真实模型各 3/3，全量验证通过 |
 | ARCH-2-H | 把团队规则提供给本地 Codex／Claude Code：规则变化时由服务提 PR 更新仓库里的规则文件，并在 AGENTS.md／CLAUDE.md 引用（用户 2026-11-15 选定，不做 MCP） | 已完成（`6cfa570`）；真实 GitHub 未验收 |
 
 阶段验收（来自设计文档，数值是初始目标）：
@@ -262,3 +262,18 @@
 - 新增拒绝路径：开关值非 boolean 沿用配置 422（任务要求仓库开关）；目标为目录等非普通文件、GitHub 返回无法解码的正文编码时报错（固定路径写文件且保留原文，不能误当空文件）；同步关闭、仓库暂停／撤销／不在白名单或任务租约失效时取消写入（任务要求默认关闭、维护者授权与租约）。普通 401／403、GitHub 错误分类与非强推冲突沿用现有机制。
 - 限制：GitHub 一律替身，无真实 delivery／finding／Review／reply URL，未对真实仓库写入；测试的 PR 地址是替身。未改 `src/review/` 或任何 Agent 取规则方式。未运行真实模型、Webhook 或部署演练。
 - 收尾：`npm run format` 格式化 259 个文件中的 12 个本次改动文件；`npm run check:docs` 36 个 Markdown／311 个本地链接与锚点通过，`npm run check:format`、`git diff --check` 通过，`npm audit --audit-level=high` 为 0 vulnerabilities。最终构建后的专项 + 现有 jobs 数据库／dispatcher 回归共 17/17，0 跳过（1.10 秒）。200 条合成规则的编译＋生成运行 30 次，中位数 6.10 ms、P95 6.53 ms，输出 290,191 bytes；不含数据库、GitHub 网络或模型。
+
+**ARCH-2-G**（2026-11-15，基于 `2dbb443`，分支 `arch/p2-g-rule-index`）
+
+- 评测前提修复单独提交 `f3ce238`：UX 改用 `MemoryService.context()`，每轮临时 schema 迁移并导入固定规则，结束删除；规则按 PR #8 维护者评论 5645822573 重建，原历史记录已不存在，不能与历史措辞下的结果直接比较。本次使用同一 `eval/ux/rule-reference.json`。M2 新 clone `work/m2-eval-clean` 固定在 `ad75aa1e1f1a3604682af068c2c048da23bbbe7a`，原目录文件保留。
+- 实现：Review 同时收到全文与超限规则目录，`read_team_rule` 经 Pi 服务工具读取。引用、`review_memory_usage` 只接受全文与本次实际读过的规则。must 逐条返回 `ruleChecks`；缺结论或违反却没有有效引用 finding 时，共用原有一次修复；仍缺则 limitations、日志和服务生成的未确认清单，Review 照常发布。管理详情显示遵守／违反／不适用／未确认计数，无 must 隐藏。未改分组、GitHub 发布格式及其他 Agent Prompt。
+- 按用户后续决定，`REVIEW_PROMPT` 恢复原文；存在索引才附说明并注册工具，存在 must 才附检查要求；空目录不发给模型，无 must 可省略 ruleChecks。实际 Provider 请求单测覆盖目录省略／空数组，两者系统提示、工具与任务 JSON 均与改前一致；提示摘要 `239043580721c03151a27009bd46e5378b2770a09ef99f4f2c4b6cfc12ff12d5`。
+- 旧 case 核实：M2 六个和 UX 两个默认 case 均无索引／must。分别执行 f3ce238 与最终评测脚本，在会话边界捕获并逐字比较系统提示、任务 JSON、工具、Skills、仓库说明，8/8 一致；因此按用户决定“输入逐字相同，未重跑”。改前 M2 18/18 运行及结构引用校验成功；UX rule-reference 3/3，orders-single 0/3（虽均 1 finding，但关联位置／至少 2 候选断言未满足），保留原断言和基线问题。
+- 新能力真实模型（tuzi / gpt-6.1-sol，thinking high，general_review，160,000 tokens 预算）：`node --env-file=.env eval/evaluate-ux.mjs rule-reference-must` 三次 3/3，均正确 violated＋v2 引用、未触发修复，合计 52,172 tokens／99.10 秒；`rule-reference-index` 三次 3/3，同 schema 加 40 条无关构建规则后为全文 23／索引 18，目标仅在目录，三次均实际调用 `read_team_rule` 读到 v2 并正确引用，合计 169,585 tokens／95.99 秒。6 次均 1 finding、0 修复、未回报额度 0。变体默认不跑；数据只在评测中，不进入生产 Prompt。
+- 初版记录保留为“改前改后输入不同时观察到的波动”：全局附加提示时 complex 3 次结构检查通过，findings 5/5/5；独立账户键碰撞在基线 2/3、初版 0/3 被报告，实际 226,617 tokens／423.15 秒，另有 28,772 未回报预留。当时按任务书停止并汇报；随后用户选择按需附加，不加跑 complex。初版 java 一次完成（4 findings、60,035 tokens／127.30 秒），第二次在途取消，消耗未知。该初版不是最终条件启用方案的回归结果。
+- 定向：构建后 Agent 文件 12/12；数据库中断文件 42/42，0 跳过，15.58 秒。真实 Pi＋替身模型＋独立 PostgreSQL schema 覆盖索引读取、未读引用、索引外 ID／错版本、must 缺失与违反无 finding 的一次修复、usage 和结果持久化、修复后继续发布；并行工具读取确认只额外查一次 context。
+- 全量顺序执行：`npm test` 353 项，208 通过、0 失败、145 跳过（普通命令未加载数据库，另有 Semgrep 缺失），39.72 秒；`npm run test:db` 192/192，0 失败、0 跳过，115.26 秒。随后 `npm run format`、`npm run check:docs`、`npm audit --audit-level=high` 通过，audit 为 0 vulnerabilities。
+- 页面：真实管理 handler＋临时 schema＋替身登录，ego-browser 在 1600／1024 宽检查无 must、全遵守、违反与未确认、大数字（遵守 120），8 组计数正确、无横向溢出；截图与检查在 `work/arch-p2-g/ui-*`，预览服务／schema 已回收。
+- 开销：无索引／must 时新增输入 0；must 说明 +280 字符／444 字节；索引说明 +185 字符／359 字节，工具定义约 203 字符／251 字节，再加实际目录。200 条合成规则的 120 条目录合计新增 15,702 字符／19,796 字节；额外纯编译 30 次中位 7.59 ms／P95 8.22 ms（不含 DB／模型）。未读取时新增查询 0，读取时最多 1 次；工具返回进入后续模型上下文，使用原预算。前端压缩 JS +504 字节，CSS 不变；无生产压测。
+- 新增拒绝路径：索引外 ID／失效版本工具错误，ruleChecks 结构无效沿用一次修复与结构失败，非 must／错版本／重复结论要求修复，缺结论／违反无有效 finding 最终只记未确认；依据任务书的索引、字段结构和逐条检查要求，无新管理 API 校验。
+- 限制：真实模型是固定 SHA 本地验证，不是 Webhook／GitHub 发布；无真实 delivery／finding／Review／reply URL，本地 Job UUID 在各轮 JSON。没有真实模型触发修复，修复由替身验证；未部署／push，不把整个阶段 2 或 M2 人工增益标为完成。报告 `/tmp/arch-p2-g-report.md`，原始证据在忽略的 `work/arch-p2-g/`。

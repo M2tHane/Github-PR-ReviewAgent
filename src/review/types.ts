@@ -87,11 +87,21 @@ export interface OrchestrationSummary {
   fallback?: "validated_children";
 }
 
+export interface RuleCheck {
+  id: string;
+  version: number;
+  result: "followed" | "violated" | "not_applicable";
+  note?: string;
+}
+
 export interface ReviewResult {
   summary: string;
   findings: Finding[];
   coverage: string[];
   limitations: string[];
+  ruleChecks?: RuleCheck[];
+  // 服务核对后的未确认 must 规则；不接受模型自行声明，也不发布到 GitHub。
+  uncheckedMustRules?: Array<{ id: string; version: number; title: string }>;
   // 之前提过、这次没再出现的问题数，只用于总评展示。
   resolvedPrevious?: number;
   // 模型给出但没通过核对（指向本 PR 之外的文件或未提供的团队规则）而丢弃的意见数，只用于总评展示。

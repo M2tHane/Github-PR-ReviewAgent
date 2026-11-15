@@ -102,6 +102,12 @@ export function ReviewDetails({ id }: { id: string }) {
   const fresh = findings.filter((finding) => !finding.repeatOf),
     repeats = findings.filter((finding) => finding.repeatOf);
   const resolved = report?.resolvedPrevious ?? 0;
+  const mustCounts = {
+    followed: report?.ruleChecks?.filter((check) => check.result === "followed").length ?? 0,
+    violated: report?.ruleChecks?.filter((check) => check.result === "violated").length ?? 0,
+    notApplicable: report?.ruleChecks?.filter((check) => check.result === "not_applicable").length ?? 0,
+    unchecked: report?.uncheckedMustRules?.length ?? 0,
+  };
   const lead = [
     fresh.length
       ? `${report ? "发现" : "已加载"} ${fresh.length} 个${repeats.length || resolved ? "新" : ""}问题`
@@ -147,6 +153,12 @@ export function ReviewDetails({ id }: { id: string }) {
         </p>
       )}
       {job.job_type === "PR_REVIEW" && <p className="review-lead">{lead}。自动审查，不代替 CI 测试。</p>}
+      {Object.values(mustCounts).some((count) => count > 0) && (
+        <p className="muted">
+          must 规则：遵守 {mustCounts.followed} · 违反 {mustCounts.violated} · 不适用 {mustCounts.notApplicable} ·
+          未确认 {mustCounts.unchecked}
+        </p>
+      )}
       <div className="review-issues">
         {fresh.map((finding, i) => {
           const display = displayFinding(finding),

@@ -1,6 +1,14 @@
 import { readBaseFile, readWorkspaceFile, withWorkspace } from "../workspace/workspace.js";
 import { GitHubClient } from "../github/client.js";
-import { BudgetError, findingReferenceErrors, runAgentReview, TimeoutError, type AgentUsage } from "./agent.js";
+import {
+  BudgetError,
+  findingReferenceErrors,
+  finalizeRuleChecks,
+  runAgentReview,
+  TimeoutError,
+  type AgentUsage,
+} from "./agent.js";
+import type { MemoryRecord } from "../memory/types.js";
 import { DEFAULT_BUDGET_TOKENS } from "../pi/types.js";
 import type { Config } from "../config/config.js";
 import type { ReviewJob } from "../jobs/types.js";
@@ -67,11 +75,15 @@ export function createReviewProcessor(
     let singleRunId: string | undefined, agentUsage: AgentUsage | undefined;
     try {
       await withWorkspace(job.cloneUrl, token, job.baseSha, job.headSha, async (root) => {
-        const selection = await memories?.context(job.repositoryId, {
+        const contextInput = {
           paths: files.map((file) => file.filename),
           text: recallText(job, files),
-        });
+        };
+        const selection = await memories?.context(job.repositoryId, contextInput);
         const recalled = selection?.full ?? [];
+        const provided = new Map(recalled.map((rule) => [rule.id, rule]));
+        // 首次按需读取时取回本次索引的正文；后续工具调用复用，版本仍与初始索引核对。
+        let indexedRules: Promise<MemoryRecord[]> | undefined;
         if (selection && (selection.index.length || selection.mustOverBudget))
           log("info", "review_memory_budget", {
             jobId: job.id,
@@ -110,6 +122,18 @@ export function createReviewProcessor(
           headSha: job.headSha,
           changedFiles: files,
           memories: recalled,
+          teamRuleIndex: selection?.index ?? [],
+          readTeamRule: async (id) => {
+            const entry = selection!.index.find((rule) => rule.id === id)!;
+            indexedRules ??= memories!
+              .context(job.repositoryId, contextInput, Number.MAX_SAFE_INTEGER)
+              .then((context) => context.full);
+            const rule = (await indexedRules).find((rule) => rule.id === entry.id && rule.version === entry.version);
+            if (!rule) return undefined;
+            const read = { ...rule, level: entry.level };
+            provided.set(read.id, read);
+            return read;
+          },
           previousFindings,
           ruleHits: rules.hits,
           outputLanguage: repositoryConfig?.outputLanguage,
@@ -125,7 +149,10 @@ export function createReviewProcessor(
         const secrets = await checkAddedSecrets(root, files, previous, controller.signal);
         // 模型的个别意见指向本 PR 之外的文件或未提供的团队规则时整组丢弃，其余照常发布；服务自己产生的意见随后合入。
         const changed = new Set(files.map((file) => file.filename));
-        const invalid = review.result.findings.map((finding) => findingReferenceErrors(finding, changed, recalled));
+        const providedRules = [...provided.values()];
+        const invalid = review.result.findings.map((finding) =>
+          findingReferenceErrors(finding, changed, providedRules),
+        );
         const dropped = invalid.filter((errors) => errors.length);
         if (dropped.length) {
           review.result.findings = review.result.findings.filter((_, index) => !invalid[index]!.length);
@@ -139,6 +166,7 @@ export function createReviewProcessor(
             reasons: [...new Set(dropped.flat().map((error) => error.kind))],
           });
         }
+        finalizeRuleChecks(review.result, providedRules, changed, { jobId: job.id });
         for (const finding of review.result.findings) redactFinding(finding);
         review.result.summary = redactSecrets(review.result.summary);
         review.result.findings.push(
@@ -151,9 +179,9 @@ export function createReviewProcessor(
         if (dependencies.audit) review.result.dependencyAudit = dependencies.audit;
         if (files.some((file) => file.patch === undefined))
           review.result.limitations.push("GitHub 未提供部分文件的 patch，相关内容只能按 Workspace 源码检查。");
-        if (selection && selection.full.length < selection.total)
+        if (selection && selection.index.length)
           review.result.limitations.push(
-            `团队规则超过上限，本次只带了 ${selection.full.length}/${selection.total} 条。`,
+            `团队规则全文超过上限，初始提供 ${selection.full.length}/${selection.total} 条，其余 ${selection.index.length} 条提供索引，按需读取了 ${provided.size - recalled.length} 条。`,
           );
         if (selection?.mustOverBudget)
           review.result.limitations.push("must 级团队规则超过字符上限，仍已全部提供，输入开销可能增加。");
@@ -167,7 +195,7 @@ export function createReviewProcessor(
           if (!changed.has(path)) throw new Error(`finding 路径不属于 PR: ${path}`);
           await readWorkspaceFile(root, path);
         }
-        validateMemoryReferences(review.result, recalled);
+        validateMemoryReferences(review.result, providedRules);
         const validDiffLines = diffLines(files);
         for (const location of locations) normalizeFindingLocation(location, validDiffLines);
         review.result.resolvedPrevious = linkRepeats(review.result.findings, previous);
@@ -196,7 +224,7 @@ export function createReviewProcessor(
           singleRunId = undefined;
         }
         const stored = (await publications?.saveFindings?.(job, review.result.findings, inline)) ?? [];
-        await publications?.saveReviewMemoryUsage?.(job, recalled);
+        await publications?.saveReviewMemoryUsage?.(job, providedRules);
         const publishedResult = {
           ...review.result,
           findings: stored.length ? [...new Map(stored.map((f) => [f.id, f])).values()] : review.result.findings,

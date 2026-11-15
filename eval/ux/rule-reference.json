@@ -1,0 +1,23 @@
+{
+  "id": "567f00c2-b758-4b2a-857b-ceb62d33e9a6",
+  "version": 2,
+  "status": "ACTIVE",
+  "type": "architecture_decision",
+  "level": "should",
+  "title": "订单查询返回不可修改的时间点快照",
+  "content": "演示模块对外的订单列表查询必须返回不可修改的时间点快照，使用 List.copyOf：调用方不能修改结果，目录之后新增订单也不能改变此前拿到的结果。不采用只包装内部集合的 Collections.unmodifiableList，因为它仍是随内部写入变化的实时视图。导出先用独立 ArrayList 复制查询结果，在副本上排序，再返回不可修改的快照。规则仅作用于本次演示模块，不扩大到其他业务代码。",
+  "rationale": "保证调用方不能修改查询结果，且后续目录写入不会改变已返回的结果；导出排序在独立副本上进行，避免改变内部集合。",
+  "scope": { "paths": ["backend/walkthrough/orders/**/*.java"] },
+  "source": {
+    "pullRequestNumber": 8,
+    "commitSha": "1a6a64f95874cea64fe2981a6f650d4c1caa88a3",
+    "commentIds": [5645822573]
+  },
+  "evidence": [
+    {
+      "kind": "human_comment",
+      "reference": "5645822573",
+      "detail": "维护者 M2tHane 在 PR #8 的“演示模块的设计决定”中明确选择 List.copyOf 时间点快照，拒绝内部集合的实时只读视图，并要求导出在独立 ArrayList 副本上排序。"
+    }
+  ]
+}
