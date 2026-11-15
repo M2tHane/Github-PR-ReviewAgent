@@ -30,7 +30,7 @@
 | ARCH-1-A | 开发任务由统一执行器在 worker 上领取（租约、心跳），和企微解耦；重启和部署不再取消任务；去掉"目标分支有新提交就放弃" | 已完成（`d477ef6`，合并 `03040e5`） |
 | ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 进行中 |
 | ARCH-1-C | 不经企微派任务：管理页／管理 API、给 issue 打 `pi-dev` 标签；仓库可以不绑群 | 已完成（`f51d9ad`，合并 `c2ad48f`） |
-| ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 进行中 |
+| ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 已完成（`c0536d1`）；真实滚动部署未验收 |
 | ARCH-1-E | 线程回复加隐藏标记与发布前核对，中断后不重复回复；Review／Reply／规则提取的中断回归测试 | 已完成（`37e957c`，合并 `c72d824`） |
 
 阶段验收（来自设计文档）：
@@ -126,3 +126,14 @@
 
 **阶段 1 第一批合并后**（2026-11-15，`03040e5`）：`npm test` 282 项，182 通过、0 失败、100 跳过（数据库用例）；`npm run test:db` 135/135；`check:docs`、`check:format` 通过。
 
+**ARCH-1-D**（2026-11-15，基于 `03040e5`，分支 `arch/p1-d-roles`）
+
+- `PROCESS_ROLE=edge|worker|all`，未设置默认 `all`，非法值启动报错。edge 只启动 HTTP 与企微收发；worker 启动两个执行器、健康定时入队、清理和漏投递补偿，HTTP 仅保留 `/healthz`、`/readyz`；all 同时承担两者。
+- 两种角色均读取服务设置并每 30 秒刷新。edge 连接池上限 5，worker / all 为 `5 + 3 × (审查等任务并发 + 开发并发)`，动态设置同时调整池上限与执行器。设置页的说明注明生效角色；README 和 `.env.example` 补齐角色、探针、同库部署与先起新 worker 再停旧 worker 的发布步骤。
+- SIGTERM／SIGINT 复用执行器原有停止回队逻辑，等 HTTP、企微、执行器与定时工作收尾后关闭数据库；重复信号不重复调用停止。临时目录清理也纳入等待。未改任务领取、快照、副作用或迁移。
+- 相关验证：`npm run build && node --test dist/test/bootstrap/application.test.js dist/test/config/config.test.js dist/test/config/service-settings.test.js dist/test/admin/service-settings.test.js dist/test/github/webhook.test.js`，30/30 通过。7 个新组装用例使用替身执行器、数据库、企微和定时工作，HTTP 使用真实临时端口；覆盖三种角色、业务路由隔离、设置与连接池更新、停止后的定时器、两种信号和请求／发送收尾。
+- 全量：`npm test` 首次 185 通过、1 失败、103 跳过，失败为未修改的 Pi CodeGraph 索引用例达到 10 秒时限；单独复跑该用例通过（索引 1,273ms）。再次 `npm test` 186 通过、0 失败、103 跳过，耗时 51.43 秒。`npm run test:db` 使用本机 PostgreSQL 临时 schema，135/135 通过、0 跳过，耗时 80.36 秒，包含既有停止回队、租约接管与探针用例。
+- `npm run format` 通过（201 个文件，格式调整 2 个本次改动文件）；`npm run check:docs` 通过（36 个 Markdown、307 个本地链接与锚点）；`npm run check:format`、`git diff --check` 通过。
+- 容量影响：默认并发 2 + 3 时 worker / all 池上限 20；拆分为一个 edge 与一个 worker 时总上限 25，滚动时还需计入旧实例。每个额外实例增加每 30 秒一次的设置查询，edge 不领取任务或跑后台定时任务。未做负载压测、内存或延迟测量。
+- 限制：未启动连接真实队列的 main，未连接真实 GitHub、模型或企微；没有真实 30 分钟任务滚动发布证据。ARCH-1-B 的快照与副作用恢复、整个阶段 1 的部署验收不在本项完成范围内。没有新增依赖，未运行 `npm audit`。
+- 新增拒绝路径：非法 `PROCESS_ROLE`（含空值）启动报错，依据本项明确配置要求；worker 的非探针 HTTP 路径返回 404，依据 worker 只对外提供探针的要求。

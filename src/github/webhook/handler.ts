@@ -25,6 +25,34 @@ export const HANDLED_EVENTS: ReadonlySet<string> = new Set([
   "installation_repositories",
 ]);
 
+type ProbeTarget = Pick<JobAcceptor, "isStopping" | "check">;
+
+async function serveProbe(request: IncomingMessage, response: ServerResponse, target: ProbeTarget) {
+  // healthz 只看进程活着；readyz 还要数据库可用、服务没有在停止。
+  if (request.method === "GET" && request.url === "/healthz") {
+    send(response, 200, { ok: true });
+    return true;
+  }
+  if (request.method !== "GET" || request.url !== "/readyz") return false;
+  if (target.isStopping?.()) send(response, 503, { ok: false, reason: "stopping" });
+  else {
+    try {
+      await target.check?.();
+      send(response, 200, { ok: true });
+    } catch {
+      send(response, 503, { ok: false, reason: "database" });
+    }
+  }
+  return true;
+}
+
+// worker 保留部署探针，不装配 Webhook 或管理路由。
+export function createProbeServer(target: ProbeTarget) {
+  return createServer(async (request, response) => {
+    if (!(await serveProbe(request, response, target))) send(response, 404, { error: "not found" });
+  });
+}
+
 export function createApp(
   config: Config,
   target: JobAcceptor | ((job: ReviewJob) => Promise<void>),
@@ -40,18 +68,7 @@ export function createApp(
       ? (input: Omit<ReviewJob, "id" | "status">, _meta: PullRequestEventMeta) => Promise.resolve(queue!.enqueue(input))
       : target.accept.bind(target);
   const server = createServer(async (request, response) => {
-    // 部署平台用的探针：healthz 只看进程活着；readyz 还要数据库可用、服务没有在停止。
-    if (request.method === "GET" && request.url === "/healthz") return send(response, 200, { ok: true });
-    if (request.method === "GET" && request.url === "/readyz") {
-      if (typeof target === "function") return send(response, 200, { ok: true });
-      if (target.isStopping?.()) return send(response, 503, { ok: false, reason: "stopping" });
-      try {
-        await target.check?.();
-        return send(response, 200, { ok: true });
-      } catch {
-        return send(response, 503, { ok: false, reason: "database" });
-      }
-    }
+    if (await serveProbe(request, response, typeof target === "function" ? {} : target)) return;
     if (request.method !== "POST" || request.url !== "/github/webhook")
       return fallback ? fallback(request, response) : send(response, 404, { error: "not found" });
     const eventName = request.headers["x-github-event"];

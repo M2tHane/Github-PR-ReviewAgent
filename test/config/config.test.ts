@@ -41,6 +41,11 @@ test("自定义模型服务是可选配置，填写时校验地址、接口类�
     assert.equal(loadConfig(base).webhookRedelivery, true, "漏投递补偿默认开启");
     assert.equal(loadConfig({ ...base, WEBHOOK_REDELIVERY_ENABLED: "false" }).webhookRedelivery, false);
     assert.throws(() => loadConfig({ ...base, WEBHOOK_REDELIVERY_ENABLED: "no" }), /WEBHOOK_REDELIVERY_ENABLED/);
+    assert.equal(loadConfig(base).processRole, "all", "未设置时保持单进程行为");
+    for (const role of ["edge", "worker", "all"] as const)
+      assert.equal(loadConfig({ ...base, PROCESS_ROLE: role }).processRole, role);
+    for (const invalid of ["", "api", "WORKER"])
+      assert.throws(() => loadConfig({ ...base, PROCESS_ROLE: invalid }), /PROCESS_ROLE 只能是 edge \/ worker \/ all/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

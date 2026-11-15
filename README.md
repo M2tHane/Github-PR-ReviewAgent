@@ -205,6 +205,8 @@ SESSION_SECRET
 
 完整配置说明见 [.env.example](.env.example)。
 
+`PROCESS_ROLE` 决定本进程的职责，取值为 `edge`、`worker`、`all`，未设置时默认 `all`；其他值（含空值）会在启动时报错。它只能通过环境变量设置，修改后需要重启。`PORT` 是本进程的 HTTP 监听端口，默认 3000；worker 只开放探针。
+
 时限、定时任务间隔、数据保留天数、模型名称和思考强度、健康检查开关、并发与开发任务额度，也可以在管理端「设置 → 服务设置」修改，改完最多 30 秒所有实例生效，不用重启；`.env` 里的值是没人改过时的默认值。只有 `SERVICE_ADMINS`（GitHub 用户名，逗号分隔）里的人能改，其他维护者只读。密钥、地址和允许的仓库列表只能改 `.env`。详见 [服务设置](docs/reliability-security.md#服务设置)。
 
 配置智能机器人长连接，并在「仓库 → 选择仓库 → 群内开发」启用群绑定：审查结果成功发布到 GitHub 后，机器人直接向该仓库绑定群发送完成状态和 PR 链接，不 @成员，也不需要 GitHub／企微成员映射或 Message Push Webhook。发送失败不会重新执行 AI 审查。配置、迁移和通知状态见 [企业微信通知](docs/wecom-notifications.md)。
@@ -235,6 +237,43 @@ npm run dev
 ```
 
 > `npm start` 不会自动执行数据库迁移。数据库结构发生变化时，应先显式运行 `npm run migrate`。
+
+## 部署与滚动发布
+
+同一份代码、镜像或构建产物可以按角色分别运行，所有实例连接同一个 PostgreSQL：
+
+| 角色 | 提供的能力 | HTTP |
+| --- | --- | --- |
+| `edge` | GitHub Webhook、管理页和 API、企微收消息、回执与通知 | 完整业务路由及 `/healthz`、`/readyz` |
+| `worker` | 审查等任务执行器、开发任务执行器、健康检查定时入队、数据与临时目录清理、Webhook 漏投递补偿 | 仅 `GET /healthz`、`GET /readyz`；业务路径返回 404 |
+| `all`（默认） | 上述全部能力，适合单进程部署 | 完整业务路由及探针 |
+
+先完成依赖安装、配置、数据库迁移和一次 `npm run build`，再在不同终端或进程管理器中启动。例如同一主机上使用不同端口：
+
+```bash
+PROCESS_ROLE=edge PORT=3000 npm start
+PROCESS_ROLE=worker PORT=3001 npm start
+```
+
+单进程部署仍可直接 `npm start`（不设置 `PROCESS_ROLE`），或显式指定：
+
+```bash
+PROCESS_ROLE=all PORT=3000 npm start
+```
+
+角色拆分不改变现有环境变量的必填要求；各实例使用一致的数据库、GitHub App、仓库白名单和企微 Bot 配置。worker 也需保留 Bot 配置以记录通知目标，但不会建立企微连接。将公网入口与 GitHub Webhook 指向 edge。多个 edge 共用同一 Bot 时，只有持有现有数据库 Bot 锁的实例建立长连接，其余提供 HTTP，并在锁释放后竞争接管。
+
+两种角色都在启动时读取管理端服务设置，此后每 30 秒刷新一次。设置页说明了各项生效的角色。`WORKER_CONCURRENCY` 与 `DEVELOPMENT_CONCURRENCY` 分别控制每个 worker / all 的审查等任务和开发任务并发；多个 worker 的并发槽位相加，任务仍按现有租约与串行规则领取。健康定时入队沿用数据库去重与事务控制，清理和漏投递补偿沿用数据库锁。
+
+滚动发布步骤：
+
+1. 用新构建产物先启动新 worker，检查它的 `/readyz` 返回 200。旧、新 worker 可以同时工作。
+2. 向旧 worker 的 Node 进程发送 `SIGTERM`（`SIGINT` 也可），等待它退出。它立即停止领取任务，中止当前 Agent 并等待收尾，把未完成任务放回队列，然后关闭数据库；其他 worker 会接手。进程管理器应留足收尾时间，不要直接强杀。崩溃或强杀时依靠租约到期恢复。
+3. edge 可以独立重启，不会中止 worker 正在执行的任务。发送相同的停止信号后，它关闭 HTTP 监听，等已接收请求和企微发送处理收尾后退出。多个 edge 时，可先启动新实例并切换流量，再停止旧实例。
+
+`all` 收到停止信号时会同时停止 HTTP、企微与执行器；需要独立发布入口而不打断执行时，使用分开的 edge 和 worker。以上探针不检查模型或 GitHub 可用性：`/healthz` 表示进程存活，`/readyz` 另检查数据库可用及停止状态。
+
+部署容量：edge 的数据库连接池上限为 5；worker / all 为 `5 + 3 × (WORKER_CONCURRENCY + DEVELOPMENT_CONCURRENCY)`，并发设置变化时同步调整。默认并发 2 与 3 时，worker / all 上限为 20；滚动期间应为旧、新实例连接池总和预留数据库容量。池按需建连接，上限不代表常驻连接数。每增加一个实例会增加一次每 30 秒的服务设置查询；edge 不轮询任务队列或运行后台定时任务。拆分会增加一个 Node 进程的基础内存，实际内存和请求延迟需按部署环境与任务负载测量。
 
 ## GitHub App 配置
 
