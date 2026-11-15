@@ -190,8 +190,9 @@ export function createAdminHandler(
         if (request.method !== "GET" && !requireCsrf(request, response, user)) return;
         const importMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/rule-import\/(source|preview|confirm)$/);
         if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
-        const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development$/);
-        if (developmentMatch) return await developmentRoute(request, response, Number(developmentMatch[1]));
+        const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development(\/tasks)?$/);
+        if (developmentMatch)
+          return await developmentRoute(request, response, Number(developmentMatch[1]), Boolean(developmentMatch[2]));
         const sessionMatch = url.pathname.match(/^\/api\/agent-sessions\/([^/]+?)(\/raw)?$/);
         if (sessionMatch)
           return await agentSessionsRoute(request, response, sessionMatch[1]!, Boolean(sessionMatch[2]));

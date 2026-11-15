@@ -1554,3 +1554,105 @@ test("PR 评论：连发几条只处理最后一条；评论人关联管理员�
     await s.cleanup();
   }
 });
+
+test("管理页发起的需求开 issue 后直接标注 GitHub 发起人；标签需求带全文并在 issue 回 PR", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    await s.store.saveSettings(s.repoId, { ...s.settings, chatId: "", members: [], version: 1 }, "maintainer");
+    const claimDirect = async (id: string) =>
+      (
+        await s.database.pool.query(
+          "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now() WHERE id=$1 RETURNING *",
+          [id, randomUUID()],
+        )
+      ).rows[0];
+    const admin = await s.store.acceptAdmin(
+      { repositoryId: s.repoId, login: "Maintainer", role: "admin", prompt: "新增日期筛选" },
+      s.config,
+    );
+    const task = await claimDirect(admin.taskId!);
+    await s.process(async () => ({
+      text: JSON.stringify({ issue: { title: "日期范围", body: "按创建时间筛选？" } }),
+      usage: emptyUsage(),
+      durationMs: 1,
+      model: "test",
+    }))(task, new AbortController().signal);
+    assert.equal((await s.getTask(task.id)).status, "discussing");
+    assert.match(s.issues[0]!.body, /@Maintainer/);
+    assert.doesNotMatch(s.issues[0]!.body, /没有关联/);
+    assert.equal((await s.getTask(task.id)).notification_status, "skipped");
+
+    s.issues[0] = { title: "导出日期范围", body: "导出必须保留日期筛选。" };
+    s.thread.push({
+      id: 1,
+      body: "按创建日期筛选",
+      user: { login: "author", type: "User" },
+      created_at: new Date().toISOString(),
+    });
+    const labeled = await s.store.acceptIssueLabel(
+      {
+        repositoryId: s.repoId,
+        installationId: 1,
+        repository: s.repository,
+        issueNumber: 23,
+        title: s.issues[0].title,
+        body: s.issues[0].body,
+        login: "author",
+        deliveryId: randomUUID(),
+      },
+      s.config,
+    );
+    const labelTask = await claimDirect(labeled.taskId!);
+    await s.process(async (input) => {
+      const prompt = input.prompt as any;
+      assert.equal(prompt.task, "导出日期范围\n\n导出必须保留日期筛选。");
+      assert.equal(prompt.issue.comments[0].body, "按创建日期筛选");
+      return s.agent()(input);
+    })(labelTask, new AbortController().signal);
+    assert.equal((await s.getTask(labelTask.id)).status, "succeeded");
+    assert(s.issueComments.some((c) => c.number === 23 && c.body.includes("#42")));
+    assert.match(s.prBodies.at(-1)!, /Closes #23/);
+    assert.equal((await s.getTask(labelTask.id)).notification_status, "skipped");
+    assert.equal((await s.store.issueOrigin(labelTask))?.status, "done");
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("标签开发失败把原因贴回 issue 并回到讨论，不发送企微通知", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    await s.store.saveSettings(s.repoId, { ...s.settings, chatId: "", members: [], version: 1 }, "maintainer");
+    const accepted = await s.store.acceptIssueLabel(
+      {
+        repositoryId: s.repoId,
+        installationId: 1,
+        repository: s.repository,
+        issueNumber: 29,
+        title: "修改核心代码",
+        body: "修改受保护文件",
+        login: "author",
+        deliveryId: randomUUID(),
+      },
+      s.config,
+    );
+    const task = (
+      await s.database.pool.query(
+        "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now() WHERE id=$1 RETURNING *",
+        [accepted.taskId, randomUUID()],
+      )
+    ).rows[0];
+    await s.process(s.agent("src/protected.ts"))(task, new AbortController().signal);
+    assert.equal((await s.getTask(task.id)).status, "refused");
+    assert.equal((await s.store.issueOrigin(task))?.status, "discussing");
+    assert(
+      s.issueComments.some((c) => c.number === 29 && c.body.includes("这次没有建 PR") && c.body.includes("保护规则")),
+    );
+    assert.equal((await s.getTask(task.id)).notification_status, "skipped");
+    assert.deepEqual(s.calls, []);
+  } finally {
+    await s.cleanup();
+  }
+});

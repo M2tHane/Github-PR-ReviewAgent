@@ -9,6 +9,8 @@ import { verifySignature } from "./signature.js";
 import { handleInstallation } from "./events/installation.js";
 import { handleReviewComment } from "./events/review-comment.js";
 import { handlePullRequest } from "./events/pull-request.js";
+import { GitHubClient } from "../client.js";
+import { handleIssues } from "./events/issues.js";
 import { handleIssueComment } from "./events/issue-comment.js";
 import { handlePullRequestReview } from "./events/pull-request-review.js";
 
@@ -18,6 +20,7 @@ export const HANDLED_EVENTS: ReadonlySet<string> = new Set([
   "pull_request_review_comment",
   "pull_request_review",
   "issue_comment",
+  "issues",
   "installation",
   "installation_repositories",
 ]);
@@ -26,6 +29,10 @@ export function createApp(
   config: Config,
   target: JobAcceptor | ((job: ReviewJob) => Promise<void>),
   fallback?: (request: IncomingMessage, response: ServerResponse) => Promise<void>,
+  github: Pick<GitHubClient, "installationToken" | "hasWritePermission"> = new GitHubClient(
+    config.appId,
+    config.privateKey,
+  ),
 ) {
   const queue = typeof target === "function" ? new JobQueue(config.queueCapacity, target) : undefined;
   const accept =
@@ -72,6 +79,7 @@ export function createApp(
       return handleInstallation(target, eventName, deliveryId, payload, response);
     if (eventName === "pull_request_review_comment")
       return handleReviewComment(config, target, deliveryId, payload, response);
+    if (eventName === "issues") return handleIssues(config, target, github, deliveryId, payload, response);
     if (eventName === "issue_comment") return handleIssueComment(config, target, payload, response);
     if (eventName === "pull_request_review") return handlePullRequestReview(config, target, payload, response);
     return handlePullRequest(config, target, accept, deliveryId, eventName, payload, response);

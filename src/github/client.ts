@@ -472,6 +472,15 @@ export class GitHubClient {
     return this.request<{ id: number; login: string }>(token, "/user");
   }
 
+  async hasWritePermission(token: string, repository: string, login: string, signal?: AbortSignal) {
+    const value = await this.request<{ permission: string }>(
+      token,
+      `/repos/${repository}/collaborators/${encodeURIComponent(login)}/permission`,
+      { signal },
+    );
+    return ["write", "maintain", "admin"].includes(value.permission);
+  }
+
   async hasMaintainerPermission(token: string, repository: string) {
     const value = await this.request<{ permissions?: { admin?: boolean; maintain?: boolean } }>(
       token,

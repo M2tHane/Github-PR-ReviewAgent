@@ -301,7 +301,9 @@ function createDeveloper(
                   `需求还有没定的地方，已在 issue #${task.issue_number} 补充提问。`,
                 );
               } else {
-                const logins = await store.requesterLogins(task.repository_id, task.requester);
+                const logins = task.requester_login
+                  ? [task.requester_login]
+                  : await store.requesterLogins(task.repository_id, task.requester);
                 const title = redactSecrets(proposal.title).replace(/\s+/g, " ").trim();
                 const issue = await current.step("issue", "开 issue 讨论需求", () =>
                   github.createIssue(

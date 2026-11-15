@@ -5,7 +5,9 @@ import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repos
 import { isStartCommand } from "./policy.js";
 import {
   DevelopmentError,
+  type DevelopmentRole,
   type DevelopmentSettings,
+  type IssueLabelInput,
   type DevelopmentTask,
   type GroupRequest,
   type PullRequestCommentInput,
@@ -31,7 +33,7 @@ export class DevelopmentStore {
   async settings(repositoryId: number): Promise<DevelopmentSettings | undefined> {
     return (
       await this.pool.query(
-        `SELECT chat_id AS "chatId",target_branch AS "targetBranch",enabled,members,protections,version
+        `SELECT COALESCE(chat_id,'') AS "chatId",target_branch AS "targetBranch",enabled,members,protections,version
       FROM development_settings WHERE repository_id=$1`,
         [repositoryId],
       )
@@ -52,7 +54,7 @@ export class DevelopmentStore {
         protections=$6,updated_by=$7,version=development_settings.version+1,updated_at=now()`,
         [
           repositoryId,
-          value.chatId,
+          value.chatId || null,
           value.targetBranch,
           value.enabled,
           JSON.stringify(value.members),
@@ -82,10 +84,10 @@ export class DevelopmentStore {
       await client.query("SELECT pg_advisory_xact_lock(4897040)");
       if (
         (
-          await client.query("SELECT id FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
-            botId,
-            input.messageId,
-          ])
+          await client.query(
+            "SELECT id FROM development_tasks WHERE bot_id IS NOT DISTINCT FROM $1 AND message_id=$2",
+            [botId, input.messageId],
+          )
         ).rowCount
       ) {
         await client.query("COMMIT");
@@ -102,14 +104,7 @@ export class DevelopmentStore {
         throw new DevelopmentError("此群未绑定已启用的开发仓库，请联系管理员。", "refused");
       const member = (binding.members as DevelopmentSettings["members"]).find((m) => m.userid === input.requester);
       if (!member) throw new DevelopmentError("你尚未被设置为该仓库的管理员或开发，不能发起开发任务。", "refused");
-      const count = (
-        await client.query(
-          "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND status IN ('queued','running','publishing')",
-          [botId],
-        )
-      ).rows[0].n;
-      if (count >= config.queueCapacity)
-        throw new DevelopmentError("开发任务队列已满，请稍后重新发起任务。", "refused");
+      await this.checkCapacity(client, botId, config.queueCapacity);
       const id = randomUUID();
       await client.query(
         `INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,
@@ -142,6 +137,112 @@ export class DevelopmentStore {
     } finally {
       client.release();
     }
+  }
+  // 管理页/API 和 issue 标签共用入队边界；身份由调用方验证，不依赖企微配置或成员关联。
+  async acceptAdmin(
+    input: { repositoryId: number; login: string; role: DevelopmentRole; prompt: string },
+    config: Pick<Config, "allowedRepositories" | "queueCapacity">,
+  ) {
+    return this.acceptDirect({ ...input, source: "admin" }, config);
+  }
+
+  async acceptIssueLabel(input: IssueLabelInput, config: Pick<Config, "allowedRepositories" | "queueCapacity">) {
+    return this.acceptDirect(
+      { ...input, source: "issue_label", role: "developer", prompt: `${input.title}\n\n${input.body}` },
+      config,
+    );
+  }
+
+  private async acceptDirect(
+    input: { repositoryId: number; login: string; role: DevelopmentRole; prompt: string } & (
+      | { source: "admin" }
+      | ({ source: "issue_label" } & IssueLabelInput)
+    ),
+    config: Pick<Config, "allowedRepositories" | "queueCapacity">,
+  ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; taskId?: string }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(4897040)");
+      const binding = (
+        await client.query(
+          `SELECT s.*,r.full_name,r.installation_id FROM development_settings s JOIN repositories r ON r.id=s.repository_id
+          WHERE s.repository_id=$1 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s,r`,
+          [input.repositoryId],
+        )
+      ).rows[0];
+      if (!binding || !config.allowedRepositories.has(binding.full_name.toLowerCase())) {
+        if (input.source === "admin") throw new DevelopmentError("仓库开发设置未启用或仓库未授权。", "refused");
+        await client.query("COMMIT");
+        return { kind: "ignored" };
+      }
+      if (input.source === "issue_label") {
+        if (Number(binding.installation_id) !== input.installationId || binding.full_name !== input.repository) {
+          await client.query("COMMIT");
+          return { kind: "ignored" };
+        }
+        const delivery = await client.query(
+          `INSERT INTO webhook_deliveries(delivery_id,event,action,repository_id,installation_id)
+          VALUES($1,'issues','labeled',$2,$3) ON CONFLICT DO NOTHING RETURNING delivery_id`,
+          [input.deliveryId, input.repositoryId, input.installationId],
+        );
+        const active = await client.query(
+          `SELECT 1 FROM development_tasks WHERE repository_id=$1 AND issue_number=$2
+            AND status IN ('queued','running','publishing')
+          UNION ALL SELECT 1 FROM development_issues WHERE repository_id=$1 AND issue_number=$2 AND status='developing'`,
+          [input.repositoryId, input.issueNumber],
+        );
+        if (!delivery.rowCount || active.rowCount) {
+          await client.query("COMMIT");
+          return { kind: "duplicate" };
+        }
+      }
+      await this.checkCapacity(client, null, config.queueCapacity);
+      const id = randomUUID();
+      await client.query(
+        `INSERT INTO development_tasks(id,source,requester_login,chat_id,repository_id,installation_id,repository,target_branch,
+          branch,settings_version,role,prompt,status,kind,issue_number,notification_status)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'queued','develop',$13,'skipped')`,
+        [
+          id,
+          input.source,
+          input.login,
+          binding.chat_id,
+          input.repositoryId,
+          binding.installation_id,
+          binding.full_name,
+          binding.target_branch,
+          `bot/development/${id}`,
+          binding.version,
+          input.role,
+          input.prompt,
+          input.source === "issue_label" ? input.issueNumber : null,
+        ],
+      );
+      if (input.source === "issue_label")
+        await client.query(
+          `INSERT INTO development_issues(repository_id,issue_number,origin_task_id,status) VALUES($1,$2,$3,'developing')
+          ON CONFLICT(repository_id,issue_number) DO UPDATE SET origin_task_id=$3,status='developing',updated_at=now()`,
+          [input.repositoryId, input.issueNumber, id],
+        );
+      await client.query("COMMIT");
+      return { kind: "accepted", taskId: id };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async checkCapacity(client: PoolClient, botId: string | null, capacity: number) {
+    const count = (
+      await client.query(
+        "SELECT count(*)::int n FROM development_tasks WHERE bot_id IS NOT DISTINCT FROM $1 AND status IN ('queued','running','publishing')",
+        [botId],
+      )
+    ).rows[0].n;
+    if (count >= capacity) throw new DevelopmentError("开发任务队列已满，请稍后重新发起任务。", "refused");
   }
   // 同一项目排在这条消息前面、还没结束的任务数（含正在做的）。
   async ahead(botId: string, messageId: string): Promise<number> {
@@ -185,7 +286,7 @@ export class DevelopmentStore {
       await client.query("SELECT pg_advisory_xact_lock(4897040)");
       const issue = (
         await client.query(
-          `SELECT i.status,t.bot_id,t.chat_id,t.requester,t.installation_id,t.repository,t.target_branch
+          `SELECT i.status,t.bot_id,t.chat_id,t.requester,t.requester_login,t.role,t.installation_id,t.repository,t.target_branch
           FROM development_issues i JOIN development_tasks t ON t.id=i.origin_task_id
           WHERE i.repository_id=$1 AND i.issue_number=$2 FOR UPDATE OF i`,
           [input.repositoryId, input.issueNumber],
@@ -198,7 +299,7 @@ export class DevelopmentStore {
       const messageId = `issue-comment:${input.commentId}`;
       if (
         (
-          await client.query("SELECT 1 FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
+          await client.query("SELECT 1 FROM development_tasks WHERE bot_id IS NOT DISTINCT FROM $1 AND message_id=$2", [
             issue.bot_id,
             messageId,
           ])
@@ -210,20 +311,21 @@ export class DevelopmentStore {
       const settings = (
         await client.query(
           `SELECT s.version,s.members FROM development_settings s JOIN repositories r ON r.id=s.repository_id
-          WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s`,
+          WHERE s.repository_id=$1 AND s.chat_id IS NOT DISTINCT FROM $2 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s`,
           [input.repositoryId, issue.chat_id],
         )
       ).rows[0];
       const member = (settings?.members as DevelopmentSettings["members"] | undefined)?.find(
         (m) => m.userid === issue.requester,
       );
-      const logins = await this.requesterLogins(input.repositoryId, issue.requester, client);
+      const logins = issue.requester_login
+        ? [String(issue.requester_login).toLowerCase()]
+        : await this.requesterLogins(input.repositoryId, issue.requester, client);
       let kind: "develop" | "discuss" | "notice";
       let prompt: string;
-      if (!settings || !member) {
+      if (!settings || (issue.bot_id !== null && !member)) {
         kind = "notice";
-        prompt =
-          "这个仓库的群内开发已关闭，或提需求的人已不是开发成员，这个 issue 不能继续了。需要的话请在群里重新发起。";
+        prompt = "这个仓库的开发设置已关闭，或提需求的人已不是开发成员，这个 issue 不能继续了。请按当前设置重新发起。";
       } else if (issue.status === "developing") {
         kind = "notice";
         prompt = "已经在开发了，这条回复不会用上。PR 建好后会贴在这里，有新要求可以在 PR 里说。";
@@ -239,18 +341,12 @@ export class DevelopmentStore {
           ? `只有提需求的 ${logins.map((login) => `@${login}`).join("、")} 回复“开始”才会开工。`
           : "提需求的人还没有关联 GitHub 账号，“开始”不会生效。请管理员在管理页「仓库 → 群内开发 → 成员关联」里关联后，由本人回复“开始”。";
       }
-      const count = (
-        await client.query(
-          "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND status IN ('queued','running','publishing')",
-          [issue.bot_id],
-        )
-      ).rows[0].n;
-      if (count >= config.queueCapacity) throw new DevelopmentError("开发任务队列已满", "refused");
+      await this.checkCapacity(client, issue.bot_id, config.queueCapacity);
       const id = randomUUID();
       await client.query(
         `INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,
-        settings_version,role,prompt,images,status,kind,issue_number,notification_status)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'[]','queued',$14,$15,$16)`,
+        settings_version,role,prompt,images,status,kind,issue_number,notification_status,source,requester_login)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'[]','queued',$14,$15,$16,'issue',$17)`,
         [
           id,
           issue.bot_id,
@@ -263,12 +359,13 @@ export class DevelopmentStore {
           issue.target_branch,
           `bot/development/${id}`,
           settings?.version ?? 0,
-          member?.role ?? "developer",
+          issue.bot_id === null ? issue.role : (member?.role ?? "developer"),
           prompt,
           kind,
           input.issueNumber,
           // 讨论回复和提示只在 issue 里出现；开发结果照常通知群里。
-          kind === "develop" ? "pending" : "skipped",
+          kind === "develop" && issue.bot_id !== null ? "pending" : "skipped",
+          input.login,
         ],
       );
       if (kind === "develop")
@@ -310,7 +407,7 @@ export class DevelopmentStore {
       const messageId = `pr-${input.source}:${input.commentId}`;
       if (
         (
-          await client.query("SELECT 1 FROM development_tasks WHERE bot_id=$1 AND message_id=$2", [
+          await client.query("SELECT 1 FROM development_tasks WHERE bot_id IS NOT DISTINCT FROM $1 AND message_id=$2", [
             origin.bot_id,
             messageId,
           ])
@@ -322,7 +419,7 @@ export class DevelopmentStore {
       const settings = (
         await client.query(
           `SELECT s.version,s.members FROM development_settings s JOIN repositories r ON r.id=s.repository_id
-          WHERE s.repository_id=$1 AND s.chat_id=$2 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s`,
+          WHERE s.repository_id=$1 AND s.chat_id IS NOT DISTINCT FROM $2 AND s.enabled AND r.enabled AND r.revoked_at IS NULL FOR SHARE OF s`,
           [input.repositoryId, origin.chat_id],
         )
       ).rows[0];
@@ -337,17 +434,11 @@ export class DevelopmentStore {
         (m) => m.role === "admin" && mapped.includes(m.userid),
       );
       const kind = settings ? "revise" : "notice";
-      const count = (
-        await client.query(
-          "SELECT count(*)::int n FROM development_tasks WHERE bot_id=$1 AND status IN ('queued','running','publishing')",
-          [origin.bot_id],
-        )
-      ).rows[0].n;
-      if (count >= config.queueCapacity) throw new DevelopmentError("开发任务队列已满", "refused");
+      await this.checkCapacity(client, origin.bot_id, config.queueCapacity);
       await client.query(
         `INSERT INTO development_tasks(id,bot_id,message_id,chat_id,requester,repository_id,installation_id,repository,target_branch,branch,
-        settings_version,role,prompt,images,status,kind,pr_number,notification_status)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'[]','queued',$14,$15,$16)`,
+        settings_version,role,prompt,images,status,kind,pr_number,notification_status,source,requester_login)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'[]','queued',$14,$15,$16,'pr_comment',$17)`,
         [
           randomUUID(),
           origin.bot_id,
@@ -365,7 +456,8 @@ export class DevelopmentStore {
           kind,
           input.prNumber,
           // 改了代码才通知群里，由处理结果决定；提示只在 PR 里出现。
-          kind === "revise" ? "pending" : "skipped",
+          kind === "revise" && origin.bot_id !== null ? "pending" : "skipped",
+          input.login,
         ],
       );
       await client.query("COMMIT");
@@ -431,7 +523,7 @@ export class DevelopmentStore {
   }
 
   // 提需求的人（企微成员）在这个仓库关联的 GitHub 账号，来自管理页的成员关联。
-  async requesterLogins(repositoryId: number, requester: string, client: Pool | PoolClient = this.pool) {
+  async requesterLogins(repositoryId: number, requester: string | null, client: Pool | PoolClient = this.pool) {
     return (
       await client.query(
         "SELECT github_login FROM repository_notification_members WHERE repository_id=$1 AND wecom_userid=$2 ORDER BY github_login",
@@ -471,11 +563,13 @@ export class DevelopmentStore {
   async issueOrigin(task: DevelopmentTask) {
     return (
       await this.pool.query(
-        `SELECT i.status,t.prompt FROM development_issues i JOIN development_tasks t ON t.id=i.origin_task_id
+        `SELECT i.status,t.prompt,t.requester,t.requester_login FROM development_issues i JOIN development_tasks t ON t.id=i.origin_task_id
         WHERE i.repository_id=$1 AND i.issue_number=$2`,
         [task.repository_id, task.issue_number],
       )
-    ).rows[0] as { status: string; prompt: string } | undefined;
+    ).rows[0] as
+      | { status: string; prompt: string; requester: string | null; requester_login: string | null }
+      | undefined;
   }
 
   // 同一个 issue 后面还有排队的讨论回复时，这一条不用回：后面那条会读到全部讨论。
@@ -494,7 +588,7 @@ export class DevelopmentStore {
     const row = (
       await this.pool.query(
         `SELECT s.protections FROM development_settings s JOIN repositories r ON r.id=s.repository_id
-      WHERE s.repository_id=$1 AND s.version=$2 AND s.chat_id=$3 AND s.target_branch=$4 AND s.enabled AND r.enabled
+      WHERE s.repository_id=$1 AND s.version=$2 AND s.chat_id IS NOT DISTINCT FROM $3 AND s.target_branch=$4 AND s.enabled AND r.enabled
       AND EXISTS (SELECT 1 FROM development_tasks t WHERE t.id=$9 AND t.owner_token=$10 AND t.status IN ('running','publishing'))
       AND r.revoked_at IS NULL AND r.installation_id=$5 AND r.full_name=$6 AND ($11 OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(s.members) m WHERE m->>'userid'=$7 AND m->>'role'=$8))`,
@@ -509,8 +603,8 @@ export class DevelopmentStore {
           task.role,
           task.id,
           task.owner_token,
-          // PR 评论的发起人可以不是群成员：按开发身份处理时不要求是成员。
-          task.kind === "revise" && task.role === "developer",
+          // GitHub 与管理页来源的身份在入队时确定；设置版本仍在每次执行前检查。
+          task.source !== "wecom",
         ],
       )
     ).rows[0];
@@ -597,7 +691,7 @@ export class DevelopmentStore {
   async list(repositoryId: number) {
     return (
       await this.pool.query(
-        `SELECT t.id,requester,status,kind,issue_number,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,t.duration_ms,
+        `SELECT t.id,requester,requester_login,source,status,kind,issue_number,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,t.duration_ms,
       notification_status,notification_error,created_at,
       COALESCE((SELECT jsonb_agg(${SESSION_SUMMARY("s")} ORDER BY s.started_at) FROM agent_sessions s WHERE s.development_task_id=t.id),'[]') agent_sessions
       FROM development_tasks t WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,

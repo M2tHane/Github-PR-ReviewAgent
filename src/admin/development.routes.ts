@@ -6,6 +6,7 @@ import { DevelopmentStore } from "../development/store.js";
 import { parseSettings } from "../development/policy.js";
 import { DevelopmentError } from "../development/types.js";
 import type { Repository, Session } from "./dto.js";
+import { requiredText, strictObject } from "../shared/model-json.js";
 import { body, json } from "./http.js";
 
 export function createDevelopmentRoute(
@@ -19,9 +20,34 @@ export function createDevelopmentRoute(
   ) => Promise<{ user: Session; repository: Repository } | undefined>,
 ) {
   const store = new DevelopmentStore(database.pool);
-  return async (request: IncomingMessage, response: ServerResponse, repositoryId: number) => {
+  return async (request: IncomingMessage, response: ServerResponse, repositoryId: number, tasks = false) => {
     const access = await authorize(request, response, repositoryId);
     if (!access) return;
+    if (tasks) {
+      if (request.method !== "POST") return json(response, 405, { error: "不支持的操作" });
+      let prompt: string;
+      try {
+        const input = strictObject(await body(request), ["prompt"], "开发任务");
+        prompt = requiredText(input.prompt, "开发描述", 12_000);
+      } catch (error) {
+        return json(response, 422, { error: error instanceof Error ? error.message : "开发描述无效" });
+      }
+      try {
+        const result = await store.acceptAdmin(
+          {
+            repositoryId,
+            login: access.user.login,
+            role: config.serviceAdmins?.has(access.user.login.toLowerCase()) ? "admin" : "developer",
+            prompt,
+          },
+          config,
+        );
+        return json(response, 202, result);
+      } catch (error) {
+        if (error instanceof DevelopmentError) return json(response, 409, { error: error.message });
+        throw error;
+      }
+    }
     if (request.method === "GET")
       return json(response, 200, {
         settings: await store.settings(repositoryId),
@@ -36,7 +62,6 @@ export function createDevelopmentRoute(
       return json(response, 422, { error: error instanceof Error ? error.message : "设置无效" });
     }
     if (value.enabled) {
-      if (!config.development) return json(response, 422, { error: "请先配置智能机器人 Bot ID 和 Secret" });
       try {
         const signal = AbortSignal.timeout(30_000);
         const token = await github.installationToken(access.repository.installationId, signal);

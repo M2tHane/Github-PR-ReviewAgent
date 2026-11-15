@@ -44,15 +44,28 @@ export type TaskStatus =
 // develop：开发并提 PR；discuss：在 issue 里回复讨论；notice：在 issue 或 PR 里发一条固定提示，不调用模型；
 // revise：开发 PR 下有新评论，读评论后按需在同一分支上改代码、在 PR 里回复。
 export type TaskKind = "develop" | "discuss" | "notice" | "revise";
+export type DevelopmentSource = "wecom" | "issue" | "pr_comment" | "admin" | "issue_label";
+export interface IssueLabelInput {
+  repositoryId: number;
+  installationId: number;
+  repository: string;
+  issueNumber: number;
+  login: string;
+  title: string;
+  body: string;
+  deliveryId: string;
+}
 export interface DevelopmentTask {
   id: string;
   owner_token: string;
-  bot_id: string;
-  message_id: string;
+  source: DevelopmentSource;
+  requester_login: string | null;
+  bot_id: string | null;
+  message_id: string | null;
   reply_req_id: string | null;
   reply_expires_at: Date | null;
-  chat_id: string;
-  requester: string;
+  chat_id: string | null;
+  requester: string | null;
   repository_id: number;
   installation_id: number;
   repository: string;

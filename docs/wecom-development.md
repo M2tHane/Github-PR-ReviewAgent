@@ -23,14 +23,27 @@ PR：#123 修复订单计算
 
 接收确认与完成结果通过同一原消息的回调标识分别发送，结果使用独立的流式消息 ID 并立即结束，保留原生引用关系；不会刷新已经结束的接收确认。消息展示状态、项目、PR 标题和独立链接，不写 `<@userid>`。引用用于对应原需求，不保证 @强提醒。拒绝、失败、取消、发布待核对会回复状态和原因。回调标识与 24 小时回复期限持久保存；重启后继续使用原标识，超过期限或缺少标识时明确记录失败，可在管理页查看结果，不伪装成引用或静默改发普通消息。发送结果不确定时不自动重发。
 
+## 派任务的方式
+
+仓库无需绑定企微群也能派开发任务。先在管理页的开发设置中填写 PR 目标分支并启用；只用管理页或 GitHub 时，群 ID 和成员列表可以留空。保护规则对所有来源继续生效。
+
+- **管理页**：在仓库的开发任务页填写“新建开发任务”，提交 1–12000 字的需求。必须有该仓库的 GitHub maintain/admin 权限；登录名在 `SERVICE_ADMINS` 中时按管理员身份执行，否则按开发身份执行。队列、进度与结果显示在同一页。
+- **管理 API**：`POST /api/repositories/:id/development/tasks`，JSON 为 `{ "prompt": "开发需求" }`。使用现有登录会话、同源 `Origin` 和 `x-csrf-token`；权限与管理页相同。不提供机器令牌。成功返回 HTTP 202、`kind: "accepted"` 与 `taskId`。
+- **issue 标签**：有仓库 write/maintain/admin 权限的人给普通 issue 添加 `pi-dev` 标签，按开发身份排任务。GitHub App 必须订阅 **Issues** 事件，并有 `Issues: Read and write` 权限。需求取 issue 的标题和正文，开发时继续读取 issue 讨论。该 issue 已有排队、执行或发布中的任务，或仍处于开发状态时，再打标签不会重复入队；同一次 Webhook 重投也不会重复。机器人、其他标签和 PR 标签不触发。需要程序化派任务时，用 GitHub API 为 issue 加此标签。
+- **企微与后续评论**：群内 @Bot、需求 issue 回复“开始”和开发 PR 评论保留原有入口。管理页或标签任务需要先讨论时，直接认原发起人的 GitHub 登录名回复“开始”，无需企微账号关联。
+
+管理页和标签任务及其后续评论不发企微群通知；issue 标签任务会在原 issue 贴 PR 链接，或贴未创建 PR 的原因。管理页任务需要讨论时会开 issue，任务列表显示入口。所有入口都要求仓库在服务白名单中、未撤销、仓库和开发设置已启用，且队列仍有容量。
+
+新入口没有空闲轮询开销。管理 API 入队复用仓库维护权限查询与数据库事务；标签事件额外获取 installation token 并查询发起人的 GitHub 权限（两次 GitHub 请求），再用同一数据库事务写任务、issue 关联及投递去重记录。非目标标签、Bot 和 PR 在权限请求前忽略。任务页沿用每 5 秒刷新活动任务的机制；无活动任务时不轮询。本节的查询次数是代码路径估算，未做线上延迟或内存压测。
+
 ## 配置与管理
 
 群内开发和 PR 审查通知都使用企业微信智能机器人 API 模式的长连接，不使用旧的 `WECOM_WEBHOOK_URL`，采用 [官方 Node SDK](https://github.com/WecomTeam/aibot-node-sdk)，无需增加公网回调 URL。
 
 1. 创建智能机器人，启用 API 模式，选择长连接，取得 Bot ID 和 Secret，将机器人加入授权群。
 2. 在被忽略的本地环境文件配置 `WECOM_BOT_ID`、`WECOM_BOT_SECRET`。所有实例使用同一配置。凭据不进入管理页、日志或 Git。
-3. GitHub App 需要目标仓库 `Contents: Read and write`、`Pull requests: Read and write` 和 `Issues: Read and write`，并订阅 `Issue comment`（需求 issue 和开发 PR 对话）、`Pull request review comment`、`Pull request review`（开发 PR 的代码行评论和 review 总评）事件。更改 App 权限后由安装方批准；仍使用 installation token，不用个人 PAT。若修改 GitHub Actions 工作流，还需要 GitHub 对该类操作要求的权限；权限不足会明确失败，不绕过。
-4. 停止旧服务后执行 `npm run migrate`，应用增量迁移到 `013_pull_request_revisions.sql`，再构建和启动。已有数据库不能重跑 baseline。服务启动不自动迁移。
+3. GitHub App 需要目标仓库 `Contents: Read and write`、`Pull requests: Read and write` 和 `Issues: Read and write`，并订阅 `Issues`（`pi-dev` 标签派任务）、`Issue comment`（需求 issue 和开发 PR 对话）、`Pull request review comment`、`Pull request review`（开发 PR 的代码行评论和 review 总评）事件。更改 App 权限后由安装方批准；仍使用 installation token，不用个人 PAT。若修改 GitHub Actions 工作流，还需要 GitHub 对该类操作要求的权限；权限不足会明确失败，不绕过。
+4. 停止旧服务后执行 `npm run migrate`，应用增量迁移到 `016_development_sources.sql`，再构建和启动。已有数据库不能重跑 baseline。服务启动不自动迁移。
 5. 在群里 @Bot 发一条文字；未绑定群的回复会给出群 ID。打开管理页「仓库 → 选择仓库 → 群内开发」，填写群 ID、目标分支、企微成员 ID 和角色，至少保留一名管理员，然后启用。
 6. 在同一页面点「GitHub 账号关联」，把成员的企微 ID 和 GitHub 账号对应起来。需求 issue 里只认提需求的人关联的账号回复“开始”。
 7. 在同一页面维护保护规则：名称、说明、文件／目录范围。范围支持精确相对文件、目录末尾 `/`、`目录/**`，以及 `**`（整个仓库）；不支持其他 glob 表达式。

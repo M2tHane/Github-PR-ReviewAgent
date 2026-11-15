@@ -255,7 +255,7 @@ export class DevelopmentWorker {
                       throw new DevelopmentError("repository_or_binding_changed");
                     const message = developmentMessage(notification);
                     if (push)
-                      return bot.sendMessage(notification.chat_id, { ...message, chat_type: 2 } as typeof message);
+                      return bot.sendMessage(notification.chat_id!, { ...message, chat_type: 2 } as typeof message);
                     return bot.replyStream(
                       { headers: { req_id: notification.reply_req_id! } },
                       `result-${notification.id}`,

@@ -31,9 +31,9 @@ export function validBranch(value: unknown): string {
 }
 export function parseSettings(input: unknown): DevelopmentSettings {
   const v = strictObject(input, ["chatId", "targetBranch", "enabled", "members", "protections", "version"], "开发设置");
-  const chatId = requiredText(v.chatId, "群 ID", 200);
+  const chatId = v.chatId === "" ? "" : requiredText(v.chatId, "群 ID", 200);
   if (
-    !/^[a-z\d_-]+$/i.test(chatId) ||
+    (chatId !== "" && !/^[a-z\d_-]+$/i.test(chatId)) ||
     typeof v.enabled !== "boolean" ||
     !Number.isSafeInteger(v.version) ||
     v.version < 0
@@ -58,7 +58,8 @@ export function parseSettings(input: unknown): DevelopmentSettings {
     return { userid: member.userid, role: member.role as "admin" | "developer" };
   });
   if (new Set(members.map((m) => m.userid)).size !== members.length) throw new DevelopmentError("成员 ID 重复");
-  if (!members.some((m) => m.role === "admin")) throw new DevelopmentError("请至少设置一名管理员");
+  if ((chatId || members.length) && !members.some((m) => m.role === "admin"))
+    throw new DevelopmentError("请至少设置一名管理员");
   const protections = v.protections.map((input: unknown): Protection => {
     const rule = strictObject(input, ["name", "paths", "reason"], "保护规则");
     if (!Array.isArray(rule.paths) || !rule.paths.length || rule.paths.length > 100)

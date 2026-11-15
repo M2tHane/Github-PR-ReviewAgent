@@ -30,6 +30,10 @@ export interface JobAcceptor {
     headSha: string,
   ): Promise<boolean>;
   cancelReview?(repositoryId: number, prNumber: number, eventAt?: string): Promise<void>;
+  acceptIssueLabel?(
+    input: import("../../development/types.js").IssueLabelInput,
+    config: Pick<import("../../config/config.js").Config, "allowedRepositories" | "queueCapacity">,
+  ): Promise<{ kind: "accepted" | "duplicate" | "ignored"; taskId?: string }>;
   acceptIssueComment?(
     input: { repositoryId: number; issueNumber: number; commentId: number; login: string; body: string },
     config: Pick<import("../../config/config.js").Config, "allowedRepositories" | "queueCapacity">,
