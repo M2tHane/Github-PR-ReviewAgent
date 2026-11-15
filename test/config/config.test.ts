@@ -41,6 +41,8 @@ test("自定义模型服务是可选配置，填写时校验地址、接口类�
     assert.equal(loadConfig(base).webhookRedelivery, true, "漏投递补偿默认开启");
     assert.equal(loadConfig({ ...base, WEBHOOK_REDELIVERY_ENABLED: "false" }).webhookRedelivery, false);
     assert.throws(() => loadConfig({ ...base, WEBHOOK_REDELIVERY_ENABLED: "no" }), /WEBHOOK_REDELIVERY_ENABLED/);
+    assert.equal(loadConfig({ ...base, GITHUB_ALLOWED_REPOSITORIES: "" }).allowedRepositories.size, 0);
+    assert.deepEqual([...loadConfig({ ...base, GITHUB_ALLOWED_REPOSITORIES: "O/R" }).allowedRepositories], ["o/r"]);
     assert.equal(loadConfig(base).processRole, "all", "未设置时保持单进程行为");
     for (const role of ["edge", "worker", "all"] as const)
       assert.equal(loadConfig({ ...base, PROCESS_ROLE: role }).processRole, role);

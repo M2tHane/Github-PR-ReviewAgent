@@ -43,6 +43,8 @@ async function fixture(t: TestContext, role: ProcessRole, withBot = true) {
     revokedDataGraceDays: 30,
     webhookRedelivery: true,
   };
+  const allowedRows = [{ full_name: "O/Added" }];
+  const allowedSet = config.allowedRepositories;
   const state = { databaseDown: false, stopping: false };
   let database!: Database;
   let runnerDrain: Promise<void> | undefined;
@@ -56,6 +58,10 @@ async function fixture(t: TestContext, role: ProcessRole, withBot = true) {
       super(...args);
       database = this;
       t.mock.method(this.pool, "query", async (sql: string) => {
+        if (sql === "SELECT full_name FROM repositories WHERE allowed AND revoked_at IS NULL") {
+          events.push("repositories.read");
+          return { rows: allowedRows.map((row) => ({ ...row })) };
+        }
         assert.match(sql, /^SELECT key,value,updated_by,updated_at FROM service_settings$/);
         events.push("settings.read");
         return { rows: rows.map((row) => ({ ...row, updated_by: "admin", updated_at: new Date(0) })) };
@@ -137,6 +143,8 @@ async function fixture(t: TestContext, role: ProcessRole, withBot = true) {
     state,
     events,
     rows,
+    allowedRows,
+    allowedSet,
     concurrency,
     runners,
     stop,
@@ -168,6 +176,9 @@ for (const role of ["edge", "worker", "all"] as const) {
       assert.equal(f.count(event), worker ? 1 : 0, event);
     assert.equal(f.events[0], "settings.read", "先加载设置再启动任务");
     assert.equal(f.config.queueCapacity, 50);
+    assert.equal(f.config.allowedRepositories, f.allowedSet);
+    assert.deepEqual([...f.allowedSet], ["o/r", "o/added"]);
+    assert(f.events.indexOf("repositories.read") < f.events.indexOf(worker ? "runner.start" : "bot.start"));
     assert.equal(f.database.pool.options.max, worker ? 32 : 5);
     assert.deepEqual(
       f.runners.map((runner) => f.concurrency.get(runner)),
@@ -186,6 +197,7 @@ for (const role of ["edge", "worker", "all"] as const) {
     assert.equal((await f.request("/readyz")).status, 503);
     f.state.stopping = false;
 
+    f.allowedRows[0]!.full_name = "O/Other";
     f.rows[0]!.value = 6;
     f.rows[1]!.value = 7;
     f.rows[2]!.value = 60;
@@ -194,6 +206,8 @@ for (const role of ["edge", "worker", "all"] as const) {
     t.mock.timers.tick(30_000);
     await setImmediate();
     assert.equal(f.config.queueCapacity, 60, "edge 和 worker 均应用后续管理修改");
+    assert.equal(f.config.allowedRepositories, f.allowedSet);
+    assert.deepEqual([...f.allowedSet], ["o/r", "o/other"]);
     assert.equal(f.database.pool.options.max, worker ? 44 : 5);
     assert.deepEqual(
       f.runners.map((runner) => f.concurrency.get(runner)),

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { dateText } from "../format.js";
 import type { ServiceSettingsResponse, SettingDefinition, SettingValue } from "../types.js";
+import { RepositoryOnboarding } from "../features/repositories/repository-onboarding.js";
 
 // 页面上的输入都是字符串；数值按定义的单位换算，保存时只提交改过的项。
 function display(definition: SettingDefinition, value: SettingValue | undefined) {
@@ -34,7 +35,7 @@ const shrinks = (key: string, before: SettingValue, after: SettingValue) =>
   after > 0 &&
   (before === 0 || (typeof before === "number" && after < before));
 
-export function ServiceSettingsPage() {
+export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesChange: () => Promise<void> }) {
   const [data, setData] = useState<ServiceSettingsResponse | null>(null),
     [inputs, setInputs] = useState<Record<string, string>>({}),
     [reset, setReset] = useState<string[]>([]),
@@ -114,11 +115,10 @@ export function ServiceSettingsPage() {
       <div className="section-head">
         <div>
           <h2>服务设置</h2>
-          <p className="muted">
-            对所有仓库生效。没改过的项用 .env 或代码里的默认值；密钥、地址和允许的仓库列表只能在 .env 修改。
-          </p>
+          <p className="muted">对所有仓库生效。没改过的项用 .env 或代码里的默认值；密钥和地址只能在 .env 修改。</p>
         </div>
       </div>
+      {data.canEdit && <RepositoryOnboarding onChange={onRepositoriesChange} />}
       {!data.canEdit && (
         <p className="feedback" role="status">
           {data.adminsConfigured

@@ -2316,6 +2316,16 @@ a.stat:hover {
 }
 
 /* ===== 服务设置 ===== */
+.repository-onboarding { margin-bottom: 1.5rem; padding: 1.25rem; }
+.repository-onboarding .section-head { align-items: start; gap: 1rem; }
+.repository-onboarding .section-head button { flex: none; }
+.repository-onboarding p { overflow-wrap: anywhere; }
+.onboarding-list { list-style: none; margin: 0; padding: 0; max-height: 32rem; overflow-y: auto; }
+.onboarding-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; align-items: start; border-top: 1px solid var(--line); padding: 0.85rem 0.5rem 0.85rem 0; }
+.onboarding-info { min-width: 0; overflow-wrap: anywhere; }
+.onboarding-info p { margin: 0.3rem 0 0; font-size: 0.8rem; }
+.onboarding-toggle { white-space: nowrap; padding-top: 0.1rem; }
+.onboarding-foot { font-size: 0.8rem; margin-bottom: 0; }
 .service-settings-group {
   margin: 0 0 1rem;
   padding: 0.5rem 1.25rem 0.75rem;

@@ -146,6 +146,8 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     revokedDataGraceDays: 0,
     webhookRedelivery: false,
   } satisfies Config;
+  let permissionTime = Date.now();
+  t.mock.method(Date, "now", () => permissionTime);
   let hasAccess = true;
   const permissionChecks: string[] = [];
   const github = {
@@ -265,9 +267,11 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     response = await fetch(memberEndpoint, { headers: memberHeaders });
     assert.deepEqual(((await response.json()) as any).members, [{ githubLogin: "alice", wecomUserId: "new-user" }]);
     hasAccess = false;
+    permissionTime += 5 * 60_000;
     assert.equal((await fetch(memberEndpoint, { headers: memberHeaders })).status, 403);
     assert.equal((await fetch(`${memberEndpoint}/alice`, { method: "DELETE", headers: memberHeaders })).status, 403);
     hasAccess = true;
+    permissionTime += 60_000;
     assert.equal((await fetch(`${memberEndpoint}/alice`, { method: "DELETE", headers: memberHeaders })).status, 200);
     response = await fetch(memberEndpoint, { headers: memberHeaders });
     assert.deepEqual(((await response.json()) as any).members, []);
@@ -545,12 +549,14 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     } while (cursor);
     assert.equal(seen.size, 56, "同时间、多回复分页不能遗漏");
     hasAccess = false;
+    permissionTime += 5 * 60_000;
     response = await fetch(
       `${origin}/api/findings?jobId=${review.id}&repositoryId=${allowedId}&cursor=${firstCursor}`,
       { headers: { cookie: sessionCookie } },
     );
     assert.deepEqual(await response.json(), { items: [], nextCursor: null }, "旧游标不能绕过撤销的权限");
     hasAccess = true;
+    permissionTime += 60_000;
     for (const query of ["limit=0", "limit=51", "cursor=garbage", "repositoryId=oops", `cursor=${firstCursor}`]) {
       response = await fetch(`${origin}/api/findings?${query}`, { headers: { cookie: sessionCookie } });
       assert.equal(response.status, 422);
@@ -753,7 +759,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
             result.map((item: any) => item.id),
             [path === "/api/repositories" ? allowedId : allowedMemory],
           );
-        assert.deepEqual(permissionChecks, ["Owner/Allowed"], path);
+        assert.deepEqual(permissionChecks, [], path);
       }
       permissionChecks.length = 0;
       const memory = await fetch(`${origin}/api/memories/${allowedMemory}`, { headers });
@@ -766,7 +772,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
       });
       assert.equal(enabled.status, 200);
       assert.equal(((await enabled.json()) as any).enabled, true);
-      assert.deepEqual(permissionChecks, ["Owner/Allowed", "Owner/Allowed"]);
+      assert.deepEqual(permissionChecks, []);
     });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

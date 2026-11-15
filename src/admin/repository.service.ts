@@ -2,6 +2,7 @@ import type { Database } from "../persistence/database.js";
 import { GitHubClient } from "../github/client.js";
 import { repository, type JobPage, type Overview, type Repository, type Session } from "./dto.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
+import { MaintainerPermissionCache } from "./permission-cache.js";
 
 export const JOB_TYPES = ["PR_REVIEW", "REPLY_HANDLE", "DECISION_EXTRACT", "HEALTH_AUDIT"];
 export const JOB_STATUSES = [
@@ -42,17 +43,16 @@ export function createRepositoryService(
   database: Database,
   github: GitHubClient,
   allowedRepositoryNames: ReadonlySet<string>,
+  permissions = new MaintainerPermissionCache(github),
 ) {
   async function allowedRepositories(user: Session) {
     const result = await database.pool.query("SELECT * FROM repositories WHERE revoked_at IS NULL ORDER BY full_name");
     const rows = result.rows.filter((row) => allowedRepositoryNames.has(String(row.full_name).toLowerCase()));
     const values: Repository[] = [];
-    // 每次请求重新授权；只在本次聚合读取复用，不缓存权限结论。
+    // 服务白名单和撤销状态每次读取，只有 GitHub 维护权限按用户与仓库缓存。
     for (let offset = 0; offset < rows.length; offset += 4) {
       const batch = rows.slice(offset, offset + 4);
-      const checks = await Promise.allSettled(
-        batch.map((row) => github.hasMaintainerPermission(user.token, String(row.full_name))),
-      );
+      const checks = await Promise.allSettled(batch.map((row) => permissions.check(user, String(row.full_name))));
       for (const [index, check] of checks.entries()) {
         if (check.status === "rejected") throw check.reason;
         if (check.value) values.push(repository(batch[index]!));

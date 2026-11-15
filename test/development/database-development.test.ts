@@ -683,11 +683,13 @@ test("从工作区收集最终改动：认 Agent 自己的提交，忽略 .gitig
   }
 });
 
-test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设置", { skip: !fixture.url }, async () => {
+test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设置", { skip: !fixture.url }, async (t) => {
   const { createServer } = await import("node:http");
   const { createAdminHandler } = await import("../../src/admin/handler.js");
   const { memoryStore } = await import("../../src/admin/session-store.js");
   const s = await setup();
+  let permissionTime = Date.now();
+  t.mock.method(Date, "now", () => permissionTime);
   let allowed = true;
   const secret = "preview-session-secret-32-characters",
     sessionId = "session",
@@ -699,9 +701,9 @@ test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设�
     githubClientId: "test",
     githubClientSecret: "test",
   };
-  const sessions = memoryStore<any>(60000, 10),
+  const sessions = memoryStore<any>(3_600_000, 10),
     states = memoryStore<number>(60000, 10);
-  await sessions.set(sessionId, { id: 1, login: "maintainer", token: "fake", csrf, expiresAt: Date.now() + 60000 });
+  await sessions.set(sessionId, { id: 1, login: "maintainer", token: "fake", csrf, expiresAt: Date.now() + 3_600_000 });
   const handler = createAdminHandler(
     config,
     s.database,
@@ -732,12 +734,14 @@ test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设�
       422,
     );
     allowed = false;
+    permissionTime += 5 * 60_000;
     assert.equal((await fetch(url, { headers: { cookie } })).status, 403);
     assert.equal(
       (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ ...s.settings, version: 1 }) })).status,
       403,
     );
     allowed = true;
+    permissionTime += 60_000;
     config.development.wecom = undefined;
     const view = (await (await fetch(url, { headers: { cookie } })).json()) as any;
     assert.equal(view.configured, true, "开发设置不依赖企微");
