@@ -47,6 +47,9 @@ export type TaskKind = "develop" | "discuss" | "notice" | "revise";
 export interface DevelopmentTask {
   id: string;
   owner_token: string;
+  lease_expires_at: Date | null;
+  // 首次执行为 1，只在租约过期后重排时增加；部署停止不计。
+  attempt: number;
   bot_id: string;
   message_id: string;
   reply_req_id: string | null;

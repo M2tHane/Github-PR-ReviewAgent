@@ -1,3 +1,4 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
 import { createHmac, randomUUID } from "node:crypto";
@@ -119,6 +120,7 @@ test("OAuth state、Session、CSRF 与跨仓库 Maintainer 权限", { skip: !fix
     limitations: [],
   });
   const config = {
+    development: loadDevelopmentConfig({}),
     appId: "1",
     privateKey: "key",
     webhookSecret: "secret",

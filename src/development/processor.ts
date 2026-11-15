@@ -1,3 +1,4 @@
+import { RunnerStoppedError, TaskLeaseLostError } from "../jobs/runner.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -93,7 +94,7 @@ function createDeveloper(
   return async (task: DevelopmentTask, parentSignal: AbortSignal) => {
     const started = Date.now();
     const abort = new AbortController();
-    const timeoutMs = config.development!.timeoutMs;
+    const timeoutMs = config.development.timeoutMs;
     const signal = AbortSignal.any([parentSignal, abort.signal, AbortSignal.timeout(timeoutMs)]);
     let checking: Promise<void> | undefined;
     const guard = async () => {
@@ -229,12 +230,12 @@ function createDeveloper(
               endpoint: config.modelEndpoint,
               timeoutMs: timeoutMs - (Date.now() - started),
               // 未配置预算时不限制 token；用量照常记录。
-              budgetTokens: config.development!.budgetTokens ?? Number.POSITIVE_INFINITY,
+              budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
               signal,
               images: task.images,
               builtinTools: WRITE_TOOLS,
               browser: true,
-              cacheDir: config.development?.cacheDir,
+              cacheDir: config.development.cacheDir,
               skills: DEVELOPMENT_SKILLS,
               repositoryInstructions,
               systemPrompt: PROMPT,
@@ -330,18 +331,6 @@ function createDeveloper(
               // 命令也能改文件，写入时的拦截不够：按最新权限对全部改动再查一遍保护范围。
               enforceProtections(paths, task.role, (await guard()).protections);
             });
-            // 目标分支变化时停止，不能把基于旧代码的完整文件覆盖到新版本。
-            await current.step("latest", "确认目标分支没有新提交", async () => {
-              const latest = await github.developmentSnapshot(
-                token!,
-                task.repository,
-                Number(task.repository_id),
-                task.target_branch,
-                signal,
-              );
-              if (latest.sha !== snapshot.sha)
-                throw new DevelopmentError("目标分支已有新提交，请重新发起任务以使用最新代码。", "cancelled");
-            });
             await guard();
             const title = redactSecrets(proposal.title).replace(/\s+/g, " ").trim();
             const sha = await current.step("commit", "创建提交", () =>
@@ -410,6 +399,10 @@ function createDeveloper(
           await store.checkpoint(task, { usage: total({}), rules: rules.snapshot() });
         }
     } catch (error) {
+      if (parentSignal.reason instanceof RunnerStoppedError || parentSignal.reason instanceof TaskLeaseLostError) {
+        await recorder?.finish("cancelled", parentSignal.reason.message);
+        throw parentSignal.reason;
+      }
       // 请求已经开始写远端时只做只读核对，不重发创建请求。
       if (publishing && token && task.head_sha && !parentSignal.aborted) {
         try {
@@ -455,8 +448,8 @@ function createDeveloper(
             : "开发任务失败，未创建 PR；请在管理页检查配置与任务记录后重新发起。";
       // 群里只回复概括说明；具体原因（预算、模型服务、结果解析等）留在服务日志里排查。
       log("error", "development_task_failed", { taskId: task.id, repository: task.repository, status }, cause);
-      await store.finish(task, status, message);
-      if (status !== "uncertain") await reportToIssue(message);
+      const finished = await store.finish(task, status, message);
+      if (finished && status !== "uncertain") await reportToIssue(message);
       // 执行记录写具体原因，方便在管理页排查。
       const timedOut = cause instanceof TimeoutError || (cause as Error | undefined)?.name === "TimeoutError";
       await recorder?.finish(

@@ -4,7 +4,7 @@ import { loadWecomConfig, type WecomConfig } from "../notifications/config.js";
 import { loadDevelopmentConfig, type DevelopmentConfig } from "../development/config.js";
 
 export interface Config {
-  development?: DevelopmentConfig;
+  development: DevelopmentConfig;
   wecom?: WecomConfig;
   appId: string;
   privateKey: string;

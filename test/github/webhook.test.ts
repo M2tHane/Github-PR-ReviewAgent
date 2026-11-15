@@ -1,3 +1,4 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -19,6 +20,7 @@ import type { MemoryRecord } from "../../src/memory/types.js";
 const exec = promisify(execFile);
 
 const config: Config = {
+  development: loadDevelopmentConfig({}),
   appId: "1",
   privateKey: "unused",
   webhookSecret: "secret",

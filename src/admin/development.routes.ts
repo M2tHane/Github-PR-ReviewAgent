@@ -25,7 +25,8 @@ export function createDevelopmentRoute(
     if (request.method === "GET")
       return json(response, 200, {
         settings: await store.settings(repositoryId),
-        configured: Boolean(config.development),
+        configured: true,
+        wecomConfigured: Boolean(config.development.wecom),
         tasks: await store.list(repositoryId),
       });
     if (request.method !== "PUT") return json(response, 405, { error: "不支持的操作" });
@@ -36,7 +37,6 @@ export function createDevelopmentRoute(
       return json(response, 422, { error: error instanceof Error ? error.message : "设置无效" });
     }
     if (value.enabled) {
-      if (!config.development) return json(response, 422, { error: "请先配置智能机器人 Bot ID 和 Secret" });
       try {
         const signal = AbortSignal.timeout(30_000);
         const token = await github.installationToken(access.repository.installationId, signal);

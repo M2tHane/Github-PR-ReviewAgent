@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
 import { createHmac, randomUUID } from "node:crypto";
 import { Database } from "../../src/persistence/database.js";
-import { PersistentRunner } from "../../src/jobs/runner.js";
+import { JobsSource, PersistentRunner } from "../../src/jobs/runner.js";
 import { MemoryService } from "../../src/memory/memory.service.js";
 import type { DecisionProposal } from "../../src/memory/types.js";
 import type { ReplyResult } from "../../src/reply/types.js";
@@ -118,7 +118,7 @@ test("持久 Runner 恢复 running Job 并保存发布结果", { skip: !fixture.
   const accepted = await database.accept(input, { event: "pull_request", action: "opened" });
   await database.pool.query("UPDATE jobs SET status='running' WHERE id=$1", [accepted.job!.id]);
   const runner = new PersistentRunner(
-    database,
+    new JobsSource(database),
     async (job) => {
       assert.ok(job.jobType !== "HEALTH_AUDIT");
       const publication = await database.beginPublication(job, `fingerprint-${job.id}`);
@@ -178,7 +178,7 @@ test("临时故障最多执行五次，永久错误只执行一次", { skip: !fi
   });
   const counts = new Map<string, number>();
   const runner = new PersistentRunner(
-    database,
+    new JobsSource(database),
     async (job) => {
       counts.set(job.id, (counts.get(job.id) ?? 0) + 1);
       // 本例验证重试次数，替身通过 Retry-After: 0 避免等待真实退避。

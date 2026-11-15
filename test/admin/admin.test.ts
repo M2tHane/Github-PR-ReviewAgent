@@ -1,3 +1,4 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
@@ -69,6 +70,7 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     },
   };
   const config: any = {
+    development: loadDevelopmentConfig({}),
     allowedRepositories: new Set(repos.map((repo) => repo.full_name)),
     githubClientId: "client",
     githubClientSecret: "secret",
@@ -118,6 +120,7 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
 test("OAuth rejects excess starts, consumes state once and rejects expired callbacks", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const config: any = {
+    development: loadDevelopmentConfig({}),
     githubClientId: "client",
     githubClientSecret: "secret",
     githubOAuthCallbackUrl: "http://localhost/auth/github/callback",

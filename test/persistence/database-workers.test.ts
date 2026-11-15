@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Database } from "../../src/persistence/database.js";
-import { PersistentRunner } from "../../src/jobs/runner.js";
+import { JobsSource, PersistentRunner } from "../../src/jobs/runner.js";
 import { DatabaseSessionStore } from "../../src/admin/session-store.js";
 import { createApp } from "../../src/github/webhook/handler.js";
 import type { Config } from "../../src/config/config.js";
@@ -197,7 +197,7 @@ test("正常停止：正在跑的任务放回队列，不计入尝试次数", { 
   try {
     const accepted = await database.accept(pr(repo, 1), opened);
     const runner = new PersistentRunner(
-      database,
+      new JobsSource(database),
       async (job: AgentJob) => {
         const controller = new AbortController();
         database.registerReviewAbort(job, controller);
@@ -238,7 +238,7 @@ test("并发槽位：不同仓库同时执行；健康检查至少给 PR 任务�
       await database.enqueueHealth(id, { defaultBranch: "main", headSha: "a".repeat(40) }, "manual");
     await database.accept(pr(repos[0]!, 1), opened);
     const runner = new PersistentRunner(
-      database,
+      new JobsSource(database),
       async (job: AgentJob) => {
         running.add(job.id);
         peak = Math.max(peak, running.size);

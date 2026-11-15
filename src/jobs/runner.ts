@@ -6,26 +6,72 @@ import { BudgetError, ProviderError, TimeoutError } from "../review/agent.js";
 import { GitHubApiError } from "../github/client.js";
 
 export interface RunnerOptions {
-  // 同时执行的任务数。同一个 PR 的任务仍然串行，由领取时的数据库条件保证。
+  // 同时执行的任务数；串行条件由各任务来源在领取时保证。
   concurrency?: number;
   leaseMs?: number;
   heartbeatMs?: number;
 }
 
+// 任务来源负责领取条件与状态写回；执行器只负责并发、心跳和生命周期。
+export interface TaskSource<T extends { id: string }> {
+  claim(options: { active: T[]; concurrency: number; leaseMs: number }): Promise<T | undefined>;
+  renew(tasks: T[], leaseMs: number): Promise<Array<{ job: T; reason: string }>>;
+  finish(task: T, stopped: boolean): Promise<void>;
+  fail(task: T, error: Error, retry: boolean): Promise<void>;
+  release(task: T): Promise<void>;
+  stop?(): void;
+}
+
+export class RunnerStoppedError extends Error {
+  constructor() {
+    super("服务停止，任务放回队列");
+  }
+}
+export class TaskLeaseLostError extends Error {
+  constructor(reason: string) {
+    super(reason);
+  }
+}
+
+export class JobsSource implements TaskSource<AgentJob> {
+  constructor(private database: Database) {}
+  claim({ active, concurrency, leaseMs }: { active: AgentJob[]; concurrency: number; leaseMs: number }) {
+    // 多槽位时至少给 PR 任务留一个槽位，健康检查的调度规则只属于 jobs 来源。
+    const health = active.filter((job) => job.jobType === "HEALTH_AUDIT").length;
+    return this.database.claimNext({ allowHealth: health < Math.max(1, concurrency - 1), leaseMs });
+  }
+  renew(tasks: AgentJob[], leaseMs: number) {
+    return this.database.renewLeases(tasks, leaseMs);
+  }
+  finish(task: AgentJob, stopped: boolean) {
+    return stopped && task.status === "cancelled" ? this.database.releaseJob(task) : this.database.finishJob(task);
+  }
+  fail(task: AgentJob, error: Error, retry: boolean) {
+    return this.database.failJob(task, error, retry);
+  }
+  release(task: AgentJob) {
+    return this.database.releaseJob(task);
+  }
+  stop() {
+    this.database.stopReviews();
+  }
+}
+
 // 可以多实例运行：每个任务领取时写租约，心跳续租；实例崩溃后租约过期，其他实例接手。
-export class PersistentRunner {
+export class PersistentRunner<T extends { id: string } = AgentJob> {
   private stopped = false;
   private timer?: NodeJS.Timeout;
   private heartbeat?: NodeJS.Timeout;
   private polling?: Promise<void>;
-  private active = new Map<string, { job: AgentJob; done: Promise<void> }>();
+  private renewing?: Promise<void>;
+  private active = new Map<string, { job: T; controller: AbortController; done: Promise<void> }>();
   private concurrency: number;
   private readonly leaseMs: number;
   private readonly heartbeatMs: number;
 
   constructor(
-    private database: Database,
-    private execute: (job: AgentJob) => Promise<void>,
+    private source: TaskSource<T>,
+    private execute: (job: T, signal: AbortSignal) => Promise<void>,
     private pollMs = 500,
     options: RunnerOptions = {},
   ) {
@@ -34,40 +80,51 @@ export class PersistentRunner {
     this.heartbeatMs = options.heartbeatMs ?? Math.min(5_000, this.leaseMs / 3);
   }
 
-  // 管理端改了并发数：调大时下一轮就多领；调小时正在跑的任务不受影响，跑完后按新值领取。
   setConcurrency(value: number) {
     this.concurrency = Math.max(1, value);
   }
 
   async start() {
-    this.heartbeat = setInterval(() => void this.renew(), this.heartbeatMs);
+    this.heartbeat = setInterval(() => {
+      if (!this.renewing)
+        this.renewing = this.renew().finally(() => {
+          this.renewing = undefined;
+        });
+    }, this.heartbeatMs);
     this.heartbeat.unref();
     this.polling = this.tick();
   }
 
-  // 停止：不再领取新任务，中止正在跑的任务并放回队列（不计入尝试次数），等它们收尾后返回。
+  // 中止执行并等收尾，期间继续续租，避免清理工作区时被别的实例接手。
   async stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    this.database.stopReviews();
+    this.source.stop?.();
+    for (const entry of this.active.values()) entry.controller.abort(new RunnerStoppedError());
     await this.polling;
     await Promise.all([...this.active.values()].map((entry) => entry.done));
     if (this.heartbeat) clearInterval(this.heartbeat);
+    await this.renewing;
   }
 
   private async tick() {
     if (this.stopped) return;
     try {
       while (!this.stopped && this.active.size < this.concurrency) {
-        // 有多个槽位时至少留一个给 PR 任务，健康检查不会把 PR 审查全部挡住。
-        const health = [...this.active.values()].filter((entry) => entry.job.jobType === "HEALTH_AUDIT").length;
-        const job = await this.database.claimNext({
-          allowHealth: health < Math.max(1, this.concurrency - 1),
+        const job = await this.source.claim({
+          active: [...this.active.values()].map((entry) => entry.job),
+          concurrency: this.concurrency,
           leaseMs: this.leaseMs,
         });
         if (!job) break;
-        const done = this.run(job).finally(() => this.active.delete(job.id));
-        this.active.set(job.id, { job, done });
+        // stop 可能发生在数据库领取期间；此时直接释放，不再启动处理器。
+        if (this.stopped) {
+          await this.source.release(job);
+          break;
+        }
+        const controller = new AbortController();
+        const done = this.run(job, controller.signal).finally(() => this.active.delete(job.id));
+        this.active.set(job.id, { job, controller, done });
       }
     } catch (error) {
       log("error", "runner_error", {}, error);
@@ -79,38 +136,23 @@ export class PersistentRunner {
     }
   }
 
-  private async run(job: AgentJob) {
+  private async run(job: T, signal: AbortSignal) {
     try {
       try {
-        await this.execute(job);
-        if (this.stopped && job.status === "cancelled") await this.database.releaseJob(job);
-        else await this.database.finishJob(job);
+        await this.execute(job, signal);
+        await this.source.finish(job, this.stopped);
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("未知错误");
         if (this.stopped) {
-          await this.database.releaseJob(job);
-          log("info", "job_released", { jobId: job.id, jobType: job.jobType }, failure);
+          await this.source.release(job);
+          log("info", "job_released", { jobId: job.id }, failure);
           return;
         }
-        await this.database.failJob(job, failure, transient(failure));
-        log(
-          "error",
-          "job_failed",
-          {
-            jobId: job.id,
-            jobType: job.jobType,
-            deliveryId: "deliveryId" in job ? job.deliveryId : undefined,
-            repositoryId: job.repositoryId,
-            prNumber: "prNumber" in job ? job.prNumber : undefined,
-            headSha: job.headSha,
-            attempt: job.attempt,
-            status: job.status,
-          },
-          failure,
-        );
+        await this.source.fail(job, failure, transient(failure));
+        log("error", "job_failed", { jobId: job.id }, failure);
       }
     } catch (error) {
-      // 写回状态失败（例如数据库断开）：租约到期后会被重新排队。
+      // 写回失败时保留租约，由下一次领取恢复。
       log("error", "runner_error", { jobId: job.id }, error);
     }
   }
@@ -118,11 +160,14 @@ export class PersistentRunner {
   private async renew() {
     if (!this.active.size) return;
     try {
-      const stops = await this.database.renewLeases(
+      const stops = await this.source.renew(
         [...this.active.values()].map((entry) => entry.job),
         this.leaseMs,
       );
-      for (const { job, reason } of stops) log("info", "job_stop_requested", { jobId: job.id, reason });
+      for (const { job, reason } of stops) {
+        this.active.get(job.id)?.controller.abort(new TaskLeaseLostError(reason));
+        log("info", "job_stop_requested", { jobId: job.id, reason });
+      }
     } catch (error) {
       log("error", "lease_renew_failed", { jobs: this.active.size }, error);
     }
