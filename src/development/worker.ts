@@ -4,7 +4,6 @@ import type { Config } from "../config/config.js";
 import type { GitHubClient } from "../github/client.js";
 import { log } from "../logging.js";
 import type { DevelopmentStore } from "./store.js";
-import { createDevelopmentProcessor } from "./processor.js";
 import { downloadImage } from "./images.js";
 import { developmentMessage, markdownText, parseGroupMessage } from "./messages.js";
 import { DevelopmentError, type DevelopmentSettings, type DevelopmentTask } from "./types.js";
@@ -19,7 +18,6 @@ export class DevelopmentWorker {
     private config: Config,
     private store: DevelopmentStore,
     private github: GitHubClient,
-    private process = createDevelopmentProcessor(config, store, github),
   ) {}
   start() {
     this.active = this.run();
@@ -29,13 +27,13 @@ export class DevelopmentWorker {
     await this.active;
   }
   private async run() {
-    const config = this.config.development!;
+    const config = this.config.development.wecom!;
     while (!this.stopSignal.signal.aborted) {
       try {
         await this.store.withLeader(config.botId, async (connection) => {
           const disconnected = new AbortController();
           const signal = AbortSignal.any([this.stopSignal.signal, disconnected.signal]);
-          const connectionError = () => disconnected.abort(new Error("开发 Worker 数据库连接断开"));
+          const connectionError = () => disconnected.abort(new Error("企微 Worker 数据库连接断开"));
           connection.on("error", connectionError);
           const bot = new WSClient({
             botId: config.botId,
@@ -54,7 +52,6 @@ export class DevelopmentWorker {
             },
           });
           const incoming = new Set<Promise<void>>();
-          const active = new Set<Promise<void>>();
           let authenticated = false;
           let lastSent = 0;
           let sending = Promise.resolve();
@@ -178,7 +175,6 @@ export class DevelopmentWorker {
               .finally(() => incoming.delete(work));
             incoming.add(work);
           });
-          const process = this.process;
           const reviews = new NotificationWorker(
             this.config,
             reviewNotificationChannel(config.botId),
@@ -206,17 +202,8 @@ export class DevelopmentWorker {
             bot.connect();
             reviews.start();
             while (!signal.aborted) {
-              // 用持锁连接探活；连接失败会终止这一实例，不能继续领取或发布任务。
+              // 用持锁连接探活；连接失败会终止这一实例，不能继续收消息或发送通知。
               await connection.query("SELECT 1");
-              // 不同项目的任务并行，同一项目按顺序；最多同时做 concurrency 个。任务在后台运行，不挡完成通知。
-              while (active.size < config.concurrency) {
-                const task = await this.store.claim(config.botId);
-                if (!task) break;
-                const work: Promise<void> = process(task, signal)
-                  .catch((error) => log("error", "development_task_crashed", { taskId: task.id }, error))
-                  .finally(() => active.delete(work));
-                active.add(work);
-              }
               // 完成通知逐条发送；每个任务结束后就发，不等其他任务。
               while (authenticated && !signal.aborted) {
                 const result = await this.store.pool.query(
@@ -279,8 +266,6 @@ export class DevelopmentWorker {
             }
           } finally {
             disconnected.abort();
-            // 正在开发的任务随停止信号结束，等它们收尾后再断开连接。
-            await Promise.allSettled([...active]);
             await reviews.stop();
             signal.removeEventListener("abort", stopReviews);
             bot.disconnect();

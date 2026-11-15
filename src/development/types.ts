@@ -60,6 +60,9 @@ export interface DevelopmentTask {
   owner_token: string;
   source: DevelopmentSource;
   requester_login: string | null;
+  lease_expires_at: Date | null;
+  // 首次执行为 1，只在租约过期后重排时增加；部署停止不计。
+  attempt: number;
   bot_id: string | null;
   message_id: string | null;
   reply_req_id: string | null;

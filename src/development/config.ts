@@ -1,8 +1,7 @@
 import { resolve } from "node:path";
 
 export interface DevelopmentConfig {
-  botId: string;
-  secret: string;
+  wecom?: { botId: string; secret: string };
   // 不设置时不限制 token；设置后整个任务（含重试）共用这一额度。
   budgetTokens?: number;
   timeoutMs: number;
@@ -11,11 +10,10 @@ export interface DevelopmentConfig {
   // 依赖下载缓存，跨任务共享。
   cacheDir: string;
 }
-export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig | undefined {
+export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig {
   const botId = env.WECOM_BOT_ID?.trim(),
     secret = env.WECOM_BOT_SECRET?.trim();
-  if (!botId && !secret) return;
-  if (!botId || !secret) throw new Error("WECOM_BOT_ID 和 WECOM_BOT_SECRET 必须一起配置");
+  if (Boolean(botId) !== Boolean(secret)) throw new Error("WECOM_BOT_ID 和 WECOM_BOT_SECRET 必须一起配置");
   const rawBudget = env.DEVELOPMENT_BUDGET_TOKENS?.trim();
   const budgetTokens = rawBudget ? Number(rawBudget) : undefined;
   if (budgetTokens !== undefined && (!Number.isSafeInteger(budgetTokens) || budgetTokens < 1000))
@@ -28,5 +26,5 @@ export function loadDevelopmentConfig(env: NodeJS.ProcessEnv): DevelopmentConfig
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 10)
     throw new Error("DEVELOPMENT_CONCURRENCY 必须是 1 到 10 的整数");
   const cacheDir = resolve(env.DEVELOPMENT_CACHE_DIR?.trim() || "work/dev-cache");
-  return { botId, secret, budgetTokens, timeoutMs, concurrency, cacheDir };
+  return { wecom: botId && secret ? { botId, secret } : undefined, budgetTokens, timeoutMs, concurrency, cacheDir };
 }

@@ -78,9 +78,9 @@ export const SETTINGS: SettingDefinition[] = [
     min: MINUTE,
     max: DAY,
     development: true,
-    read: (c) => c.development?.timeoutMs ?? null,
+    read: (c) => c.development.timeoutMs,
     write: (c, v) => {
-      if (c.development) c.development.timeoutMs = v as number;
+      c.development.timeoutMs = v as number;
     },
   },
   {
@@ -221,9 +221,9 @@ export const SETTINGS: SettingDefinition[] = [
     min: 1,
     max: 10,
     development: true,
-    read: (c) => c.development?.concurrency ?? null,
+    read: (c) => c.development.concurrency,
     write: (c, v) => {
-      if (c.development) c.development.concurrency = v as number;
+      c.development.concurrency = v as number;
     },
   },
   {
@@ -253,9 +253,9 @@ export const SETTINGS: SettingDefinition[] = [
     max: 1_000_000_000,
     empty: "不限制",
     development: true,
-    read: (c) => c.development?.budgetTokens ?? null,
+    read: (c) => c.development.budgetTokens ?? null,
     write: (c, v) => {
-      if (c.development) c.development.budgetTokens = (v ?? undefined) as number | undefined;
+      c.development.budgetTokens = (v ?? undefined) as number | undefined;
     },
   },
 ];
@@ -354,7 +354,6 @@ export class ServiceSettings {
     this.rows = next;
     const changed: string[] = [];
     for (const item of SETTINGS) {
-      if (item.development && !this.config.development) continue;
       const value = next.has(item.key) ? next.get(item.key)!.value : this.defaults.get(item.key)!;
       if (item.read(this.config) === value) continue;
       item.write(this.config, value);
@@ -380,7 +379,7 @@ export class ServiceSettings {
       createdAt: new Date(row.created_at).toISOString(),
     }));
     return {
-      settings: SETTINGS.filter((item) => !item.development || this.config.development).map((item) => {
+      settings: SETTINGS.map((item) => {
         const row = this.rows.get(item.key);
         return {
           key: item.key,
@@ -400,7 +399,7 @@ export class ServiceSettings {
     const errors: string[] = [];
     for (const [key, value] of entries) {
       const definition = byKey.get(key);
-      if (!definition || (definition.development && !this.config.development)) errors.push(`${key}：不能修改`);
+      if (!definition) errors.push(`${key}：不能修改`);
       else if (value !== undefined) {
         const error = settingError(definition, value);
         if (error) errors.push(`${definition.label}：${error}`);

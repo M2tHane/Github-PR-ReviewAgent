@@ -1,3 +1,4 @@
+import { RunnerStoppedError, TaskLeaseLostError } from "../jobs/runner.js";
 import type { Config } from "../config/config.js";
 import type { GitHubClient } from "../github/client.js";
 import { runAgentSession } from "../review/agent.js";
@@ -126,7 +127,7 @@ export function createDiscussionProcessor(
             apiKey: config.modelApiKey,
             endpoint: config.modelEndpoint,
             timeoutMs: config.agentTimeoutMs - (Date.now() - started),
-            budgetTokens: config.development?.budgetTokens ?? Number.POSITIVE_INFINITY,
+            budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
             signal,
             builtinTools: READ_ONLY_TOOLS,
             skills: ["development", "commit-pr"],
@@ -170,6 +171,10 @@ export function createDiscussionProcessor(
       await store.finish(task, "succeeded", `已在 issue #${task.issue_number} 回复。`);
       await recorder.finish("succeeded");
     } catch (error) {
+      if (parentSignal.reason instanceof RunnerStoppedError || parentSignal.reason instanceof TaskLeaseLostError) {
+        await recorder?.finish("cancelled", parentSignal.reason.message);
+        throw parentSignal.reason;
+      }
       const cause = signal.aborted ? signal.reason : error;
       const status = cause instanceof DevelopmentError ? cause.status : signal.aborted ? "cancelled" : "failed";
       const message =
@@ -194,6 +199,8 @@ export function createNoticeProcessor(
       await github.createIssueComment(token, task.repository, number, task.prompt, signal);
       await store.finish(task, "succeeded", `已在 #${number} 回复提示。`);
     } catch (error) {
+      if (signal.reason instanceof RunnerStoppedError || signal.reason instanceof TaskLeaseLostError)
+        throw signal.reason;
       log("error", "development_notice_failed", { taskId: task.id, repository: task.repository }, error);
       await store.finish(task, "failed", "issue 提示发送失败。");
     }

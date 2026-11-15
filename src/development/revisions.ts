@@ -1,3 +1,4 @@
+import { RunnerStoppedError, TaskLeaseLostError } from "../jobs/runner.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -148,7 +149,7 @@ export function createRevisionProcessor(
   return async (task: DevelopmentTask, parentSignal: AbortSignal) => {
     const started = Date.now();
     const abort = new AbortController();
-    const timeoutMs = config.development!.timeoutMs;
+    const timeoutMs = config.development.timeoutMs;
     const signal = AbortSignal.any([parentSignal, abort.signal, AbortSignal.timeout(timeoutMs)]);
     const guard = async () => {
       signal.throwIfAborted();
@@ -246,11 +247,11 @@ export function createRevisionProcessor(
               apiKey: config.modelApiKey,
               endpoint: config.modelEndpoint,
               timeoutMs: timeoutMs - (Date.now() - started),
-              budgetTokens: config.development!.budgetTokens ?? Number.POSITIVE_INFINITY,
+              budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
               signal,
               builtinTools: WRITE_TOOLS,
               browser: true,
-              cacheDir: config.development?.cacheDir,
+              cacheDir: config.development.cacheDir,
               skills: ["development", "commit-pr"],
               repositoryInstructions,
               systemPrompt: PROMPT,
@@ -398,6 +399,10 @@ export function createRevisionProcessor(
           await record(attempt + 1);
         }
     } catch (error) {
+      if (parentSignal.reason instanceof RunnerStoppedError || parentSignal.reason instanceof TaskLeaseLostError) {
+        await recorder?.finish("cancelled", parentSignal.reason.message);
+        throw parentSignal.reason;
+      }
       const cause = signal.aborted ? signal.reason : error;
       const status = publishing
         ? "uncertain"
@@ -414,10 +419,10 @@ export function createRevisionProcessor(
             ? "处理已取消或超时。"
             : "处理评论失败，请在管理页查看任务记录后再评论一次。";
       log("error", "development_revision_failed", { taskId: task.id, repository: task.repository, status }, cause);
-      await store.finish(task, status, message);
+      const finished = await store.finish(task, status, message);
       await store.skipNotification(task).catch(() => undefined);
       // 没改成的原因贴回 PR；取消（PR 关闭、设置变化、有更新的评论）不贴。
-      if (token && (status === "failed" || status === "refused"))
+      if (finished && token && (status === "failed" || status === "refused"))
         await comment(`这次没改成：${message}`).catch((error) =>
           log("error", "development_revision_comment_failed", { taskId: task.id }, error),
         );

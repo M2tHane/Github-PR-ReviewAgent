@@ -4,15 +4,16 @@ import { execFileSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile, symlink } from "node:fs/promises";
 import { resolve, join } from "node:path";
+import { PersistentRunner } from "../../src/jobs/runner.js";
 import { Database } from "../../src/persistence/database.js";
-import { useTestDatabase } from "../helpers/database.js";
-import { DevelopmentStore } from "../../src/development/store.js";
+import { useTestDatabase, waitFor } from "../helpers/database.js";
+import { DevelopmentStore, developmentSource } from "../../src/development/store.js";
 import { createDevelopmentProcessor } from "../../src/development/processor.js";
 import { collectChanges, repositoryFiles } from "../../src/development/changes.js";
 import { emptyUsage, ProviderError, type runAgentSession } from "../../src/review/agent.js";
 import { gitEnv } from "../../src/workspace/workspace.js";
 import type { Config } from "../../src/config/config.js";
-import type { DevelopmentSettings } from "../../src/development/types.js";
+import type { DevelopmentSettings, DevelopmentTask } from "../../src/development/types.js";
 import { createApp } from "../../src/github/webhook/handler.js";
 
 const answer = (refusal = "") => JSON.stringify({ title: "fix: 修复常量", summary: "修复常量", refusal });
@@ -25,7 +26,7 @@ async function setup() {
   const store = new DevelopmentStore(database.pool);
   const repoId = nextRepo++,
     repository = `owner/dev-${repoId}`,
-    botId = `bot-${repoId}`;
+    botId = `bot-${repoId}-${randomUUID()}`;
   await database.pool.query("INSERT INTO repositories(id,installation_id,full_name) VALUES($1,1,$2)", [
     repoId,
     repository,
@@ -51,7 +52,13 @@ async function setup() {
     modelName: "test",
     modelProvider: "test",
     modelApiKey: "test",
-    development: { botId, secret: "unused", budgetTokens: 160000, timeoutMs: 5000, concurrency: 2 },
+    development: {
+      wecom: { botId, secret: "unused" },
+      cacheDir: "work/dev-cache",
+      budgetTokens: 160000,
+      timeoutMs: 5000,
+      concurrency: 2,
+    },
   } as Config;
   const root = await mkdtemp(resolve("work/development-test-"));
   await mkdir(join(root, "src"));
@@ -141,7 +148,7 @@ async function setup() {
       },
       config,
     );
-    return (await store.claim(botId))!;
+    return (await store.claim())!;
   };
   // 模拟 Pi 进程：经扩展桥读文件、申请写入，再直接改工作区里的文件；写入被拒绝时仍写入，模拟用 bash 绕过。
   const agent =
@@ -446,7 +453,6 @@ test("模型服务临时故障时整个任务重试，用量累加；确定性�
       "changes",
       "check",
       "commit",
-      "latest",
       "pr",
       "workspace",
     ]);
@@ -489,7 +495,7 @@ test("开发命中保护整项拒绝，管理员成功且保护规则保持有�
     await s.cleanup();
   }
 });
-test("任务执行期间身份或保护设置变更、目标分支推进均阻止发布", { skip: !fixture.url }, async () => {
+test("身份或保护设置变更阻止发布；目标分支推进仍以原基线创建 PR", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
     const task = await s.enqueue();
@@ -507,10 +513,25 @@ test("任务执行期间身份或保护设置变更、目标分支推进均阻�
     assert.deepEqual(s.calls, []);
     const admin = await s.enqueue("admin");
     let reads = 0;
-    s.github.developmentSnapshot = async () => ({ sha: ++reads === 1 ? s.sha : "d".repeat(40), tree: "b".repeat(40) });
-    await s.process()(admin, new AbortController().signal);
-    assert.equal((await s.getTask(admin.id)).status, "cancelled");
-    assert.deepEqual(s.calls, []);
+    let targetSha = s.sha;
+    s.github.developmentSnapshot = async () => {
+      reads++;
+      return { sha: targetSha, tree: "b".repeat(40) };
+    };
+    s.github.createDevelopmentCommit = async (...args: unknown[]) => {
+      assert.equal((args[2] as { sha: string }).sha, s.sha, "提交的父提交仍为任务开始的基线");
+      assert.notEqual(targetSha, s.sha, "分析期间目标分支已有新提交");
+      s.calls.push("commit");
+      return s.head;
+    };
+    await s.process(
+      s.agent("src/normal.ts", async () => {
+        targetSha = "d".repeat(40);
+      }),
+    )(admin, new AbortController().signal);
+    assert.equal((await s.getTask(admin.id)).status, "succeeded");
+    assert.equal(reads, 1, "发布前不再读取目标分支");
+    assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
   } finally {
     await s.cleanup();
   }
@@ -584,12 +605,16 @@ test("PR 创建响应丢失仅只读核对，不重复创建；不可核对保�
     await s.cleanup();
   }
 });
-test("服务恢复取消未发布任务并隔离旧执行权，发布/发送中断保留 uncertain", { skip: !fixture.url }, async () => {
+test("发布租约过期隔离旧执行权，发布/发送中断保留 uncertain", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
     const task = await s.enqueue();
     await s.store.checkpoint(task, { headSha: s.head, publishing: true });
     await s.database.pool.query("UPDATE development_tasks SET notification_status='sending' WHERE id=$1", [task.id]);
+    await s.database.pool.query("UPDATE development_tasks SET lease_expires_at=now()-interval '1 second' WHERE id=$1", [
+      task.id,
+    ]);
+    await s.store.claim();
     await s.store.recover(s.botId);
     const row = await s.getTask(task.id);
     assert.equal(row.status, "uncertain");
@@ -713,6 +738,10 @@ test("管理 API 必须登录、maintain 权限、CSRF，禁止跨仓库写设�
       403,
     );
     allowed = true;
+    config.development.wecom = undefined;
+    const view = (await (await fetch(url, { headers: { cookie } })).json()) as any;
+    assert.equal(view.configured, true, "开发设置不依赖企微");
+    assert.equal(view.wecomConfigured, false, "单独返回群连接配置状态");
     assert.equal(
       (await fetch(url, { method: "PUT", headers, body: JSON.stringify({ ...s.settings, version: 1 }) })).status,
       200,
@@ -747,7 +776,7 @@ test("智能机器人完成结果引用原消息，无成员提及；重复消�
     messages.push(args);
     return { headers: { req_id: "sent" }, errcode: 0 };
   });
-  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, s.github as any), s.store, async (task) => {
     executions++;
     await s.store.checkpoint(task, { title: "修复问题", prNumber: 55 });
     await s.store.finish(task, "succeeded", "已完成");
@@ -791,7 +820,7 @@ test("智能机器人完成结果引用原消息，无成员提及；重复消�
   }
 });
 
-test("企微未认证时仍领取开发任务，认证后发送完成通知", { skip: !fixture.url }, async (t) => {
+test("企微未认证时执行器照常领取开发任务，认证后 Worker 发送完成通知", { skip: !fixture.url }, async (t) => {
   const { WSClient } = await import("@wecom/aibot-node-sdk");
   const { DevelopmentWorker } = await import("../../src/development/worker.js");
   const { waitFor } = await import("../helpers/database.js");
@@ -828,7 +857,7 @@ test("企微未认证时仍领取开发任务，认证后发送完成通知", { 
       "unauthenticated-task",
     ])
   ).rows[0];
-  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, s.github as any), s.store, async (task) => {
     executions++;
     await s.store.checkpoint(task, { title: "完成", prNumber: 42 });
     await s.store.finish(task, "succeeded", "已完成");
@@ -882,7 +911,7 @@ test("多个项目并行开发，同一项目按发送顺序排队；确认消�
   const running = new Map<string, () => void>(),
     started: string[] = [];
   let peak = 0;
-  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, s.github as any), s.store, async (task) => {
     started.push(task.prompt);
     await new Promise<void>((resolve) => running.set(task.prompt, resolve));
     running.delete(task.prompt);
@@ -960,7 +989,7 @@ test("同时收到多条消息时依次入队，不再要求稍后重发", { ski
     replies.push(args);
     return { headers: { req_id: "ack" }, errcode: 0 };
   });
-  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, s.github as any), s.store, async (task) => {
     await s.store.finish(task, "succeeded", "已完成");
   });
   try {
@@ -1111,7 +1140,7 @@ test("开发进行中审查通知仍从同一智能机器人连接直接发绑�
     ...s.github,
     getPullRequest: async () => ({ title: "人工 PR", state: "open", draft: false, head: { sha: "review-head" } }),
   };
-  const worker = new DevelopmentWorker(s.config, s.store, github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, github as any), s.store, async (task) => {
     processing = true;
     await blocked;
     processing = false;
@@ -1264,7 +1293,7 @@ test("issue 讨论：评论排讨论回复，只有提需求的人说“开始�
       created_at: new Date().toISOString(),
       user: { login: "bob", type: "User" },
     });
-    const discussion = (await s.store.claim(s.botId))!;
+    const discussion = (await s.store.claim())!;
     assert.equal(discussion.kind, "discuss");
     await run(discussion);
     assert.equal((await s.getTask(discussion.id)).status, "succeeded");
@@ -1275,7 +1304,7 @@ test("issue 讨论：评论排讨论回复，只有提需求的人说“开始�
     assert.deepEqual(prompts.at(-1).requesterLogins, ["alice"]);
     // 别人说“开始”不算数，回一条提示。
     assert.deepEqual(await comment(s, 102, "bob", "开始"), { kind: "accepted", taskKind: "notice" });
-    await run((await s.store.claim(s.botId))!);
+    await run((await s.store.claim())!);
     assert.equal(s.issueComments.at(-1)!.body, "只有提需求的 @alice 回复“开始”才会开工。");
     // 讨论里顺口提到“开始”不算指令。
     assert.equal((await comment(s, 103, "Alice", "那就开始吧，上限 1 万")).taskKind, "discuss");
@@ -1283,7 +1312,7 @@ test("issue 讨论：评论排讨论回复，只有提需求的人说“开始�
     // 提需求的人（GitHub 账号不区分大小写）说“开始”：排开发任务，issue 进入开发中；这期间的评论回提示。
     assert.deepEqual(await comment(s, 104, "Alice", "开始！"), { kind: "accepted", taskKind: "develop" });
     assert.equal((await comment(s, 105, "bob", "再加个导出日志")).taskKind, "notice");
-    const develop = (await s.store.claim(s.botId))!;
+    const develop = (await s.store.claim())!;
     assert.equal(develop.kind, "develop");
     assert.equal(develop.issue_number, 7);
     await run(develop);
@@ -1319,7 +1348,7 @@ test("issue 里开始后仍有没定的地方：把问题贴成评论、回到�
       [s.repoId],
     );
     await comment(s, 201, "alice", "开始");
-    const again = (await s.store.claim(s.botId))!;
+    const again = (await s.store.claim())!;
     await s.process(issueAgent(s, [issueAnswer]))(again, new AbortController().signal);
     assert.equal((await s.getTask(again.id)).status, "discussing");
     assert.equal(s.issues.length, 1, "不再开新 issue");
@@ -1331,7 +1360,7 @@ test("issue 里开始后仍有没定的地方：把问题贴成评论、回到�
     assert.equal(await status(), "discussing");
     // 命中保护规则被拒绝：原因贴回 issue，可以调整后再说“开始”。
     await comment(s, 202, "alice", "开始");
-    const refused = (await s.store.claim(s.botId))!;
+    const refused = (await s.store.claim())!;
     await s.process(s.agent("src/protected.ts"))(refused, new AbortController().signal);
     assert.equal((await s.getTask(refused.id)).status, "refused");
     assert.match(s.issueComments.at(-1)!.body, /^这次没有建 PR：已拒绝整个任务[\s\S]*再回复“开始”。$/);
@@ -1351,16 +1380,16 @@ test("领取：issue 讨论不等同项目的开发任务，同一个 issue 的�
     assert.equal(developing.kind, "develop");
     await comment(s, 301, "bob", "第一条");
     await comment(s, 302, "bob", "第二条");
-    const first = (await s.store.claim(s.botId))!;
+    const first = (await s.store.claim())!;
     assert.equal(first.kind, "discuss", "同项目有开发任务在跑，讨论照样领取");
-    assert.equal(await s.store.claim(s.botId), undefined, "同一个 issue 的讨论不并行");
+    assert.equal(await s.store.claim(), undefined, "同一个 issue 的讨论不并行");
     await s.process(issueAgent(s, []))(first, new AbortController().signal);
     const merged = await s.getTask(first.id);
     assert.equal(merged.status, "cancelled");
     assert.match(merged.result, /合并到下一条/);
-    // 服务中断：开发中的 issue 回到讨论中。
+    // 没有关联开发任务的遗留 issue 状态恢复到讨论中。
     await s.database.pool.query("UPDATE development_issues SET status='developing' WHERE repository_id=$1", [s.repoId]);
-    await s.store.recover(s.botId);
+    await s.store.claim();
     assert.equal(
       (await s.database.pool.query("SELECT status FROM development_issues WHERE repository_id=$1", [s.repoId])).rows[0]
         .status,
@@ -1404,7 +1433,7 @@ test("issue 里开始的任务没有群消息可引用：结果直接发到绑�
   );
   await comment(s, 401, "bob", "补充一下");
   await comment(s, 402, "alice", "开始");
-  const worker = new DevelopmentWorker(s.config, s.store, s.github as any, async (task) => {
+  const worker = withExecution(new DevelopmentWorker(s.config, s.store, s.github as any), s.store, async (task) => {
     if (task.kind === "develop") await s.store.checkpoint(task, { title: "feat: 导出加上限", prNumber: 56 });
     await s.store.finish(task, "succeeded", "已完成");
   });
@@ -1473,7 +1502,7 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
       { kind: "ignored" },
       "不是开发 PR",
     );
-    const revise = (await s.store.claim(s.botId))!;
+    const revise = (await s.store.claim())!;
     assert.deepEqual(
       [revise.kind, revise.branch, revise.pr_number, revise.role, revise.requester],
       ["revise", branch, 42, "developer", "developer"],
@@ -1498,7 +1527,7 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
     );
     // 只是提问：回答，不推送、不通知；上次处理之前的评论不再算新评论。
     await prComment(s, 202, "carol", "为什么不用常量？");
-    const question = (await s.store.claim(s.botId))!;
+    const question = (await s.store.claim())!;
     await s.process(revisionAgent({ action: "reply", reply: "项目里同类值都直接写在这里。" }, prompts))(
       question,
       new AbortController().signal,
@@ -1530,11 +1559,11 @@ test("PR 评论：连发几条只处理最后一条；评论人关联管理员�
     );
     await prComment(s, 301, "carol", "按钮挪到右边");
     await prComment(s, 302, "Boss", "还是放左边吧");
-    const first = (await s.store.claim(s.botId))!;
+    const first = (await s.store.claim())!;
     await s.process(revisionAgent({ action: "none" }))(first, new AbortController().signal);
     assert.equal((await s.getTask(first.id)).status, "cancelled", "后面还有评论，合并到下一条");
     assert.equal(s.issueComments.length, 0);
-    const second = (await s.store.claim(s.botId))!;
+    const second = (await s.store.claim())!;
     assert.deepEqual([second.role, second.requester], ["admin", "admin"]);
     await s.process(revisionAgent({ action: "none" }))(second, new AbortController().signal);
     const ignored = await s.getTask(second.id);
@@ -1543,13 +1572,332 @@ test("PR 评论：连发几条只处理最后一条；评论人关联管理员�
     // PR 合并：排队的评论取消，不再领取。
     await prComment(s, 303, "carol", "再改一下文案");
     await s.store.closePullRequest(s.repoId, 42);
-    assert.equal(await s.store.claim(s.botId), undefined);
+    assert.equal(await s.store.claim(), undefined);
     const closed = (
       await s.database.pool.query(
         "SELECT status,notification_status FROM development_tasks WHERE message_id='pr-comment:303'",
       )
     ).rows[0];
     assert.deepEqual([closed.status, closed.notification_status], ["cancelled", "skipped"]);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+// 测试中显式组装企微入口和独立执行器，两者通过数据库交接任务。
+function withExecution(
+  worker: { start(): void; stop(): Promise<void> },
+  store: DevelopmentStore,
+  execute: (task: DevelopmentTask, signal: AbortSignal) => Promise<void>,
+) {
+  const runner = new PersistentRunner(developmentSource(store), execute, 20, { concurrency: 2 });
+  return {
+    start() {
+      void runner.start();
+      worker.start();
+    },
+    async stop() {
+      await Promise.all([runner.stop(), worker.stop()]);
+    },
+  };
+}
+
+test("没有企微配置和 Worker 时，执行器领取并完成开发任务", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  const task = await s.enqueue();
+  await s.store.release(task);
+  s.config.development.wecom = undefined;
+  const runner = new PersistentRunner(developmentSource(s.store), s.process(), 20);
+  try {
+    await runner.start();
+    await waitFor(async () => (await s.getTask(task.id)).status === "succeeded");
+    const row = await s.getTask(task.id);
+    assert.equal(row.attempt, 1);
+    assert.equal(row.pr_number, 42);
+    assert.equal(row.notification_status, "pending", "没有企微连接时保留通知供后续发送");
+  } finally {
+    await runner.stop();
+    await s.cleanup();
+  }
+});
+
+test("实例停心跳后另一个执行器接手，attempt=2，旧实例不能覆盖结果", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  const task = await s.enqueue();
+  await s.store.release(task);
+  let firstTask: DevelopmentTask | undefined;
+  let resume!: () => void;
+  const paused = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const first = new PersistentRunner(
+    developmentSource(s.store),
+    async (job) => {
+      firstTask = job;
+      await paused;
+      await assert.rejects(s.store.checkpoint(job, { title: "旧结果" }), /执行权/);
+      assert.equal(await s.store.finish(job, "succeeded", "旧结果"), false);
+    },
+    20,
+    { heartbeatMs: 60_000 },
+  );
+  const second = new PersistentRunner(
+    developmentSource(new DevelopmentStore(s.database.pool)),
+    async (job) => {
+      assert.equal(job.attempt, 2);
+      assert.notEqual(job.owner_token, firstTask!.owner_token);
+      await s.store.finish(job, "succeeded", "新实例完成");
+    },
+    20,
+  );
+  try {
+    await first.start();
+    await waitFor(async () => Boolean(firstTask));
+    await s.database.pool.query("UPDATE development_tasks SET lease_expires_at=now()-interval '1 second' WHERE id=$1", [
+      task.id,
+    ]);
+    await second.start();
+    await waitFor(async () => (await s.getTask(task.id)).status === "succeeded");
+    resume();
+    await first.stop();
+    assert.equal((await s.getTask(task.id)).result, "新实例完成");
+    assert.equal((await s.getTask(task.id)).attempt, 2);
+  } finally {
+    resume();
+    await Promise.all([first.stop(), second.stop()]);
+    await s.cleanup();
+  }
+});
+
+test("第四次租约过期停止重试并恢复 issue；前三次重排仍保持开发中", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const origin = await s.enqueue();
+    await s.store.recordIssue(origin, 7);
+    await s.store.finish(origin, "discussing", "讨论");
+    const task = await s.enqueue();
+    await s.store.checkpoint(task, { issueNumber: 7 });
+    await s.store.setIssueStatus({ ...task, issue_number: 7 }, "developing");
+    for (let expiration = 1; expiration <= 4; expiration++) {
+      await s.database.pool.query(
+        "UPDATE development_tasks SET lease_expires_at=now()-interval '1 second' WHERE id=$1",
+        [task.id],
+      );
+      const claimed = await s.store.claim();
+      if (expiration < 4) assert.equal(claimed!.attempt, expiration + 1);
+      else assert.equal(claimed, undefined);
+      const issue = (
+        await s.database.pool.query("SELECT status FROM development_issues WHERE repository_id=$1", [s.repoId])
+      ).rows[0];
+      assert.equal(issue.status, expiration < 4 ? "developing" : "discussing");
+    }
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "failed");
+    assert.match(row.result, /多次中断/);
+    assert.equal(row.owner_token, null);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("停止真实开发处理器：收尾后回到 queued，次数不变，无取消结果、通知和 issue 失败评论", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  const origin = await s.enqueue();
+  await s.store.recordIssue(origin, 7);
+  await s.store.finish(origin, "discussing", "讨论");
+  const task = await s.enqueue();
+  await s.store.checkpoint(task, { issueNumber: 7 });
+  await s.store.setIssueStatus({ ...task, issue_number: 7 }, "developing");
+  await s.store.release(task);
+  let started = false,
+    cleaned = false;
+  const runner = new PersistentRunner(
+    developmentSource(s.store),
+    s.process(async (input) => {
+      started = true;
+      try {
+        await new Promise<void>((_resolve, reject) =>
+          input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true }),
+        );
+        throw new Error("不应完成");
+      } finally {
+        cleaned = true;
+      }
+    }),
+    20,
+  );
+  try {
+    await runner.start();
+    await waitFor(async () => started);
+    await runner.stop();
+    assert.equal(cleaned, true);
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "queued");
+    assert.equal(row.attempt, 1);
+    assert.equal(row.owner_token, null);
+    assert.equal(row.lease_expires_at, null);
+    assert.equal(row.result, null);
+    assert.equal(row.notification_status, "pending");
+    assert.deepEqual(s.issueComments, []);
+    assert.deepEqual(s.calls, []);
+    assert.equal((await s.store.claim())!.attempt, 1, "部署后的再次领取不增加次数");
+  } finally {
+    await runner.stop();
+    await s.cleanup();
+  }
+});
+
+test("心跳续租；管理端取消或改状态导致执行中止，旧执行不能再写结果", { skip: !fixture.url }, async () => {
+  for (const status of ["cancelled", "failed"] as const) {
+    const s = await setup();
+    const completed = await s.enqueue();
+    await s.store.finish(completed, "succeeded", "本次执行完成");
+    assert.deepEqual(await s.store.renew([completed], 1000), [], "自己已完成的处理器可以继续收尾");
+    const task = await s.enqueue();
+    await s.store.release(task);
+    let started = false,
+      aborted = false;
+    const runner = new PersistentRunner(
+      developmentSource(s.store),
+      async (job, signal) => {
+        started = true;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              resolve();
+            },
+            { once: true },
+          ),
+        );
+        assert.equal(await s.store.finish(job, "succeeded", "过期结果"), false);
+      },
+      20,
+      { leaseMs: 1000, heartbeatMs: 30 },
+    );
+    try {
+      await runner.start();
+      await waitFor(async () => started);
+      const expiry = (await s.getTask(task.id)).lease_expires_at.getTime();
+      await waitFor(async () => (await s.getTask(task.id)).lease_expires_at.getTime() > expiry);
+      await s.database.pool.query(
+        "UPDATE development_tasks SET status=$2,result='管理员终止',owner_token=CASE WHEN $2='cancelled' THEN NULL ELSE owner_token END WHERE id=$1",
+        [task.id, status],
+      );
+      await waitFor(async () => aborted);
+      assert.equal((await s.getTask(task.id)).status, status);
+      assert.equal((await s.getTask(task.id)).result, "管理员终止");
+    } finally {
+      await runner.stop();
+      await s.cleanup();
+    }
+  }
+});
+
+test("跨实例并发领取仍同项目串行，不同项目与 Bot 可并行", { skip: !fixture.url }, async () => {
+  const a = await setup(),
+    b = await setup();
+  try {
+    const first = await a.enqueue();
+    await a.store.release(first);
+    await a.store.accept(
+      "other-bot",
+      {
+        messageId: randomUUID(),
+        replyRequestId: "req",
+        receivedAt: new Date(),
+        chatId: a.settings.chatId,
+        requester: "developer",
+        text: "第二个任务",
+        images: [],
+      },
+      a.config,
+    );
+    // b 的入队辅助函数会领取全局队列，先用 accept 保持三条都排队。
+    await b.store.accept(
+      b.botId,
+      {
+        messageId: randomUUID(),
+        replyRequestId: "req",
+        receivedAt: new Date(),
+        chatId: b.settings.chatId,
+        requester: "developer",
+        text: "其他项目",
+        images: [],
+      },
+      b.config,
+    );
+    const claimed = (
+      await Promise.all([a.store.claim(), b.store.claim(), new DevelopmentStore(a.database.pool).claim()])
+    ).filter((task) => task !== undefined);
+    assert.equal(claimed.length, 2);
+    assert.deepEqual(new Set(claimed.map((task) => Number(task.repository_id))), new Set([a.repoId, b.repoId]));
+    await a.store.finish(claimed.find((task) => Number(task.repository_id) === a.repoId)!, "succeeded", "完成");
+    assert.equal((await b.store.claim())!.bot_id, "other-bot", "领取不依赖连接的 Bot");
+  } finally {
+    await a.cleanup();
+    await b.cleanup();
+  }
+});
+
+for (const kind of ["discuss", "revise", "notice"] as const) {
+  test(`停止 ${kind} 处理器不会写取消结果或失败评论`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    const task = await s.enqueue();
+    await s.store.recordIssue(task, 7);
+    await s.database.pool.query("UPDATE development_tasks SET kind=$2,issue_number=$3,pr_number=$4 WHERE id=$1", [
+      task.id,
+      kind,
+      kind === "revise" ? null : 7,
+      kind === "revise" ? 42 : null,
+    ]);
+    await s.store.release(task);
+    s.pull.ref = task.branch;
+    let started = false;
+    const wait = (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        started = true;
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    if (kind === "notice") s.github.installationToken = async (...args: unknown[]) => wait(args[1] as AbortSignal);
+    const runner = new PersistentRunner(
+      developmentSource(s.store),
+      s.process(async (input) => wait(input.signal!)),
+      20,
+    );
+    try {
+      await runner.start();
+      await waitFor(async () => started);
+      await runner.stop();
+      const row = await s.getTask(task.id);
+      assert.equal(row.status, "queued");
+      assert.equal(row.result, null);
+      assert.equal(row.attempt, 1);
+      assert.equal(row.notification_status, "pending");
+      assert.deepEqual(s.issueComments, []);
+    } finally {
+      await runner.stop();
+      await s.cleanup();
+    }
+  });
+}
+
+test("停止发布中的任务保留 uncertain；企微恢复不取消活跃租约", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    await s.store.recover(s.botId);
+    assert.equal((await s.getTask(task.id)).status, "running");
+    await s.store.checkpoint(task, { publishing: true, headSha: s.head });
+    await s.store.release(task);
+    const row = await s.getTask(task.id);
+    assert.equal(row.status, "uncertain");
+    assert.equal(row.owner_token, null);
+    assert.equal(row.attempt, 1);
+    assert.equal(await s.store.claim(), undefined);
   } finally {
     await s.cleanup();
   }
@@ -1564,7 +1912,7 @@ test("管理页发起的需求开 issue 后直接标注 GitHub 发起人；标�
     const claimDirect = async (id: string) =>
       (
         await s.database.pool.query(
-          "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now() WHERE id=$1 RETURNING *",
+          "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now(),attempt=1,lease_expires_at=now()+interval '5 minutes' WHERE id=$1 RETURNING *",
           [id, randomUUID()],
         )
       ).rows[0];
@@ -1640,7 +1988,7 @@ test("标签开发失败把原因贴回 issue 并回到讨论，不发送企微�
     );
     const task = (
       await s.database.pool.query(
-        "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now() WHERE id=$1 RETURNING *",
+        "UPDATE development_tasks SET status='running',owner_token=$2,started_at=now(),attempt=1,lease_expires_at=now()+interval '5 minutes' WHERE id=$1 RETURNING *",
         [accepted.taskId, randomUUID()],
       )
     ).rows[0];
@@ -1653,6 +2001,27 @@ test("标签开发失败把原因贴回 issue 并回到讨论，不发送企微�
     assert.equal((await s.getTask(task.id)).notification_status, "skipped");
     assert.deepEqual(s.calls, []);
   } finally {
+    await s.cleanup();
+  }
+});
+
+test("管理页和 issue 标签派的任务没有企微 Bot，也由执行器领取并完成", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  s.config.development.wecom = undefined;
+  await s.store.saveSettings(s.repoId, { ...s.settings, chatId: "", members: [], version: 1 }, "maintainer");
+  const admin = await s.store.acceptAdmin(
+    { repositoryId: s.repoId, login: "Maintainer", role: "developer", prompt: "新增日期筛选" },
+    s.config,
+  );
+  const runner = new PersistentRunner(developmentSource(s.store), s.process(), 20);
+  try {
+    await runner.start();
+    await waitFor(async () => (await s.getTask(admin.taskId!)).status === "succeeded");
+    const row = await s.getTask(admin.taskId!);
+    assert.deepEqual([row.source, row.bot_id, row.attempt, row.notification_status], ["admin", null, 1, "skipped"]);
+    assert.equal(row.pr_number, 42);
+  } finally {
+    await runner.stop();
     await s.cleanup();
   }
 });

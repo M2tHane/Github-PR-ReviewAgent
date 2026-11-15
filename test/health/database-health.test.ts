@@ -1,8 +1,9 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
 import { createHmac, randomUUID } from "node:crypto";
 import { Database } from "../../src/persistence/database.js";
-import { PersistentRunner } from "../../src/jobs/runner.js";
+import { JobsSource, PersistentRunner } from "../../src/jobs/runner.js";
 import { MemoryService } from "../../src/memory/memory.service.js";
 import type { DecisionProposal } from "../../src/memory/types.js";
 import type { ReplyResult } from "../../src/reply/types.js";
@@ -179,6 +180,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
     const abandoned = await database.startAgentRun(first.job!.id, "health_auditor", 10000, 1000);
     await database.finishAgentRun(abandoned, { status: "failed", usage: { ...emptyUsage(), unreportedTokens: 4000 } });
     const config = {
+      development: loadDevelopmentConfig({}),
       allowedRepositories: new Set(["owner/health-worker"]),
       modelProvider: "test",
       modelName: "model",
@@ -291,7 +293,7 @@ test("Health Worker 完成固定快照报告、保留重试消耗，并在暂停
       osv,
     );
     runner = new PersistentRunner(
-      database,
+      new JobsSource(database),
       async (job) => {
         assert.ok(job.jobType === "HEALTH_AUDIT");
         job.cloneUrl = root;
@@ -436,6 +438,7 @@ test("Health 管理 API 使用维护者与 CSRF 边界，重试保持原预算�
     [allowedId, deniedId],
   );
   const config = {
+    development: loadDevelopmentConfig({}),
     appId: "1",
     privateKey: "test",
     allowedRepositories: new Set(["owner/health-api", "owner/health-private"]),
@@ -554,6 +557,7 @@ test("App 移除仓库的签名事件只撤销对应 installation，并取消健
     owned = 9_000_000_025,
     other = 9_000_000_026;
   const config = {
+    development: loadDevelopmentConfig({}),
     webhookSecret: "revoke-test",
     webhookMaxBytes: 10000,
     allowedRepositories: new Set(["owner/revoked", "owner/other-installation"]),

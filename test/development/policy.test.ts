@@ -175,9 +175,12 @@ test("图像预算保留视觉 token，不把 base64 当正文；机器人配置
   assert.throws(() => requestTokenBudget({ url: `data:image/png;base64,${data}` }, 20_000, [{ data }]));
   const budget = requestTokenBudget({ url: `data:image/png;base64,${data}` }, 160_000, [{ data }]);
   assert(budget.reservedTokens > 32768 && budget.reservedTokens < 60_000);
-  assert.equal(loadDevelopmentConfig({}), undefined);
+  assert.equal(loadDevelopmentConfig({}).wecom, undefined);
+  assert.equal(loadDevelopmentConfig({}).concurrency, 3, "没有企微时仍加载开发配置");
+  assert.equal(loadDevelopmentConfig({ DEVELOPMENT_TIMEOUT_MS: "120000" }).timeoutMs, 120000);
   assert.throws(() => loadDevelopmentConfig({ WECOM_BOT_ID: "bot" }));
   const bot = { WECOM_BOT_ID: "bot", WECOM_BOT_SECRET: "secret" };
+  assert.deepEqual(loadDevelopmentConfig(bot).wecom, { botId: "bot", secret: "secret" });
   assert.equal(loadDevelopmentConfig(bot)?.budgetTokens, undefined, "未设置预算时不限制");
   assert.equal(loadDevelopmentConfig(bot)?.timeoutMs, 3_600_000, "开发任务默认 1 小时");
   assert.equal(loadDevelopmentConfig({ ...bot, DEVELOPMENT_BUDGET_TOKENS: "" })?.budgetTokens, undefined);

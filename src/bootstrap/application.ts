@@ -9,7 +9,7 @@ import {
 } from "../config/service-settings.js";
 import { createReviewProcessor } from "../review/review.processor.js";
 import { Database } from "../persistence/database.js";
-import { PersistentRunner } from "../jobs/runner.js";
+import { JobsSource, PersistentRunner } from "../jobs/runner.js";
 import { createDecisionProcessor } from "../memory/decision.processor.js";
 import { MemoryService } from "../memory/memory.service.js";
 import { createAdminHandler } from "../admin/handler.js";
@@ -21,7 +21,8 @@ import { createJobDispatcher } from "../jobs/dispatcher.js";
 import { log } from "../logging.js";
 import { reviewNotificationChannel } from "../notifications/wecom.js";
 
-import { DevelopmentStore } from "../development/store.js";
+import { DevelopmentStore, developmentSource } from "../development/store.js";
+import { createDevelopmentProcessor } from "../development/processor.js";
 import { DevelopmentWorker } from "../development/worker.js";
 
 // 单进程模块边界的理由见 .agents/decisions/repository-architecture.md。
@@ -30,7 +31,7 @@ export function createApplication() {
   const database = new Database(
     config.databaseUrl,
     config.workerConcurrency,
-    config.development ? reviewNotificationChannel(config.development.botId) : undefined,
+    config.development.wecom ? reviewNotificationChannel(config.development.wecom.botId) : undefined,
   );
   const memories = new MemoryService(database);
   const review = createReviewProcessor(config, undefined, database, memories);
@@ -38,7 +39,7 @@ export function createApplication() {
   const reply = createReplyProcessor(config, database, memories);
   const health = createHealthProcessor(config, database, memories);
   const runner = new PersistentRunner(
-    database,
+    new JobsSource(database),
     createJobDispatcher({ PR_REVIEW: review, DECISION_EXTRACT: extract, REPLY_HANDLE: reply, HEALTH_AUDIT: health }),
     500,
     { concurrency: config.workerConcurrency },
@@ -49,15 +50,21 @@ export function createApplication() {
       database.resizePool(config.workerConcurrency);
       runner.setConcurrency(config.workerConcurrency);
     }
+    if (keys.includes("DEVELOPMENT_CONCURRENCY")) developmentRunner.setConcurrency(config.development.concurrency);
     if (keys.includes("DATA_PURGE_INTERVAL_MS")) purgeTimer.reschedule();
     if (keys.includes("WEBHOOK_REDELIVERY_INTERVAL_MS")) redeliveryTimer.reschedule();
   });
   const github = new GitHubClient(config.appId, config.privateKey);
   const { server } = createApp(config, database, createAdminHandler(config, database, github, undefined, settings));
   const scheduleAbort = new AbortController();
-  const development = config.development
-    ? new DevelopmentWorker(config, new DevelopmentStore(database.pool), github)
-    : undefined;
+  const developmentStore = new DevelopmentStore(database.pool);
+  const developmentRunner = new PersistentRunner(
+    developmentSource(developmentStore),
+    createDevelopmentProcessor(config, developmentStore, github),
+    500,
+    { concurrency: config.development.concurrency },
+  );
+  const development = config.development.wecom ? new DevelopmentWorker(config, developmentStore, github) : undefined;
   let scheduling: Promise<void> | undefined;
   let scheduleTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -77,7 +84,7 @@ export function createApplication() {
   let purging: Promise<void> | undefined;
   const purge = () => {
     if (purging || scheduleAbort.signal.aborted) return;
-    const longest = Math.max(config.agentTimeoutMs, config.development?.timeoutMs ?? 0, config.healthTimeoutMs ?? 0);
+    const longest = Math.max(config.agentTimeoutMs, config.development.timeoutMs, config.healthTimeoutMs ?? 0);
     void removeStaleTaskDirectories(longest + 10 * 60_000)
       .then((removed) => removed && log("info", "stale_task_directories_removed", { removed }))
       .catch((error) => log("error", "stale_task_directories_failed", {}, error));
@@ -122,6 +129,8 @@ export function createApplication() {
       database.resizePool(config.workerConcurrency);
       runner.setConcurrency(config.workerConcurrency);
       await runner.start();
+      developmentRunner.setConcurrency(config.development.concurrency);
+      await developmentRunner.start();
       development?.start();
       scheduleTimer = setInterval(pollSchedules, 30_000);
       pollSchedules();
@@ -138,7 +147,15 @@ export function createApplication() {
       redeliveryTimer.stop();
       scheduleAbort.abort();
       const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      await Promise.all([closed, runner.stop(), development?.stop(), scheduling, purging, redelivering]);
+      await Promise.all([
+        closed,
+        runner.stop(),
+        developmentRunner.stop(),
+        development?.stop(),
+        scheduling,
+        purging,
+        redelivering,
+      ]);
       await database.close();
     },
   };

@@ -1,3 +1,4 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Config } from "../../src/config/config.js";
@@ -9,6 +10,7 @@ const fixture = useTestDatabase();
 
 const config = () =>
   ({
+    development: loadDevelopmentConfig({}),
     agentTimeoutMs: 3_600_000,
     dataRetentionDays: 90,
     revokedDataGraceDays: 30,
@@ -28,11 +30,8 @@ test("服务设置：修改、恢复默认都写记录，另一个实例刷新�
       other = config();
     const settings = new ServiceSettings(mine, database.pool);
     const otherSettings = new ServiceSettings(other, database.pool);
-    await assert.rejects(
-      settings.update({ AGENT_TIMEOUT_MS: 1_800_000, DEVELOPMENT_BUDGET_TOKENS: undefined }, "alice"),
-      /不能修改/,
-      "未启用群内开发时不能改开发设置",
-    );
+    await settings.update({ DEVELOPMENT_BUDGET_TOKENS: undefined }, "alice");
+    assert.equal(mine.development.wecom, undefined, "没有企微也能保存开发配置");
     let view = await settings.update(
       { AGENT_TIMEOUT_MS: 1_800_000, MODEL_THINKING: "low", SAST_SCAN_ENABLED: false },
       "alice",

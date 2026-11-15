@@ -9,6 +9,7 @@ import { createAdminHandler } from "../../src/admin/handler.js";
 import { memoryStore } from "../../src/admin/session-store.js";
 import type { Session } from "../../src/admin/dto.js";
 import type { Config } from "../../src/config/config.js";
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import { createApp } from "../../src/github/webhook/handler.js";
 import { useTestDatabase } from "../helpers/database.js";
 
@@ -33,6 +34,7 @@ async function setup() {
     githubOAuthCallbackUrl: "http://127.0.0.1/callback",
     sessionSecret: "a".repeat(32),
     serviceAdmins: new Set(["service-admin"]),
+    development: loadDevelopmentConfig({}),
   } as Config;
   let maintainer = true,
     write = true;
@@ -164,12 +166,12 @@ test("管理 API 不绑群也能保存和派任务；CSRF、维护权限、启�
       assert.equal(task.message_id, null);
       assert.equal(task.notification_status, "skipped");
       assert.equal(task.branch, `bot/development/${task.id}`);
-      // 不改执行器：直接取得执行令牌来检查空群的运行时权限边界。
+      // 直接取得执行令牌和租约，检查空群的运行时权限边界。
       task.owner_token = randomUUID();
-      await s.database.pool.query("UPDATE development_tasks SET status='running',owner_token=$2 WHERE id=$1", [
-        task.id,
-        task.owner_token,
-      ]);
+      await s.database.pool.query(
+        "UPDATE development_tasks SET status='running',owner_token=$2,attempt=1,lease_expires_at=now()+interval '5 minutes' WHERE id=$1",
+        [task.id, task.owner_token],
+      );
       await s.store.permission(task, s.config);
     }
     s.config.queueCapacity = 0;

@@ -51,7 +51,8 @@ export function createDevelopmentRoute(
     if (request.method === "GET")
       return json(response, 200, {
         settings: await store.settings(repositoryId),
-        configured: Boolean(config.development),
+        configured: true,
+        wecomConfigured: Boolean(config.development.wecom),
         tasks: await store.list(repositoryId),
       });
     if (request.method !== "PUT") return json(response, 405, { error: "不支持的操作" });

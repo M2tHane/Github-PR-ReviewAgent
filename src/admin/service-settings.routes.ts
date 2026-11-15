@@ -15,7 +15,7 @@ export function createServiceSettingsRoute(
   const view = async (user: Session) => ({
     canEdit: isAdmin(user),
     adminsConfigured: Boolean(config.serviceAdmins?.size),
-    developmentConfigured: Boolean(config.development),
+    developmentConfigured: true,
     definitions,
     ...(await settings.list()),
   });

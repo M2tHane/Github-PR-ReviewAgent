@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { LEASE_MS } from "../persistence/repositories/job.repository.js";
+import { transaction } from "../persistence/transaction.js";
+import type { TaskSource } from "../jobs/runner.js";
 import type { Pool, PoolClient } from "pg";
 import type { Config } from "../config/config.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
@@ -259,19 +262,95 @@ export class DevelopmentStore {
   }
   // 按发送顺序领取。开发任务同一项目一个一个来，先做其他项目的；issue 讨论只读代码，不等开发任务，
   // 但同一个 issue 的讨论回复一次只跑一条，避免同时回两遍；同一个 PR 的评论修改也一次一条。
-  async claim(botId: string): Promise<DevelopmentTask | undefined> {
-    return (
+  async claim(leaseMs = LEASE_MS): Promise<DevelopmentTask | undefined> {
+    const client = await this.pool.connect();
+    try {
+      return await transaction(client, async () => {
+        // 多个执行器同时领取时，也必须按项目 / issue / PR 串行。
+        await client.query("SELECT pg_advisory_xact_lock(4897042)");
+        await client.query(
+          `UPDATE development_tasks SET
+            status=CASE WHEN status='publishing' THEN 'uncertain' WHEN attempt>=4 THEN 'failed' ELSE 'queued' END,
+            result=CASE WHEN status='publishing' THEN '服务中断，PR 发布结果待核对；不会自动重复提交。'
+              WHEN attempt>=4 THEN '执行实例多次中断，已停止重试。' ELSE NULL END,
+            images=CASE WHEN status='publishing' OR attempt>=4 THEN '[]'::jsonb ELSE images END,
+            attempt=CASE WHEN status='running' AND attempt<4 THEN attempt+1 ELSE attempt END,
+            owner_token=NULL,lease_expires_at=NULL,updated_at=now()
+          WHERE status IN ('running','publishing') AND (lease_expires_at IS NULL OR lease_expires_at<=now())`,
+        );
+        await this.recoverIssues(client);
+        return (
+          await client.query(
+            `UPDATE development_tasks SET status='running',owner_token=$1,started_at=now(),updated_at=now(),
+            attempt=GREATEST(attempt,1),lease_expires_at=now()+make_interval(secs=>$2) WHERE id=(
+          SELECT t.id FROM development_tasks t WHERE t.status='queued'
+            AND NOT EXISTS (SELECT 1 FROM development_tasks r WHERE r.repository_id=t.repository_id AND r.status IN ('running','publishing')
+              AND (CASE WHEN t.kind='develop' THEN r.kind='develop'
+                WHEN t.kind='revise' THEN r.kind='revise' AND r.pr_number=t.pr_number
+                ELSE r.kind IN ('discuss','notice') AND r.issue_number=t.issue_number END))
+          ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`,
+            [randomUUID(), leaseMs / 1000],
+          )
+        ).rows[0];
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  async renew(tasks: DevelopmentTask[], leaseMs: number) {
+    const rows = (
       await this.pool.query(
-        `UPDATE development_tasks SET status='running',owner_token=$2,started_at=now(),updated_at=now() WHERE id=(
-      SELECT t.id FROM development_tasks t WHERE t.bot_id=$1 AND t.status='queued'
-        AND NOT EXISTS (SELECT 1 FROM development_tasks r WHERE r.repository_id=t.repository_id AND r.status IN ('running','publishing')
-          AND (CASE WHEN t.kind='develop' THEN r.kind='develop'
-            WHEN t.kind='revise' THEN r.kind='revise' AND r.pr_number=t.pr_number
-            ELSE r.kind IN ('discuss','notice') AND r.issue_number=t.issue_number END))
-      ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`,
-        [botId, randomUUID()],
+        `WITH renewed AS (
+        UPDATE development_tasks SET lease_expires_at=now()+make_interval(secs=>$3)
+        WHERE id=ANY($1::uuid[]) AND owner_token=ANY($2::uuid[]) AND status IN ('running','publishing') AND lease_expires_at>now()
+        RETURNING owner_token)
+      SELECT t.owner_token,t.status,t.owner_token IN (SELECT owner_token FROM renewed) renewed
+      FROM development_tasks t WHERE t.id=ANY($1::uuid[]) AND t.owner_token=ANY($2::uuid[])`,
+        [tasks.map((task) => task.id), tasks.map((task) => task.owner_token), leaseMs / 1000],
       )
-    ).rows[0];
+    ).rows;
+    return tasks
+      .filter((task) => {
+        const row = rows.find((row) => row.owner_token === task.owner_token);
+        // 处理器已写入终态后还会收尾；只有本次执行自己写入的终态可以继续收尾。
+        const finished = !["queued", "running", "publishing"].includes(task.status);
+        return !row || (!row.renewed && !(finished && row.status === task.status));
+      })
+      .map((job) => ({ job, reason: "任务执行权已失效" }));
+  }
+
+  async release(task: DevelopmentTask) {
+    // 发布不可盲目重放；完成状态保留，只有仍在运行的任务重新排队。停止不改变 attempt。
+    await this.pool.query(
+      `UPDATE development_tasks SET
+        status=CASE WHEN status='publishing' THEN 'uncertain' WHEN status='running' THEN 'queued' ELSE status END,
+        result=CASE WHEN status='publishing' THEN '服务中断，PR 发布结果待核对；不会自动重复提交。' ELSE result END,
+        images=CASE WHEN status='publishing' THEN '[]'::jsonb ELSE images END,
+        owner_token=NULL,lease_expires_at=NULL,updated_at=now()
+      WHERE id=$1 AND owner_token=$2`,
+      [task.id, task.owner_token],
+    );
+  }
+
+  async fail(task: DevelopmentTask) {
+    await this.pool.query(
+      `UPDATE development_tasks SET status=CASE WHEN status='publishing' THEN 'uncertain' ELSE 'failed' END,
+        result=CASE WHEN status='publishing' THEN 'PR 发布结果待核对，任务不会自动重发。' ELSE '开发任务执行失败，请查看任务记录。' END,
+        images='[]',owner_token=NULL,lease_expires_at=NULL,updated_at=now()
+      WHERE id=$1 AND owner_token=$2 AND status IN ('running','publishing') AND lease_expires_at>now()`,
+      [task.id, task.owner_token],
+    );
+    await this.recoverIssues(this.pool);
+  }
+
+  async complete(task: DevelopmentTask) {
+    // 处理器已经写入业务结果，执行器只回收执行权。
+    await this.pool.query(
+      `UPDATE development_tasks SET owner_token=NULL,lease_expires_at=NULL WHERE id=$1 AND owner_token=$2
+        AND status NOT IN ('queued','running','publishing')`,
+      [task.id, task.owner_token],
+    );
   }
 
   // GitHub 上 issue 的一条新评论。讨论中的 issue：提需求的人说“开始”就排一个开发任务，别人说“开始”回一条提示，
@@ -589,7 +668,7 @@ export class DevelopmentStore {
       await this.pool.query(
         `SELECT s.protections FROM development_settings s JOIN repositories r ON r.id=s.repository_id
       WHERE s.repository_id=$1 AND s.version=$2 AND s.chat_id IS NOT DISTINCT FROM $3 AND s.target_branch=$4 AND s.enabled AND r.enabled
-      AND EXISTS (SELECT 1 FROM development_tasks t WHERE t.id=$9 AND t.owner_token=$10 AND t.status IN ('running','publishing'))
+      AND EXISTS (SELECT 1 FROM development_tasks t WHERE t.id=$9 AND t.owner_token=$10 AND t.status IN ('running','publishing') AND t.lease_expires_at>now())
       AND r.revoked_at IS NULL AND r.installation_id=$5 AND r.full_name=$6 AND ($11 OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(s.members) m WHERE m->>'userid'=$7 AND m->>'role'=$8))`,
         [
@@ -618,10 +697,12 @@ export class DevelopmentStore {
     };
   }
   async finish(task: DevelopmentTask, status: TaskStatus, result: string) {
-    await this.pool.query(
-      "UPDATE development_tasks SET status=$2,result=$3,images='[]',duration_ms=(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer,updated_at=now() WHERE id=$1 AND owner_token=$4",
+    const updated = await this.pool.query(
+      "UPDATE development_tasks SET status=$2,result=$3,images='[]',duration_ms=(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer,updated_at=now() WHERE id=$1 AND owner_token=$4 AND status IN ('running','publishing') AND lease_expires_at>now()",
       [task.id, status, result, task.owner_token],
     );
+    if (updated.rowCount) task.status = status;
+    return Boolean(updated.rowCount);
   }
   // 不在群里通知：讨论回复、没改代码的 PR 评论处理等。
   async skipNotification(task: DevelopmentTask) {
@@ -650,7 +731,7 @@ export class DevelopmentStore {
       title=COALESCE($5,title),rule_snapshot=COALESCE($6,rule_snapshot),usage=COALESCE($7,usage),duration_ms=COALESCE($8,duration_ms),
       status=CASE WHEN $9 THEN 'publishing' ELSE status END,pr_number=COALESCE($10,pr_number),model=COALESCE($11,model),
       issue_number=COALESCE($12,issue_number),updated_at=now()
-      WHERE id=$1 AND owner_token=$2 AND status IN ('running','publishing')`,
+      WHERE id=$1 AND owner_token=$2 AND status IN ('running','publishing') AND lease_expires_at>now()`,
       [
         task.id,
         task.owner_token,
@@ -668,24 +749,19 @@ export class DevelopmentStore {
     );
     if (!result.rowCount) throw new DevelopmentError("任务执行权已失效", "cancelled");
   }
+  // 仅由持有 Bot 锁的通知 Worker 恢复发送状态，不干预任务执行。
   async recover(botId: string) {
-    await this.pool.query(
-      `UPDATE development_tasks SET status=CASE WHEN status='publishing' THEN 'uncertain' ELSE 'cancelled' END,
-      result=CASE WHEN status='publishing' THEN '服务中断，PR 发布结果待核对；不会自动重复提交。' ELSE '服务中断，开发任务已取消，请重新发起。' END,
-      images='[]',owner_token=NULL,updated_at=now() WHERE bot_id=$1 AND status IN ('running','publishing')`,
-      [botId],
-    );
     await this.pool.query(
       "UPDATE development_tasks SET notification_status='uncertain',notification_error='delivery_interrupted' WHERE bot_id=$1 AND notification_status='sending'",
       [botId],
     );
-    // 开发中断的 issue 回到讨论中，提需求的人可以再说“开始”。
-    await this.pool.query(
+  }
+  private async recoverIssues(client: Pool | PoolClient) {
+    // 重排或发布待核对的任务继续占有 issue；终态失败才恢复讨论。
+    await client.query(
       `UPDATE development_issues i SET status='discussing',updated_at=now() WHERE status='developing'
-      AND EXISTS (SELECT 1 FROM development_tasks o WHERE o.id=i.origin_task_id AND o.bot_id=$1)
       AND NOT EXISTS (SELECT 1 FROM development_tasks t WHERE t.repository_id=i.repository_id AND t.issue_number=i.issue_number
         AND t.kind='develop' AND t.status IN ('queued','running','publishing','uncertain'))`,
-      [botId],
     );
   }
   async list(repositoryId: number) {
@@ -714,4 +790,24 @@ export class DevelopmentStore {
       client.release(broken);
     }
   }
+}
+
+export function developmentSource(store: DevelopmentStore): TaskSource<DevelopmentTask> {
+  return {
+    claim: ({ leaseMs }) => store.claim(leaseMs),
+    renew: (tasks, leaseMs) => store.renew(tasks, leaseMs),
+    finish: (task, stopped) => (stopped ? store.release(task) : store.complete(task)),
+    // 模型临时故障由处理器在发布前重试；执行器不重复播放开发侧的外部写入。
+    fail: (task) => store.fail(task),
+    release: (task) => store.release(task),
+    describe: (task) => ({
+      kind: task.kind,
+      source: task.source,
+      repositoryId: task.repository_id,
+      prNumber: task.pr_number ?? undefined,
+      issueNumber: task.issue_number ?? undefined,
+      attempt: task.attempt,
+      status: task.status,
+    }),
+  };
 }

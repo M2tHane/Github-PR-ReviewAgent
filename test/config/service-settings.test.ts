@@ -1,3 +1,4 @@
+import { loadDevelopmentConfig } from "../../src/development/config.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Config } from "../../src/config/config.js";
@@ -17,7 +18,7 @@ function config(development = false): Config {
     queueCapacity: 20,
     modelName: "model-a",
     modelEndpoint: { api: "openai-completions", thinkingLevel: "high" },
-    ...(development ? { development: { botId: "b", secret: "s", timeoutMs: 3_600_000, concurrency: 3 } } : {}),
+    development: loadDevelopmentConfig(development ? { WECOM_BOT_ID: "b", WECOM_BOT_SECRET: "s" } : {}),
   } as Config;
 }
 
@@ -54,7 +55,7 @@ test("服务设置校验：范围、整单位、0 和留空的含义", () => {
   assert.match(settingError(definition("SAST_SCAN_ENABLED"), "true")!, /开或关/);
 });
 
-test("服务设置：数据库里的值写进 config，删除记录后回到默认值，坏值和未启用的功能跳过", async () => {
+test("服务设置：数据库里的值写进 config，删除记录后回到默认值，坏值跳过，没有企微也应用开发设置", async () => {
   const value = config();
   const { pool: fake, state } = pool([
     { key: "AGENT_TIMEOUT_MS", value: 1_800_000 },
@@ -71,8 +72,9 @@ test("服务设置：数据库里的值写进 config，删除记录后回到默�
   assert.equal(value.workerConcurrency, 4);
   assert.equal(value.modelEndpoint?.thinkingLevel, undefined);
   assert.equal(value.dataRetentionDays, 90, "超出范围的存储值不生效");
-  assert.equal(value.development, undefined);
-  assert.deepEqual(changes, [["AGENT_TIMEOUT_MS", "MODEL_THINKING", "WORKER_CONCURRENCY"]]);
+  assert.equal(value.development.concurrency, 5);
+  assert.equal(value.development.wecom, undefined);
+  assert.deepEqual(changes, [["AGENT_TIMEOUT_MS", "MODEL_THINKING", "WORKER_CONCURRENCY", "DEVELOPMENT_CONCURRENCY"]]);
   // 没有变化时不通知；别的实例恢复默认后回到启动时的值。
   await settings.refresh();
   assert.equal(changes.length, 1);
@@ -80,14 +82,14 @@ test("服务设置：数据库里的值写进 config，删除记录后回到默�
   await settings.refresh();
   assert.equal(value.agentTimeoutMs, 3_600_000);
   assert.equal(value.modelEndpoint?.thinkingLevel, "high");
-  assert.deepEqual(changes[1], ["AGENT_TIMEOUT_MS", "MODEL_THINKING"]);
+  assert.deepEqual(changes[1], ["AGENT_TIMEOUT_MS", "MODEL_THINKING", "DEVELOPMENT_CONCURRENCY"]);
   // 数据库不可用时保留当前值，不抛错。
   state.fail = true;
   await settings.refresh();
   assert.equal(value.workerConcurrency, 4);
-  const listed = SETTINGS.filter((item) => !item.development).length;
+  const listed = SETTINGS.length;
   state.fail = false;
-  assert.equal((await settings.list()).settings.length, listed, "未启用群内开发时不列开发相关设置");
+  assert.equal((await settings.list()).settings.length, listed, "没有企微也列出开发设置");
 });
 
 test("服务设置：启用群内开发时开发任务的时限、并发和额度可改", async () => {
@@ -102,8 +104,7 @@ test("服务设置：启用群内开发时开发任务的时限、并发和额�
   );
   await settings.refresh();
   assert.deepEqual(value.development, {
-    botId: "b",
-    secret: "s",
+    ...loadDevelopmentConfig({ WECOM_BOT_ID: "b", WECOM_BOT_SECRET: "s" }),
     timeoutMs: 7_200_000,
     concurrency: 5,
     budgetTokens: 200_000,
@@ -125,7 +126,7 @@ test("服务设置：提交的值先全部校验，有一项不通过就都不�
     settings.update({ AGENT_TIMEOUT_MS: 1_800_000, DATA_RETENTION_DAYS: 2 }, "admin"),
     /已结束任务的保留天数：范围是 7–3650 天/,
   );
-  await assert.rejects(settings.update({ DEVELOPMENT_CONCURRENCY: 2 }, "admin"), /不能修改/);
+
   await assert.rejects(settings.update({ PORT: 1 }, "admin"), /不能修改/);
   assert.deepEqual(queries, []);
 });
