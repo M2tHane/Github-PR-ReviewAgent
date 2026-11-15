@@ -45,7 +45,7 @@
 
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
-| ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 进行中 |
+| ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 已完成（`23831f0`）；真实 GitHub 安装清单未验证 |
 | ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 进行中 |
 | ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，冲突时项目规则胜出；Review、Reply、健康检查、开发任务、规则提取统一从这里取规则 | 待做（依赖 2-B） |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；按后续提交推断"疑似已修复"（和开发者确认的修复分开统计） | 待做（依赖 2-B） |
@@ -172,3 +172,13 @@
 - 验证：`npm test` 首跑 178 通过、1 失败、103 跳过，唯一失败为 CodeGraph 构建索引超过测试的 10 秒限制；随即 `node --test --test-concurrency=1 dist/test/*/*.test.js` 串行全量重跑 179 通过、0 失败、103 跳过。`node --test eval/metrics.test.mjs` 7/7 通过；`npm run format`、`npm run check:docs`（36 个文件、308 个本地链接与锚点）、`git diff --check` 通过。`--max-chars=100000` 复核覆盖 85/85；临时索引适配器验证 `--adapter` 切换后全文仍为 52/85、可见覆盖为 85/85，仅验证接口与指标，没有实现生产上下文编译器。
 - 限制：缺少至少 30 个人工标注的真实合并 PR，阶段 2 提取质量未验收。关键词匹配不判断完整语义、否定和 Scope 正确性。评测绕过无人类讨论时的生产提前结束分支，直接测试 Prompt 与解析结果；不覆盖 GitHub 取数、入库和审批。数据库代码和依赖未改，本任务不跑 `test:db` 或 `npm audit`。
 - 例外关联修复（2026-11-15，基于 `d1cf0fc`）：根因是提取 Prompt 的 JSON 模板没有 relation，模型把 `exceptionTo` 写在顶层，入库只读 `relation.exceptionTo`，关联丢失。Prompt 补一句 relation 与 scope 同级的写法；`parseDecisionProposals` 把顶层的 supersedes／exceptionTo／conflictsWith／duplicateOf 移进 relation 后照常校验 id（relation 里已有的同名字段优先）。`node --test dist/test/memory/decision.test.js` 12/12、`node --test eval/metrics.test.mjs` 7/7。真实模型重跑 `node --env-file=.env eval/evaluate-extraction.mjs --runs=3 --output=work/extraction-relation-fix.json`（`tuzi / gpt-6.1-sol`，Prompt SHA256 `a4505462…`）：18 次 346.7 秒，TP=7、FP=0、FN=2，精确率 100%、召回率 77.78%；两个 FN 都是上游 502（ECONNRESET），其余 16 次完全符合期望。例外用例成功的 2 次模型都直接写在 `relation` 里，未依赖解析兜底。实际 token 60,677，未知预留 266,854 单列。
+
+**ARCH-2-A**（2026-11-15，基于 `df93826`，分支 `arch/p2-a-onboarding`，提交 `23831f0`）
+
+- 迁移 `018_repository_onboarding.sql` 给 `repositories` 加 `allowed`、`allowed_by`、`allowed_at`。`.env` 白名单是固定基线（允许为空），`RepositoryAccess` 把基线和数据库里已接入、未撤销的仓库取并集，原地写入 `config.allowedRepositories`；三种进程角色启动读一次、之后每 30 秒读一次，接入／移出后立即重读。运行中读取失败保留上次结果并记日志；启动时读取失败直接报错。
+- 服务设置页新增"仓库接入"（仅 SERVICE_ADMINS）：从 App 安装清单发现仓库（含未发过 PR 事件的），开关接入；配置基线仓库只读，已撤销仓库不能接入。移出只改白名单，不改仓库原有启停；运行中的任务按原有发布前检查停止。
+- 管理页 GitHub 维护权限缓存：有权限 5 分钟、无权限 1 分钟，按登录会话区分，退出清除；GitHub 报错不缓存。
+- 验证（实施者）：`npm test` 191 通过、0 失败、104 跳过；`npm run test:db` 136/136；页面在 1600／1024 宽下看过 60 个仓库、约 300 字符长名称、0 个仓库、混合来源和撤销状态，并实际点击接入→移出→刷新。
+- 验收（合并到 `feat/integration` 后）：`node --test dist/test/admin/*.test.js dist/test/config/*.test.js dist/test/bootstrap/*.test.js dist/test/memory/decision.test.js` 32 通过、2 跳过；`node --env-file=.env --test dist/test/admin/database-onboarding.test.js dist/test/admin/database-admin.test.js` 6/6。看过 60 仓库 1024 宽和 0 仓库 1600 宽截图。
+- 限制：没有调用真实 GitHub 安装清单、没有测试真实权限撤销；暂停的 installation 只能显示本地已有仓库。
+
