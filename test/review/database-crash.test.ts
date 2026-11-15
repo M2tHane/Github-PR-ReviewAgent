@@ -16,7 +16,8 @@ import { Database } from "../../src/persistence/database.js";
 import { MAX_ATTEMPTS } from "../../src/persistence/repositories/job.repository.js";
 import { createReplyProcessor, parseReplyResult } from "../../src/reply/reply.processor.js";
 import type { ReplyResult } from "../../src/reply/types.js";
-import { emptyUsage } from "../../src/review/agent.js";
+import { emptyUsage, runAgentReview, type AgentReviewInput } from "../../src/review/agent.js";
+import { startFakeModel, lastToolResult, type FakeReply } from "../helpers/fake-model.js";
 import { createReviewProcessor, validateMemoryReferences } from "../../src/review/review.processor.js";
 import type { Finding } from "../../src/review/types.js";
 import { useTestDatabase } from "../helpers/database.js";
@@ -766,4 +767,102 @@ test("上下文：提取器明确团队归属，保存团队例外与冲突，�
     .find((event) => event.event === "decisions_extracted");
   assert.deepEqual(event.discardedReasons, { unknown_rule: 1 });
   await s.database.finishJob(job);
+});
+
+test("规则索引：真实 Pi 工具转发、读取 usage、must 缺口与结果持久化后照常发布", { skip: !fixture.url }, async (t) => {
+  for (const phase of ["read", "parallel", "unread", "missing", "violated"])
+    await t.test(phase, async (t) => {
+      const s = await setup(t);
+      await s.database.accept(s.input, { event: "pull_request", action: "opened" });
+      const full = await seedTeamRule(s.database, s.input.repositoryId, { title: "必须规则", level: "must" });
+      const indexed = await seedTeamRule(s.database, s.input.repositoryId, { title: "索引规则", level: "should" });
+      const untouched = await seedTeamRule(s.database, s.input.repositoryId, { title: "未读规则", level: "info" });
+      await s.database.pool.query("UPDATE memories SET content=$2 WHERE id=$1", [full.id, "正文".repeat(15_001)]);
+      const finding = { ...s.finding, category: "team_rule", memory: { id: indexed.id, version: 1, source: {} } };
+      const answer = (findings: object[], ruleChecks?: object[]) =>
+        JSON.stringify({
+          summary: "完整审查",
+          findings,
+          coverage: ["a.ts"],
+          limitations: [],
+          findingGroups: findings.map((_, index) => [index]),
+          issueDisplays: findings.map(() => ({ title: "问题", reason: "依据", fix: "修改" })),
+          ...(ruleChecks ? { ruleChecks } : {}),
+        });
+      const check = { id: full.id, version: 1, result: phase === "violated" ? "violated" : "followed" };
+      const reads = phase === "read" || phase === "parallel";
+      const final = answer(reads || phase === "unread" ? [finding] : [], phase === "missing" ? undefined : [check]);
+      const script: FakeReply[] = reads
+        ? [
+            {
+              toolCalls: (phase === "parallel" ? [indexed.id, untouched.id] : [indexed.id]).map((id) => ({
+                name: "read_team_rule",
+                args: { id },
+              })),
+            },
+            { text: final },
+          ]
+        : [{ text: final }, { text: final }];
+      const model = await startFakeModel(script);
+      t.after(() => model.close());
+      const job = await s.claim();
+      const memories = new MemoryService(s.database);
+      const contextCalls = t.mock.method(memories, "context");
+      await createReviewProcessor(
+        {
+          ...s.config,
+          modelProvider: "rule-test",
+          modelName: "test-model",
+          modelApiKey: "fake-key",
+          agentTimeoutMs: 30_000,
+          modelEndpoint: { api: "openai-completions", baseUrl: model.baseUrl },
+        },
+        s.github,
+        s.database,
+        memories,
+        async (input) => {
+          assert.deepEqual(
+            input.memories?.map((rule) => rule.id),
+            [full.id],
+          );
+          assert.deepEqual(
+            input.teamRuleIndex?.map((rule) => rule.id),
+            [indexed.id, untouched.id],
+          );
+          return runAgentReview({ ...input, codegraph: false } as AgentReviewInput);
+        },
+      )(job);
+      await s.database.finishJob(job);
+      assert.equal(s.state.reviewWrites, 1, "检查缺口不阻止 Review 发布");
+      assert.equal(model.requests.length, 2, "一次读取或一次修复，共用会话");
+      assert.equal(contextCalls.mock.callCount(), reads ? 2 : 1, "多次读取共用一次额外上下文查询");
+      const prompt = model.requests[0]!.body.messages.filter((message: any) => message.role === "user").at(-1).content;
+      assert.match(JSON.stringify(prompt), /teamRuleIndex/);
+      if (phase === "read") assert.match(lastToolResult(model.requests[1]!)!, /索引规则/);
+      const usage = (
+        await s.database.pool.query("SELECT memory_id FROM review_memory_usage WHERE job_id=$1 ORDER BY memory_id", [
+          job.id,
+        ])
+      ).rows.map((row) => row.memory_id);
+      assert.deepEqual(
+        usage,
+        (phase === "parallel" ? [full.id, indexed.id, untouched.id] : reads ? [full.id, indexed.id] : [full.id]).sort(),
+      );
+      const stored = (await s.database.pool.query("SELECT review_result FROM jobs WHERE id=$1", [job.id])).rows[0]
+        .review_result;
+      assert.equal(stored.findings.length, reads ? 1 : 0);
+      if (phase === "missing" || phase === "violated") {
+        assert.deepEqual(stored.ruleChecks, []);
+        assert.deepEqual(stored.uncheckedMustRules, [{ id: full.id, version: 1, title: "必须规则" }]);
+        assert(stored.limitations.includes("以下 must 规则未确认检查：必须规则"));
+      } else {
+        assert.deepEqual(stored.ruleChecks, [check]);
+        assert.deepEqual(stored.uncheckedMustRules, []);
+      }
+      if (phase === "unread") assert.equal(stored.droppedFindings, 1);
+      const publication = (
+        await s.database.pool.query("SELECT status FROM review_publications WHERE job_id=$1", [job.id])
+      ).rows[0];
+      assert.equal(publication.status, "published");
+    });
 });

@@ -884,7 +884,9 @@ test("模型意见指向 PR 之外的文件或未提供的团队规则时整组�
     const truncated = await publish([], {
       context: async () => ({ full: [], index: [{ id: "omitted" }], mustOverBudget: false, total: 3 }),
     } as unknown as MemoryService);
-    assert.deepEqual(truncated.saved.limitations, ["团队规则超过上限，本次只带了 0/3 条。"]);
+    assert.deepEqual(truncated.saved.limitations, [
+      "团队规则全文超过上限，初始提供 0/3 条，其余 1 条提供索引，按需读取了 0 条。",
+    ]);
     assert.deepEqual(truncated.provided, [], "未提供的规则不记使用记录");
     const recalled = [
       { id: "rule-1", version: 1, repositoryId: 1, status: "ACTIVE" },

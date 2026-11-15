@@ -5,6 +5,8 @@ import { parseModelJson } from "../shared/model-json.js";
 import { READ_ONLY_TOOLS, runPiSession, type PiSessionInput } from "../pi/session.js";
 import type { Finding, ReviewResult } from "./types.js";
 import { groupFindings } from "./presentation.js";
+import { Object as ObjectSchema, String as StringSchema } from "typebox";
+import { log } from "../logging.js";
 
 export {
   addUsage,
@@ -34,6 +36,10 @@ export interface PreviousFinding {
 export const PREVIOUS_FINDINGS_RULE = `输入里的 previousFindings 是本 PR 之前的 Review 提过、仍未解决的问题。如果某个问题和其中一条是同一个（同一文件、同一原因，行号可能因为改动而移动），在对应的 issueDisplays 项里填 previousFindingId（取该条的 id）；新问题不要填，每条 previousFindings 最多对应一组。`;
 export const REVIEW_PROMPT = `${REVIEW_RULES}\n最终对象还必须包含 findingGroups:number[][] 与 issueDisplays 数组。findings 是完整审计候选；findingGroups 按同一根因分组，每个候选下标恰好一次，组内第一个是最适合修复的主位置，其他为关联位置。同一个原因引起的多处问题算同一根因，放在一组，fix 要覆盖组内所有位置。不同 Memory 约束不得合并。
 issueDisplays 与组一一对应，每项为 {title:string,reason:string,fix:string,code?:string,language?:string,previousFindingId?:string}。title不超过20字符、reason不超过35字符、fix不超过45字符；总计最多100字符，为服务的120字符硬上限留余量。英文字母、空格、标点每个都计1字符，不按英文单词计数。${DISPLAY_STYLE}code 可省略；如提供，只写一处关键表达式，建议1行、最多3行/120字符；不输出完整方法、多文件补丁、注释或空行（服务硬上限5行/240字符）。完整解释放在findings的审计字段中。不要复述扫描过程或输出UUID。每组只展示一个问题。无问题时三个数组都为空。\n${REVIEW_SCHEMA} 根因分组和短评字段也必须包含在同一对象中。\n${PREVIOUS_FINDINGS_RULE}`;
+
+// 只有本次用到新能力才附加说明，普通 Review 的提示和工具保持原样。
+const REVIEW_INDEX_RULES = `本次另有 teamRuleIndex，列出其余适用规则的 id、version、title、level、scope；按本次变更需要用 read_team_rule(id) 读取全文。上文可引用的团队规则范围扩展为 activeTeamMemories 与本次成功读取全文的索引规则；必须逐字使用全文的 id、version 和 source，不得编造或只依据目录引用。`;
+const REVIEW_MUST_RULES = `所有 must 规则均在 activeTeamMemories 中。最终 JSON 对象还必须包含 ruleChecks:[{"id":string,"version":正整数,"result":"followed"|"violated"|"not_applicable","note"?:string}]。只针对这些 must 规则，每条 id/version 恰好给出一个结论：followed（遵守）、violated（违反）、not_applicable（本次不适用），可用 note 简述依据；违反时 findings 必须有引用该规则的具体问题。`;
 
 function validateStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -111,13 +117,36 @@ export function parseReviewResult(text: string, concise = false): ReviewResult {
   }
   if (concise && (!Array.isArray(result.findingGroups) || !Array.isArray(result.issueDisplays)))
     throw new Error("Review 缺少根因分组或短评");
+  // 缺失字段由 must 覆盖核对处理：修复后仍缺结论时允许发布其余 Review。
+  const ruleChecks = result.ruleChecks === undefined ? [] : result.ruleChecks;
+  if (!Array.isArray(ruleChecks)) throw new Error("ruleChecks 结构无效");
+  for (const check of ruleChecks) {
+    if (
+      !check ||
+      typeof check !== "object" ||
+      typeof check.id !== "string" ||
+      !Number.isSafeInteger(check.version) ||
+      check.version < 1 ||
+      !["followed", "violated", "not_applicable"].includes(check.result) ||
+      (check.note !== undefined && check.note !== null && typeof check.note !== "string")
+    )
+      throw new Error("ruleChecks 条目无效");
+  }
   return {
     summary: result.summary,
     findings: concise ? groupFindings(findings, result.findingGroups, result.issueDisplays) : findings,
     coverage: result.coverage,
     limitations: result.limitations,
+    ruleChecks: ruleChecks.map(({ id, version, result, note }) => ({
+      id,
+      version,
+      result,
+      ...(typeof note === "string" ? { note: redactSecrets(note) } : {}),
+    })),
   };
 }
+
+export type TeamRuleIndexEntry = Pick<MemoryRecord, "id" | "version" | "title" | "level" | "scope">;
 
 export interface AgentReviewInput {
   root: string;
@@ -132,6 +161,8 @@ export interface AgentReviewInput {
   headSha: string;
   changedFiles: Array<{ filename: string; status: string; patch?: string }>;
   memories?: MemoryRecord[];
+  teamRuleIndex?: TeamRuleIndexEntry[];
+  readTeamRule?: (id: string) => Promise<MemoryRecord | undefined>;
   previousFindings?: PreviousFinding[];
   ruleHits?: import("./rule-check.js").RuleHit[];
   outputLanguage?: string;
@@ -170,7 +201,64 @@ export function findingReferenceErrors(
   return errors;
 }
 
-function reviewOutputErrors(text: string, input: AgentReviewInput) {
+function mustRuleChecks(result: ReviewResult, memories: MemoryRecord[], changed: ReadonlySet<string>) {
+  const must = memories.filter((rule) => rule.level === "must");
+  const checks = result.ruleChecks ?? [];
+  const errors: string[] = [];
+  const accepted: NonNullable<ReviewResult["ruleChecks"]> = [];
+  const unchecked: NonNullable<ReviewResult["uncheckedMustRules"]> = [];
+  for (const check of checks)
+    if (!must.some((rule) => rule.id === check.id && rule.version === check.version))
+      errors.push(`ruleChecks 引用了未提供的 must 规则: ${check.id} v${check.version}`);
+  for (const rule of must) {
+    const entries = checks.filter((check) => check.id === rule.id && check.version === rule.version);
+    const check = entries[0];
+    if (entries.length !== 1) {
+      errors.push(`must 规则需要一个检查结论: ${rule.id} v${rule.version}（${rule.title}）`);
+    } else if (
+      check!.result === "violated" &&
+      !result.findings.some(
+        (finding) =>
+          !findingReferenceErrors(finding, changed, memories).length &&
+          [finding, ...(finding.candidates ?? [])].some(
+            (item) => item.memory?.id === rule.id && item.memory.version === rule.version,
+          ),
+      )
+    ) {
+      errors.push(`must 规则标为 violated 但没有引用它的有效 finding: ${rule.id} v${rule.version}（${rule.title}）`);
+    } else {
+      accepted.push(check!);
+      continue;
+    }
+    unchecked.push({ id: rule.id, version: rule.version, title: rule.title });
+  }
+  return { errors, accepted, unchecked };
+}
+
+// 修复耗尽后的缺口留在结果中；处理器丢弃无效 finding 后也用同一口径核对。
+export function finalizeRuleChecks(
+  result: ReviewResult,
+  memories: MemoryRecord[],
+  changed: ReadonlySet<string>,
+  fields: Record<string, unknown> = {},
+) {
+  const { errors, accepted, unchecked } = mustRuleChecks(result, memories, changed);
+  const prior = result.uncheckedMustRules;
+  result.ruleChecks = accepted;
+  result.uncheckedMustRules = unchecked;
+  if (unchecked.length) {
+    const limitation = `以下 must 规则未确认检查：${unchecked.map((rule) => redactSecrets(rule.title)).join("、")}`;
+    if (!result.limitations.includes(limitation)) result.limitations.push(limitation);
+  }
+  if (errors.length && (!prior || JSON.stringify(prior) !== JSON.stringify(unchecked)))
+    log("info", "review_must_rules_unconfirmed", {
+      ...fields,
+      rules: unchecked.map(({ id, version }) => ({ id, version })),
+      errors: errors.length,
+    });
+}
+
+function reviewOutputErrors(text: string, input: AgentReviewInput, provided: MemoryRecord[]) {
   let result: ReviewResult;
   try {
     result = parseReviewResult(text, true);
@@ -181,27 +269,58 @@ function reviewOutputErrors(text: string, input: AgentReviewInput) {
   return [
     ...new Set(
       result.findings.flatMap((finding) =>
-        findingReferenceErrors(finding, changed, input.memories ?? []).map((error) => error.message),
+        findingReferenceErrors(finding, changed, provided).map((error) => error.message),
       ),
     ),
+    ...mustRuleChecks(result, provided, changed).errors,
   ];
 }
 
 export async function runAgentReview(input: AgentReviewInput) {
   let repaired = false;
+  const index = new Map((input.teamRuleIndex ?? []).map((rule) => [rule.id, rule]));
+  const read = new Map<string, MemoryRecord>();
+  const provided = () => [...(input.memories ?? []), ...read.values()];
   const run = await runAgentSession({
     ...input,
     // 输出没通过服务校验时在同一会话里修一次，共用预算、超时和取消。
     // 仍不合格时，结构错误照旧抛出，个别无效意见由处理器丢弃。
     followUp: (text) => {
       if (repaired) return undefined;
-      const errors = reviewOutputErrors(text, input);
+      const errors = reviewOutputErrors(text, input, provided());
       if (!errors.length) return undefined;
       repaired = true;
       return `上一条输出没有通过服务校验：\n${errors.map((error) => `- ${redactSecrets(error)}`).join("\n")}\n只修正这些问题，重新输出完整的 JSON 对象，不要输出其他内容。`;
     },
-    systemPrompt: REVIEW_PROMPT,
+    systemPrompt: [
+      REVIEW_PROMPT,
+      ...(index.size ? [REVIEW_INDEX_RULES] : []),
+      ...(input.memories?.some((rule) => rule.level === "must") ? [REVIEW_MUST_RULES] : []),
+    ].join("\n"),
     builtinTools: READ_ONLY_TOOLS,
+    tools: index.size
+      ? [
+          {
+            name: "read_team_rule",
+            label: "读取团队规则",
+            description: "按 teamRuleIndex 中的 id 读取本次规则全文；只有成功读取后才能引用。",
+            parameters: ObjectSchema({ id: StringSchema() }),
+            async execute(_toolCallId, args) {
+              input.signal?.throwIfAborted();
+              const entry = index.get((args as { id: string }).id);
+              if (!entry) throw new Error("规则不在本次 teamRuleIndex 中");
+              let rule = read.get(entry.id);
+              if (!rule) {
+                rule = await input.readTeamRule!(entry.id);
+                if (!rule || rule.id !== entry.id || rule.version !== entry.version || rule.status !== "ACTIVE")
+                  throw new Error("本次索引规则版本已不可读取");
+                read.set(rule.id, rule);
+              }
+              return { content: [{ type: "text", text: JSON.stringify(memoryForPrompt(rule)) }], details: {} };
+            },
+          },
+        ]
+      : [],
     skills: REVIEW_SKILLS,
     prompt: {
       task: "审查此 PR",
@@ -214,12 +333,16 @@ export async function runAgentReview(input: AgentReviewInput) {
         file.patch ? { ...file, patch: redactSecrets(file.patch) } : file,
       ),
       activeTeamMemories: (input.memories ?? []).map(memoryForPrompt),
+      ...(index.size ? { teamRuleIndex: input.teamRuleIndex } : {}),
       ruleHits: (input.ruleHits ?? []).filter((hit) => input.changedFiles.some((file) => file.filename === hit.path)),
       previousFindings: input.previousFindings ?? [],
     },
   });
   try {
     const result = parseReviewResult(run.text, true);
+    finalizeRuleChecks(result, provided(), new Set(input.changedFiles.map((file) => file.filename)), {
+      headSha: input.headSha,
+    });
     for (const finding of result.findings)
       for (const candidate of finding.candidates ?? []) candidate.reviewerRole = "general_review";
     return { result, durationMs: run.durationMs, model: run.model, usage: run.usage };

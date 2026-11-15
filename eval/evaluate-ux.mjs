@@ -45,6 +45,13 @@ const cases = [
     head: "69e69bdf16dd59a6235307deb213e91a13477a08",
   },
 ];
+// 新能力变体仅显式指定时运行，默认仍是原有两个 case。
+const reference = cases.find((sample) => sample.name === "rule-reference");
+cases.push(
+  { ...reference, name: "rule-reference-must", variant: "must" },
+  { ...reference, name: "rule-reference-index", variant: "index" },
+);
+const selected = cases.filter((sample) => (process.argv[2] ? sample.name === process.argv[2] : !sample.variant));
 const report = {
   createdAt: new Date().toISOString(),
   repository,
@@ -64,27 +71,56 @@ const database = new Database(isolatedUrl.toString()),
 await mkdir("work", { recursive: true });
 try {
   await database.migrate();
-  await database.pool.query(
-    `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,status,source_fingerprint,level)
+  const seed = (item, fingerprint) =>
+    database.pool.query(
+      `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,status,source_fingerprint,level)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-    [
-      rule.id,
-      rule.version,
-      repositoryId,
-      160592861,
-      rule.type,
-      rule.title,
-      rule.content,
-      rule.rationale,
-      rule.scope,
-      rule.source,
-      JSON.stringify(rule.evidence),
-      rule.status,
-      "ux-reconstructed-rule-v2",
-      rule.level,
-    ],
+      [
+        item.id,
+        item.version,
+        repositoryId,
+        160592861,
+        item.type,
+        item.title,
+        item.content,
+        item.rationale,
+        item.scope,
+        item.source,
+        JSON.stringify(item.evidence),
+        item.status,
+        fingerprint,
+        item.level,
+      ],
+    );
+  await seed(
+    { ...rule, level: process.argv[2] === "rule-reference-must" ? "must" : rule.level },
+    "ux-reconstructed-rule-v2",
   );
-  for (const sample of cases.filter((sample) => !process.argv[2] || sample.name === process.argv[2])) {
+  if (process.argv[2] === "rule-reference-index") {
+    // 与订单无关、但匹配 backend 范围的合成构建约定。通用 Java 术语参与现有排序，
+    // 足量正文挤占 30,000 字符预算；不修改生产排序、目标规则或预算。
+    for (let index = 0; index < 40; index++) {
+      await seed(
+        {
+          ...rule,
+          id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+          version: 1,
+          title: `构建诊断元数据规范 ${index + 1}`,
+          content:
+            `This convention applies only to Java build diagnostics and generated artifact metadata. A diagnostic record includes package, public class, private field, static final String label, import list, new file location and return type. It describes compiler output, not application data. ` +
+            `Build diagnostic producers keep each generated file attributable to its compiler invocation. Metadata lists the source package and class, compiler options and artifact checksum. A diagnostic renderer must treat a null message as absent, preserve the original tool exit code and write labels as plain text. This rule applies when editing the build diagnostic producer or renderer. Application queries and domain collections do not implement build diagnostic metadata. `.repeat(
+              2,
+            ),
+          rationale: "保证构建诊断可追溯到编译步骤；只适用于编译工具元数据。",
+          scope: { paths: ["backend/**"] },
+          source: { evaluation: "synthetic-build-diagnostics" },
+          evidence: [],
+        },
+        `ux-index-filler-${index}`,
+      );
+    }
+  }
+  for (const sample of selected) {
     const entry = { name: sample.name, baseSha: sample.base, headSha: sample.head };
     report.cases.push(entry);
     try {
@@ -98,16 +134,26 @@ try {
             patch: await git("diff", "--no-ext-diff", "--no-textconv", sample.base, sample.head, "--", filename),
           })),
         );
-        const recalled =
-          sample.prNumber === 8
-            ? []
-            : (
-                await memories.context(repositoryId, {
-                  paths: files.map((file) => file.filename),
-                  text: files.map((file) => file.patch).join(" "),
-                })
-              ).full;
+        const contextInput = {
+          paths: files.map((file) => file.filename),
+          text: files.map((file) => file.patch).join(" "),
+        };
+        const selection =
+          sample.prNumber === 8 ? { full: [], index: [] } : await memories.context(repositoryId, contextInput);
+        const recalled = selection.full;
+        const provided = new Map(recalled.map((memory) => [memory.id, memory]));
         entry.memoryReferences = recalled.map(({ id, version }) => ({ id, version }));
+        entry.ruleIndex = selection.index;
+        entry.readRules = [];
+        entry.repairPrompts = [];
+        if (sample.variant === "index") {
+          assert(
+            selection.index.some((item) => item.id === rule.id),
+            "目标规则必须被挤进索引",
+          );
+          assert(!recalled.some((item) => item.id === rule.id), "目标规则不能预先提供全文");
+          assert(!recalled.some((item) => item.level === "must"), "索引变体独立验证，不带 must");
+        }
         const job = {
           id: randomUUID(),
           deliveryId: "local-ux-evaluation",
@@ -138,10 +184,44 @@ try {
           headSha: sample.head,
           changedFiles: files,
           memories: recalled,
+          teamRuleIndex: selection.index,
+          readTeamRule: async (id) => {
+            const { full } = await memories.context(repositoryId, contextInput, Number.MAX_SAFE_INTEGER);
+            const memory = full.find((item) => item.id === id);
+            if (memory) {
+              provided.set(id, memory);
+              entry.readRules.push({ id: memory.id, version: memory.version });
+            }
+            return memory;
+          },
+          onSession: (session) => {
+            const messages = session.content
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line))
+              .filter((item) => item.type === "message")
+              .map((item) => item.message);
+            const text = (message) =>
+              typeof message.content === "string"
+                ? message.content
+                : (message.content ?? [])
+                    .filter((block) => block.type === "text")
+                    .map((block) => block.text)
+                    .join("\n");
+            entry.repairPrompts = messages
+              .filter((message) => message.role === "user")
+              .map(text)
+              .filter((value) => value.startsWith("上一条输出没有通过服务校验"));
+            entry.ruleToolCalls = messages
+              .filter((message) => message.role === "assistant")
+              .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+              .filter((block) => block.type === "toolCall" && block.name === "read_team_rule")
+              .map(({ name, arguments: args }) => ({ name, arguments: args }));
+          },
           repositoryInstructions: await readBaseFile(root, sample.base, "AGENTS.md"),
         });
         Object.assign(entry, run);
-        validateMemoryReferences(run.result, recalled, repositoryId);
+        validateMemoryReferences(run.result, [...provided.values()], repositoryId);
         const allowed = new Set(files.map((file) => file.filename)),
           lines = diffLines(files);
         for (const finding of run.result.findings) {
@@ -173,6 +253,20 @@ try {
             ),
             "规则意见必须绑定实际提供的规则版本",
           );
+        }
+        if (sample.variant === "must") {
+          assert.deepEqual(run.result.uncheckedMustRules, []);
+          assert.equal(run.result.ruleChecks.length, 1);
+          assert.equal(run.result.ruleChecks[0].id, rule.id);
+          assert.equal(run.result.ruleChecks[0].version, rule.version);
+          assert.equal(run.result.ruleChecks[0].result, "violated");
+        }
+        if (sample.variant === "index") {
+          assert(
+            entry.ruleToolCalls.some((call) => call.arguments.id === rule.id),
+            "模型必须调用工具读取目标规则",
+          );
+          assert(entry.readRules.some((item) => item.id === rule.id && item.version === rule.version));
         }
         entry.passed = true;
       });
