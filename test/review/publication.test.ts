@@ -16,10 +16,12 @@ import type { MemoryRecord } from "../../src/memory/types.js";
 import type { Config } from "../../src/config/config.js";
 import type { Finding, StoredFinding } from "../../src/review/types.js";
 import type { ReviewJob } from "../../src/jobs/types.js";
+import type { ReplyResult } from "../../src/reply/types.js";
+import { MAX_ATTEMPTS } from "../../src/persistence/repositories/job.repository.js";
 
 const exec = promisify(execFile);
 
-test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Review，Reply 过期重排且 uncertain 不重发", async () => {
+test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Review，Reply 过期重排、发布重试和最终 uncertain 不重发", async () => {
   const source = await mkdtemp(join(tmpdir(), "pi-publication-test-"));
   const git = async (...args: string[]) =>
     (await exec("git", ["-C", source, "-c", "core.hooksPath=/dev/null", ...args])).stdout.trim();
@@ -84,7 +86,9 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
       reviewPosts = 0,
       replyPosts = 0,
       prior = "pending",
-      replyCalls = 0;
+      replyCalls = 0,
+      lookupFails = false;
+    let priorResult: ReplyResult | undefined;
     const publications: string[] = [],
       bindings: number[] = [];
     const github = {
@@ -107,7 +111,10 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
       getReviewCommentsForReview: async () => {
         throw new GitHubApiError("/comments", 403);
       },
-      getReviewComments: async () => [],
+      getReviewComments: async () => {
+        if (lookupFails) throw new Error("network lookup failed");
+        return [];
+      },
       replyToReviewComment: async () => {
         replyPosts++;
         throw new Error("network result unknown");
@@ -157,7 +164,7 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
     }
     const database = {
       ...publicationsStore,
-      getReplyPublication: async () => ({ status: prior }),
+      getReplyPublication: async () => ({ status: prior, result: priorResult }),
       getFinding: async () => stored,
       retargetReply: async (target: ReviewJob, base: string, head: string) => {
         target.baseSha = base;
@@ -172,8 +179,9 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
       unregisterReviewAbort: () => {},
       startAgentRun: async () => "run",
       finishAgentRun: async () => {},
-      markReplyPublication: async (_job: ReviewJob, status: string) => {
+      markReplyPublication: async (_job: ReviewJob, status: string, result?: ReplyResult) => {
         prior = status;
+        priorResult = result;
       },
       finishReply: async () => {
         throw new Error("must not publish");
@@ -230,9 +238,15 @@ test("固定提交发布：旧 head 不发布，绑定失败保留已发布 Revi
         assert.equal(replyPosts, 0);
       } else {
         await assert.rejects(processor(target), /network/);
+        assert.equal(target.status, "running");
+        assert.equal(prior, "pending");
+        assert.ok(priorResult);
+        const count = replyCalls;
+        lookupFails = true;
+        target.attempt = MAX_ATTEMPTS;
+        await assert.rejects(processor(target), /network lookup failed/);
         assert.equal(target.status, "uncertain");
         assert.equal(prior, "uncertain");
-        const count = replyCalls;
         await assert.rejects(processor(target), /待核对/);
         assert.equal(replyCalls, count);
         assert.equal(replyPosts, 1);

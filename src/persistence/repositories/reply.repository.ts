@@ -168,7 +168,7 @@ export class ReplyRepository {
     }
   }
 
-  async markReplyPublication(job: ReviewJob, status: "failed" | "uncertain", result?: ReplyResult) {
+  async markReplyPublication(job: ReviewJob, status: "pending" | "failed" | "uncertain", result?: ReplyResult) {
     await this.pool.query(
       "UPDATE reply_publications SET analysis_head_sha=$2,result=$3,status=$4,updated_at=now() WHERE job_id=$1",
       [job.id, result?.analysisHeadSha ?? null, result ?? null, status],

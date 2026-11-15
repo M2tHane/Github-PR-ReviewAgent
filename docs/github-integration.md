@@ -227,7 +227,11 @@ M2 只信任数据库已绑定的 root comment ID，隐藏 pi-finding 标记只�
 
 Reply 执行前重读 PR head，发布前再复核。head 变化时重排同一 source comment；closed、Draft 或仓库暂停时取消。FIXED / MISJUDGMENT / VALID_EXCEPTION / STILL_VALID / NEEDS_CLARIFICATION 映射到 finding 状态，例外只形成 decision clue。
 
-Review 发布成功后，comment ID 映射失败单独标记 binding incomplete，保留 published。线程回复网络结果不确定时进入 uncertain，不盲目重发。具体证据与剩余验收见 [M2](./tasks/M2.md)。
+Review 发布成功后，comment ID 映射失败单独标记 binding incomplete，保留 published。
+
+线程回复在发送前把分析结果存进 `reply_publications`，状态为 `pending`，正文末尾带 `<!-- pi-reply:<sourceCommentId> -->`。中断或网络错误后接手同一任务时，已有 pending 结果的先读取 PR 的行内评论，同时匹配 `in_reply_to_id` 等于线程根评论、作者类型为 `Bot`、正文包含该标记：找到就用存好的结果补记 published、finding 状态和 decision clue；找不到才复用结果发布，两个分支都不重跑 Agent。补记已发出的回复不产生新的 GitHub 写入；新发布仍检查授权、仓库启用、open、非 Draft 和 head。未发布的结果已过期时，清空旧结果并把同一 source comment 重排到新 head 重新分析。
+
+回复发布的网络错误或 5xx 保留 pending 结果，由 Worker 按既有错误分类和退避重试，下一次先核对远端。核对也暂时失败时继续重试，无法核对且尝试耗尽或错误不可重试时才标 `uncertain`；最后一次发布出错还会尝试核对一次，查到已发出的就补记成功。GitHub 明确拒绝且不可重试的请求记为 failed。`uncertain` 是终态，管理页目前只支持查看。具体历史证据与剩余验收见 [M2](./tasks/M2.md)。
 
 ## 11. Merge 后 Decision Extractor 上下文
 

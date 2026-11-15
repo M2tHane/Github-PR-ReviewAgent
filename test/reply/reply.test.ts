@@ -131,11 +131,11 @@ test("回复是一句结论，超长视为不合格而不是截断", () => {
     /超过 100 字/,
   );
   assert.equal(
-    replyBody({ ...result("FIXED"), summary: "新提交已经改成\n可空的 String。" }),
-    "✅ 已修复：新提交已经改成 可空的 String。\n\n<!-- pi-reply-source -->",
+    replyBody({ ...result("FIXED"), summary: "新提交已经改成\n可空的 String。" }, 12),
+    "✅ 已修复：新提交已经改成 可空的 String。\n\n<!-- pi-reply:12 -->",
   );
   assert.match(
-    replyBody(result("NEEDS_CLARIFICATION"), "https://admin/#reviews/job"),
+    replyBody(result("NEEDS_CLARIFICATION"), 12, "https://admin/#reviews/job"),
     /^❓ 需要补充说明：Which caller guarantees this\?\n\n\[查看详情\]/,
   );
 });
