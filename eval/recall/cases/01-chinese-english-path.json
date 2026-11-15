@@ -1,0 +1,23 @@
+{
+  "id": "01-chinese-english-path",
+  "description": "中文规则与英文路径无词重叠，但 scope 命中应提供。",
+  "rules": [
+    {
+      "id": "payment-idempotency",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "资金扣款必须幂等",
+      "content": "扣款服务必须先用支付请求号去重，再更新余额。",
+      "rationale": "支付回调会重试，重复扣款会造成资金损失。",
+      "scope": {
+        "paths": ["service/**"]
+      }
+    }
+  ],
+  "change": {
+    "paths": ["service/payments/Capture.ts"],
+    "title": "Handle capture webhook",
+    "body": ""
+  },
+  "expectedIds": ["payment-idempotency"]
+}

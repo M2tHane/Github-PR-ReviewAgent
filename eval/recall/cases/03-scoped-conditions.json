@@ -1,0 +1,36 @@
+{
+  "id": "03-scoped-conditions",
+  "description": "不同条件的规则都应交给 Agent 判断。",
+  "rules": [
+    {
+      "id": "callback",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "回调去重",
+      "content": "第三方支付回调先校验业务键。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "paths": ["service/**"],
+        "conditions": ["处理可重放的第三方回调时"]
+      }
+    },
+    {
+      "id": "settlement",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "日终结算锁",
+      "content": "日终结算使用业务日期锁。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "paths": ["service/**"],
+        "conditions": ["执行每日批处理结算时"]
+      }
+    }
+  ],
+  "change": {
+    "paths": ["service/payments/Callback.ts"],
+    "title": "Implement callback",
+    "body": ""
+  },
+  "expectedIds": ["callback", "settlement"]
+}

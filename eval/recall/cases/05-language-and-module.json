@@ -1,0 +1,36 @@
+{
+  "id": "05-language-and-module",
+  "description": "语言和模块联合过滤；Java alias 应命中。",
+  "rules": [
+    {
+      "id": "java-model",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "实体不可变",
+      "content": "领域实体创建后不可直接修改标识。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "languages": ["Java"],
+        "modules": ["model"]
+      }
+    },
+    {
+      "id": "typescript-ui",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "界面状态",
+      "content": "界面状态放到组件中。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "languages": ["typescript"],
+        "modules": ["frontend"]
+      }
+    }
+  ],
+  "change": {
+    "paths": ["backend/model/Invoice.java"],
+    "title": "Add Invoice",
+    "body": ""
+  },
+  "expectedIds": ["java-model"]
+}

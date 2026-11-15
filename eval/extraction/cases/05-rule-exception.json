@@ -1,0 +1,58 @@
+{
+  "id": "05-rule-exception",
+  "description": "维护者确认机器交换模块是已有规则的局部例外。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Preserve machine exchange bytes",
+  "body": "内部交换消费者要求输入输出字节一致，不提供下载入口。",
+  "changedFiles": [
+    {
+      "filename": "internal/exchange/Export.ts",
+      "status": "modified",
+      "patch": "--- a/internal/exchange/Export.ts\n+++ b/internal/exchange/Export.ts\n@@ -1,3 +1,3 @@\n export function exportForMachine(rows) {\n-  return rows.map((row) => escapeSpreadsheetFormula(row.label)).join(\"\\n\");\n+  return rows.map((row) => row.label).join(\"\\n\");\n }\n",
+      "content": "export function exportForMachine(rows) {\n  return rows.map((row) => row.label).join(\"\\n\");\n}\n"
+    }
+  ],
+  "discussions": [
+    {
+      "id": 501,
+      "body": "确认这是现有 CSV 防公式注入规则的局部例外：internal/exchange/** 只供可信内部机器消费的 CSV 必须保留原始字节，否则签名校验失败。人可下载的 CSV 仍要转义，不扩大例外范围。",
+      "author": "maintainer-lin",
+      "human": true,
+      "authorType": "User",
+      "role": "maintainer",
+      "url": "https://example.invalid/pull/1#discussion-501"
+    },
+    {
+      "id": 502,
+      "body": "已移除内部交换链路的转义，公开下载实现未动。",
+      "author": "author-chen",
+      "human": true,
+      "authorType": "User",
+      "role": "author",
+      "url": "https://example.invalid/pull/1#discussion-502"
+    }
+  ],
+  "existingRules": [
+    {
+      "id": "csv-formula-policy",
+      "version": 1,
+      "type": "security_rule",
+      "title": "CSV 防公式注入",
+      "content": "所有 CSV 导出的文本单元格必须防止公式执行。",
+      "rationale": "用户下载 CSV 后可能用电子表格打开。",
+      "scope": {
+        "paths": ["**/*.ts"]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": "exception",
+      "keywords": [["机器", "machine"], ["原始", "字节", "raw", "byte"], ["csv"]],
+      "relation": {
+        "exceptionTo": "csv-formula-policy"
+      }
+    }
+  ]
+}

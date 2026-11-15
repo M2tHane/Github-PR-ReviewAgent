@@ -49,7 +49,7 @@
 | ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 进行中 |
 | ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，冲突时项目规则胜出；Review、Reply、健康检查、开发任务、规则提取统一从这里取规则 | 待做（依赖 2-B） |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；按后续提交推断"疑似已修复"（和开发者确认的修复分开统计） | 待做（依赖 2-B） |
-| ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 进行中 |
+| ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
 | ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 待做（依赖 2-C） |
 | ARCH-2-H | 把团队规则提供给本地 Codex／Claude Code：规则变化时由服务提 PR 更新仓库里的规则文件，并在 AGENTS.md／CLAUDE.md 引用（用户 2026-11-15 选定，不做 MCP） | 待做（依赖 2-C） |
 
@@ -59,6 +59,8 @@
 - 规则召回评测集在给定体量预算下覆盖率 ≥ 0.9。
 - 跨项目订阅（团队规则）和项目覆盖都能生效。
 - 噪声大的规则会被自动标出。
+
+评测的运行方法、评分口径和适用限制见 [评测说明](../../eval/README.md)。
 
 ## 不做的项
 
@@ -159,3 +161,13 @@
 - 容量影响：默认并发 2 + 3 时 worker / all 池上限 20；拆分为一个 edge 与一个 worker 时总上限 25，滚动时还需计入旧实例。每个额外实例增加每 30 秒一次的设置查询，edge 不领取任务或跑后台定时任务。未做负载压测、内存或延迟测量。
 - 限制：未启动连接真实队列的 main，未连接真实 GitHub、模型或企微；没有真实 30 分钟任务滚动发布证据。ARCH-1-B 的快照与副作用恢复、整个阶段 1 的部署验收不在本项完成范围内。没有新增依赖，未运行 `npm audit`。
 - 新增拒绝路径：非法 `PROCESS_ROLE`（含空值）启动报错，依据本项明确配置要求；worker 的非探针 HTTP 路径返回 404，依据 worker 只对外提供探针的要求。
+
+**ARCH-2-F**（2026-11-15，基于 `e4bc57c`）
+
+- 改动：`eval/recall/cases/` 新增 16 个召回样例，`eval/extraction/cases/` 新增 6 个合成提取样例；召回入口调用现有 `selectReviewMemories`，保留可切换适配器与索引覆盖指标；提取入口在临时固定 Git 快照中调用现有 Pi 会话与 `parseDecisionProposals`，唯一生产源码变化是导出原 `SYSTEM_PROMPT`，内容和行为不变。评分支持关键词组、精确类型、关系目标和一对一匹配，失败、丢弃、未知消耗单独记录。运行方法见 [评测说明](../../eval/README.md)。
+- 召回：`npm run build && node eval/evaluate-recall.mjs` 成功执行，16 个用例的全文/可见覆盖均为 52/85（61.18%），全文正文预算口径总计 185,581 字符，完整规则 JSON 载荷总计 265,662 字符。缺失 33 条均来自预算截断；最差三个用例为 `15-service-model-overflow`（截掉 20 条）、`11-model-over-budget`（10 条）、`12-global-starvation`（2 条）。当前没有索引输出；没有修改召回逻辑来提高成绩。
+- 提取：`node --env-file=.env eval/evaluate-extraction.mjs --runs=3` 实际调用 `tuzi / gpt-6.1-sol`（high，openai-completions），18 次合计 458.920 秒，TP=5、FP=3、FN=4，精确率 62.5%、召回率 55.56%。13 次完整符合期望，2 次上游连接/断流失败，例外用例 3 次都把 `exceptionTo` 放到顶层而非 `relation.exceptionTo`，因此不计命中。已记录实际 token 67,131（输入 18,783、输出 5,468、缓存读 42,880、缓存写 0），未知预留 136,553 单列，不能当作零或实际 token。
+- 串行复核：AI-only 与 supersedes 用例各再跑 3 次，输出分别写入 `work/extraction-ai-recheck.json`、`work/extraction-supersedes-recheck.json`，未覆盖首跑。每组均 2 次正确、1 次上游失败；合计增加 158.401 秒、实际 token 16,130、未知预留 177,619。首批及复核共 24 次、617.321 秒、实际 token 83,261、未知预留 314,172。没有因接口不稳定改用替身或放宽评分。
+- 固定样例 SHA：支付相关 4 个用例 `7a7820fbf05c24121abdcac1d54f012de8b756f8`；例外 `0377c659c514a446f881a6a35eeefb16c8da68a3`；替代 `62e12ecb5df2fef04c1ae35e9570b4adf36eb48e`。角色为 Decision Extractor；这是本地合成快照，没有真实 delivery、Job、finding、Review 或 reply URL。
+- 验证：`npm test` 首跑 178 通过、1 失败、103 跳过，唯一失败为 CodeGraph 构建索引超过测试的 10 秒限制；随即 `node --test --test-concurrency=1 dist/test/*/*.test.js` 串行全量重跑 179 通过、0 失败、103 跳过。`node --test eval/metrics.test.mjs` 7/7 通过；`npm run format`、`npm run check:docs`（36 个文件、308 个本地链接与锚点）、`git diff --check` 通过。`--max-chars=100000` 复核覆盖 85/85；临时索引适配器验证 `--adapter` 切换后全文仍为 52/85、可见覆盖为 85/85，仅验证接口与指标，没有实现生产上下文编译器。
+- 限制：缺少至少 30 个人工标注的真实合并 PR，阶段 2 提取质量未验收。关键词匹配不判断完整语义、否定和 Scope 正确性。评测绕过无人类讨论时的生产提前结束分支，直接测试 Prompt 与解析结果；不覆盖 GitHub 取数、入库和审批。数据库代码和依赖未改，本任务不跑 `test:db` 或 `npm audit`。

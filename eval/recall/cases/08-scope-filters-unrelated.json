@@ -1,0 +1,34 @@
+{
+  "id": "08-scope-filters-unrelated",
+  "description": "无关路径不应挤占预算。",
+  "rules": [
+    {
+      "id": "payment-idempotency",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "资金扣款必须幂等",
+      "content": "扣款服务必须先用支付请求号去重，再更新余额。",
+      "rationale": "支付回调会重试，重复扣款会造成资金损失。",
+      "scope": {
+        "paths": ["service/**"]
+      }
+    },
+    {
+      "id": "admin-css",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "后台样式",
+      "content": "后台页面复用设计变量。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "paths": ["frontend/admin/**"]
+      }
+    }
+  ],
+  "change": {
+    "paths": ["service/payments/Refund.ts"],
+    "title": "Refund",
+    "body": ""
+  },
+  "expectedIds": ["payment-idempotency"]
+}

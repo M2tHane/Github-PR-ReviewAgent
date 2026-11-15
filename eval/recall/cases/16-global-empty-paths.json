@@ -1,0 +1,32 @@
+{
+  "id": "16-global-empty-paths",
+  "description": "仅 PR 描述时，无范围规则仍提供；限定范围规则不匹配。",
+  "rules": [
+    {
+      "id": "audit-redaction",
+      "version": 1,
+      "type": "security_rule",
+      "title": "审计日志必须脱敏",
+      "content": "任何审计日志都不能包含完整凭据、银行卡号和个人证件号。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {}
+    },
+    {
+      "id": "payment-idempotency",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "资金扣款必须幂等",
+      "content": "扣款服务必须先用支付请求号去重，再更新余额。",
+      "rationale": "支付回调会重试，重复扣款会造成资金损失。",
+      "scope": {
+        "paths": ["service/**"]
+      }
+    }
+  ],
+  "change": {
+    "paths": [],
+    "title": "Update repository policy",
+    "body": ""
+  },
+  "expectedIds": ["audit-redaction"]
+}

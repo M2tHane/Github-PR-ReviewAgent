@@ -1,0 +1,58 @@
+{
+  "id": "06-supersedes-rule",
+  "description": "新架构明确取代旧规则；不能只产生无关系的新规则。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Replace synchronous order events with outbox",
+  "body": "事务内写 outbox，由已有独立投递器异步发送。",
+  "changedFiles": [
+    {
+      "filename": "service/orders/Place.ts",
+      "status": "modified",
+      "patch": "--- a/service/orders/Place.ts\n+++ b/service/orders/Place.ts\n@@ -1,5 +1,7 @@\n-export async function placeOrder(db, broker, input) {\n-  const order = await db.insertOrder(input);\n-  await broker.publish(\"order.placed\", order);\n-  return order;\n+export async function placeOrder(db, input) {\n+  return db.transaction(async (tx) => {\n+    const order = await tx.insertOrder(input);\n+    await tx.insertOutbox({ topic: \"order.placed\", payload: order });\n+    return order;\n+  });\n }\n",
+      "content": "export async function placeOrder(db, input) {\n  return db.transaction(async (tx) => {\n    const order = await tx.insertOrder(input);\n    await tx.insertOutbox({ topic: \"order.placed\", payload: order });\n    return order;\n  });\n}\n"
+    }
+  ],
+  "discussions": [
+    {
+      "id": 601,
+      "body": "正式替代旧的订单事件同步发送架构决定：订单记录和 outbox 事件必须在同一数据库事务落库，由投递器异步发送。此前提交后直接发消息在进程退出时丢事件，所以今后订单服务统一采用事务 outbox；旧决定不再适用。",
+      "author": "maintainer-lin",
+      "human": true,
+      "authorType": "User",
+      "role": "maintainer",
+      "url": "https://example.invalid/pull/1#discussion-601"
+    },
+    {
+      "id": 602,
+      "body": "已按新的架构决定改成同事务写 outbox，独立投递器继续负责重试。",
+      "author": "author-chen",
+      "human": true,
+      "authorType": "User",
+      "role": "author",
+      "url": "https://example.invalid/pull/1#discussion-602"
+    }
+  ],
+  "existingRules": [
+    {
+      "id": "order-event-sync",
+      "version": 1,
+      "type": "architecture_decision",
+      "title": "订单事件同步发送",
+      "content": "订单事务提交后直接向消息代理同步发送事件。",
+      "rationale": "最初为了减少基础设施，直接同步发送事件。",
+      "scope": {
+        "paths": ["service/orders/**"]
+      }
+    }
+  ],
+  "expected": [
+    {
+      "type": "architecture_decision",
+      "keywords": [["outbox"], ["事务", "transaction"], ["异步", "投递", "asynchronous", "dispatch"]],
+      "relation": {
+        "supersedes": "order-event-sync"
+      }
+    }
+  ]
+}
