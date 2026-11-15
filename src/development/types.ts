@@ -95,6 +95,11 @@ export interface DevelopmentTask {
   issue_number: number | null;
   proposal: unknown;
   last_revision_comment_at: Date | null;
+  last_revision_comment_ids: string[];
+}
+export interface RevisionCursor {
+  at: Date;
+  ids: string[];
 }
 // 开发 PR 下的一条评论：PR 对话里的评论（comment）、代码行上的评论（review_comment）或 review 的正文（review）。
 export interface PullRequestCommentInput {

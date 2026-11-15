@@ -28,7 +28,7 @@
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
 | ARCH-1-A | 开发任务由统一执行器在 worker 上领取（租约、心跳），和企微解耦；重启和部署不再取消任务；去掉"目标分支有新提交就放弃" | 已完成（`d477ef6`，合并 `03040e5`） |
-| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 已合并（`c38af8c`）；独立审查发现 5 个问题（新旧实例交接时的并发、恢复前的临时错误、同一秒评论），修复中 |
+| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 已完成（`c8729fa`、`ee51c09`，审查修复 `8879f49`）；真实 GitHub／模型演练未做 |
 | ARCH-1-C | 不经企微派任务：管理页／管理 API、给 issue 打 `pi-dev` 标签；仓库可以不绑群 | 已完成（`f51d9ad`，合并 `c2ad48f`） |
 | ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 已完成（`c0536d1`）；真实滚动部署未验收 |
 | ARCH-1-E | 线程回复加隐藏标记与发布前核对，中断后不重复回复；Review／Reply／规则提取的中断回归测试 | 已完成（`37e957c`，合并 `c72d824`） |
@@ -189,8 +189,8 @@
 - revise 回归：proposal、commit、推送、回复各步骤中断后恢复，分支只推进一次、回复只发一条；保持 Agent 实际见过的评论游标，恢复期间新到的评论不会被记作已处理。
 - 快照回归：虚拟时钟验证每 5 分钟保存，真实 stop 验证最后快照落库后放回；旧 owner 不能覆盖接手实例的快照。31 个 700 KB 随机文件不受发布限制影响，gzip 约 21.8 MB 时清除旧快照并从头完成。覆盖新增、删除、可执行位、忽略文件及父目录符号链接拒绝。
 - 根因修复：`lastRevisionAt` 原来混用 PostgreSQL `started_at` 和 GitHub `created_at`，现在只比较已成功处理的 GitHub 评论时间；早/晚 5 秒两个用例均通过。恢复时不重置 token/未知预留与执行时间，排队不计时；发布失败重排增加尝试次数，到上限才 uncertain。不同 SHA 分支停止并提示人工核对。
-- 最终验证：`npm test` 306 项，181 通过、125 跳过、0 失败（39.20 秒，普通命令未加载数据库）；随后 `npm run test:db` 157/157 通过，0 跳过（106.43 秒）。定向恢复、长评论分页核对与执行权边界测试均通过。GitHub 和模型均为替身，临时 schema 在结束后删除；无真实 delivery/Job/finding/Review/reply URL。developer 用量累计断言为 150+150=300 tokens，revision 为 120 tokens，均非真实模型耗费。
-- 开销与限制：普通 commit/ref/PR 每步约增加 6 次短 SQL；快照多遍历工作区并编码压缩一次，峰值内存随改动量增长，未做生产压测。硬崩溃最多丢失最近约 5 分钟未保存改动（保存故障另记日志），耗时保守计到租约截止；正常 stop 等待最终快照。新 issue 核对最近 100 个，评论完整分页。未运行真实 GitHub/模型、真实 Webhook、跨物理机器或 OS kill 演练；未修改进程角色拆分相关文件。
+- 审查修复前验证（`ee51c09`）：`npm test` 306 项，181 通过、125 跳过、0 失败（39.20 秒，普通命令未加载数据库）；随后 `npm run test:db` 157/157 通过，0 跳过（106.43 秒）。定向恢复、长评论分页核对与执行权边界测试均通过。GitHub 和模型均为替身，临时 schema 在结束后删除；无真实 delivery/Job/finding/Review/reply URL。developer 用量累计断言为 150+150=300 tokens，revision 为 120 tokens，均非真实模型耗费。
+- 审查修复前开销估算：普通 commit/ref/PR 每步约增加 6 次短 SQL；快照多遍历工作区并编码压缩一次，峰值内存随改动量增长，未做生产压测。硬崩溃最多丢失最近约 5 分钟未保存改动（保存故障另记日志），耗时保守计到租约截止；正常 stop 等待最终快照。新 issue 核对最近 100 个，评论完整分页。未运行真实 GitHub/模型、真实 Webhook、跨物理机器或 OS kill 演练；未修改进程角色拆分相关文件。
 - 收尾检查：全量后 `npm run format` 检查 201 个文件，无需修改；`npm run check:docs` 36 个 Markdown 文件、306 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。
 
 **ARCH-2-B**（2026-11-15，基于 `e4bc57c`，分支 `arch/p2-b-teams`，提交 `b0e888a`，合并 `c126221`）
@@ -202,3 +202,15 @@
 - 验收（合并后）：`node --test dist/test/admin/*.test.js dist/test/memory/*.test.js dist/test/review/*.test.js dist/test/reply/*.test.js dist/test/github/*.test.js` 91 通过、22 跳过；`node --env-file=.env --test dist/test/admin/database-*.test.js dist/test/memory/database-*.test.js` 31/31。看过团队列表、规则列表、覆盖详情截图。
 - 遗留：选了仓库后，规则列表里的团队规则仍显示团队级别，没有标出本项目的覆盖（详情里有），放进 2-C。
 
+
+**ARCH-1-B 审查修复**（2026-11-15，基于 `ee51c09`）
+
+- 任务行锁覆盖每次台账写入、GitHub 核对/写请求与快照保存。pending 意图先独立提交，后续请求和 done 记账在同一持锁事务；过期扫描、领取均跳过锁住的任务。旧 owner 的在途请求、检查后暂停的记账和等待冲突行锁的快照 SQL，都不能与接手者重叠。
+- 领取、处理器准备阶段和失败重排均依据持久化 pending/done 台账识别发布阶段；取 token 失败也重排并增加 attempt，耗尽才 uncertain。原有分支冲突人工核对行为保留。
+- 迁移 `021_development_revision_cursor.sql`（分支上原名 018，合并时为避开 `018_repository_onboarding.sql` 改名）增加评论边界秒内的已处理身份集合（种类 + ID），与提案一起保存；同秒后到评论仍为 new，恢复期间不推进到未处理的评论。不同评论种类共用数字 ID 不互相遮蔽。
+- 修前命令 `npm run build && node --env-file=.env --test dist/test/development/*.test.js`：79 通过、5 失败、0 跳过（60.69 秒），失败项恰为审查 1–5。修后同命令：88/88 通过、0 跳过（53.76 秒）；保留全部原恢复用例，额外覆盖 discuss/notice/revise 准备失败和尝试耗尽、同秒恢复及跨种类 ID。
+- 并发用例采用真实 PostgreSQL 临时 schema，自然等待 1 秒租约到期；分别阻塞远端替身请求、记账 SQL 和快照冲突行。旧恢复用例改成先让请求抛中断、事务退出后再过期租约；PR 创建请求与 Webhook 并发，回调等待请求释放任务锁，保留回调先到的免审查验收。
+- 新增的拒绝路径：快照保存/超限清理时，失效 owner 或过期租约抛 `TaskLeaseLostError`，依据本次已定修法；副作用沿用同一执行权拒绝规则，无新产品输入校验。
+- 性能：一次首次成功的副作用包含 2 个事务、6 条业务 SQL、4 条 BEGIN/COMMIT；快照写入为 1 个事务、2 条业务 SQL、2 条 BEGIN/COMMIT，gzip 在锁外。每个在途操作占用一条连接，心跳和同任务回调更新可能等待；GitHub 请求数不增加。未测生产延迟、内存和吞吐。
+- 限制：未运行真实 GitHub/模型、真实 Webhook、OS kill 或跨机器演练；无真实 delivery/Job/finding/Review/reply URL。模型为 developer/revision/discussion 替身，usage 只验证累计。锁不能撤销客户端超时后远端仍可能执行的请求，继续遵守不承诺 exactly-once 的边界。未改进程角色拆分文件，未 push。
+- 最终顺序验证：`npm test` 315 项，181 通过、134 跳过、0 失败（65.46 秒，普通命令未加载数据库）；随后 `npm run test:db` 166/166 通过、0 跳过（177.24 秒）。`npm run format` 检查 202 文件、格式化 5 文件；`npm run check:docs` 检查 36 文档/306 链接通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。
