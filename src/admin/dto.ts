@@ -14,6 +14,11 @@ export type Repository = {
   excludePaths: string[];
   outputLanguage: string;
   budgetTokens: number;
+  rulesSyncEnabled: boolean;
+  rulesSyncAt: string | null;
+  rulesSyncStatus: "pr" | "unchanged" | "failed" | null;
+  rulesSyncPrUrl: string | null;
+  rulesSyncError: string | null;
   healthSchedule: "off" | "daily" | "weekly";
   healthNextRunAt: string | null;
   healthLastError: string | null;
@@ -29,6 +34,11 @@ export function repository(row: Record<string, unknown>): Repository {
     excludePaths: row.exclude_paths as string[],
     outputLanguage: String(row.output_language),
     budgetTokens: Number(row.budget_tokens),
+    rulesSyncEnabled: Boolean(row.rules_sync_enabled),
+    rulesSyncAt: row.rules_sync_at instanceof Date ? row.rules_sync_at.toISOString() : null,
+    rulesSyncStatus: row.rules_sync_status as Repository["rulesSyncStatus"],
+    rulesSyncPrUrl: row.rules_sync_pr_url ? String(row.rules_sync_pr_url) : null,
+    rulesSyncError: row.rules_sync_error ? String(row.rules_sync_error) : null,
     healthSchedule: row.health_schedule as Repository["healthSchedule"],
     healthNextRunAt: row.health_next_run_at instanceof Date ? row.health_next_run_at.toISOString() : null,
     healthLastError: row.health_last_error ? String(row.health_last_error) : null,

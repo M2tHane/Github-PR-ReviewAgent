@@ -1,10 +1,11 @@
-import type { AgentJob, HealthJob, ReviewJob } from "./types.js";
+import type { AgentJob, HealthJob, ReviewJob, RulesSyncJob } from "./types.js";
 
 export interface JobProcessors {
   PR_REVIEW: (job: ReviewJob) => Promise<void>;
   DECISION_EXTRACT: (job: ReviewJob) => Promise<void>;
   REPLY_HANDLE: (job: ReviewJob) => Promise<void>;
   HEALTH_AUDIT: (job: HealthJob) => Promise<void>;
+  RULES_SYNC: (job: RulesSyncJob) => Promise<void>;
 }
 
 export function createJobDispatcher(processors: JobProcessors) {
@@ -13,6 +14,7 @@ export function createJobDispatcher(processors: JobProcessors) {
     DECISION_EXTRACT: (job) => processors.DECISION_EXTRACT(job as ReviewJob),
     REPLY_HANDLE: (job) => processors.REPLY_HANDLE(job as ReviewJob),
     HEALTH_AUDIT: (job) => processors.HEALTH_AUDIT(job as HealthJob),
+    RULES_SYNC: (job) => processors.RULES_SYNC(job as RulesSyncJob),
   };
   return (job: AgentJob): Promise<void> => {
     const processor = dispatch[job.jobType ?? ""];

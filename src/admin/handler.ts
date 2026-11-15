@@ -245,14 +245,25 @@ export function createAdminHandler(
         if (request.method === "GET" && url.pathname === "/api/repositories")
           return json(response, 200, await allowedRepositories(user));
         if (isHealthRoute(request, url)) return healthRoutes(request, response, url, user);
+        const syncMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/rules-sync$/);
+        if (syncMatch && request.method === "POST") {
+          const access = await authorize(request, response, Number(syncMatch[1]));
+          if (!access) return;
+          const result = await database.pool.query("SELECT enqueue_rules_sync($1) id", [access.repository.id]);
+          return json(response, 200, { jobId: result.rows[0].id });
+        }
         const repositoryMatch = url.pathname.match(/^\/api\/repositories\/(\d+)$/);
         if (repositoryMatch && request.method === "PATCH") {
           const access = await authorize(request, response, Number(repositoryMatch[1]));
           if (!access) return;
           const value = (await body(request)) as Partial<
-            Pick<Repository, "enabled" | "includePaths" | "excludePaths" | "outputLanguage" | "budgetTokens">
+            Pick<
+              Repository,
+              "enabled" | "includePaths" | "excludePaths" | "outputLanguage" | "budgetTokens" | "rulesSyncEnabled"
+            >
           >;
           if (
+            (value.rulesSyncEnabled !== undefined && typeof value.rulesSyncEnabled !== "boolean") ||
             (value.enabled !== undefined && typeof value.enabled !== "boolean") ||
             (value.includePaths !== undefined &&
               (!Array.isArray(value.includePaths) || !value.includePaths.every((x) => typeof x === "string"))) ||
@@ -264,7 +275,7 @@ export function createAdminHandler(
           )
             return json(response, 422, { error: "仓库配置无效" });
           const updated = await database.pool.query(
-            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),updated_at=now() WHERE id=$1 RETURNING *",
+            "UPDATE repositories SET enabled=COALESCE($2,enabled),include_paths=COALESCE($3,include_paths),exclude_paths=COALESCE($4,exclude_paths),output_language=COALESCE($5,output_language),budget_tokens=COALESCE($6,budget_tokens),rules_sync_enabled=COALESCE($7,rules_sync_enabled),updated_at=now() WHERE id=$1 RETURNING *",
             [
               access.repository.id,
               value.enabled ?? null,
@@ -272,6 +283,7 @@ export function createAdminHandler(
               value.excludePaths ?? null,
               value.outputLanguage ?? null,
               value.budgetTokens ?? null,
+              value.rulesSyncEnabled ?? null,
             ],
           );
           if (value.enabled === false) await database.cancelRepository(access.repository.id);

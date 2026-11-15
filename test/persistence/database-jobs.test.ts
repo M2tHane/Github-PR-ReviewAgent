@@ -120,7 +120,7 @@ test("持久 Runner 恢复 running Job 并保存发布结果", { skip: !fixture.
   const runner = new PersistentRunner(
     new JobsSource(database),
     async (job) => {
-      assert.ok(job.jobType !== "HEALTH_AUDIT");
+      assert.ok(job.jobType !== "HEALTH_AUDIT" && job.jobType !== "RULES_SYNC");
       const publication = await database.beginPublication(job, `fingerprint-${job.id}`);
       assert.equal(publication.status, "pending");
       assert.equal(publication.inserted, true);

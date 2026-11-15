@@ -190,7 +190,7 @@ export class JobRepository {
   private abortReviews(repositoryId: number, prNumber: number, exceptHead?: string, reason = "superseded") {
     for (const { job, controller } of this.activeReviews.values())
       if (
-        job.jobType !== "HEALTH_AUDIT" &&
+        "prNumber" in job &&
         job.repositoryId === repositoryId &&
         job.prNumber === prNumber &&
         job.headSha !== exceptHead
@@ -311,7 +311,7 @@ export class JobRepository {
         ).rows;
         const repositories = rows.map((row) => Number(row.id));
         await client.query(
-          "UPDATE jobs SET status='cancelled',last_error='GitHub App 授权已撤销',finished_at=now(),updated_at=now() WHERE repository_id=ANY($1::bigint[]) AND (status='queued' OR status='running' AND job_type IN ('PR_REVIEW','REPLY_HANDLE','HEALTH_AUDIT'))",
+          "UPDATE jobs SET status='cancelled',last_error='GitHub App 授权已撤销',finished_at=now(),updated_at=now() WHERE repository_id=ANY($1::bigint[]) AND (status='queued' OR status='running' AND job_type IN ('PR_REVIEW','REPLY_HANDLE','HEALTH_AUDIT','RULES_SYNC'))",
           [repositories],
         );
         return { duplicate: false, repositories };
@@ -382,7 +382,9 @@ export class JobRepository {
         const result = await client.query(
           `SELECT * FROM jobs j WHERE status='queued' AND (next_run_at IS NULL OR next_run_at<=now())
              AND ($1 OR job_type<>'HEALTH_AUDIT')
-             AND (job_type='HEALTH_AUDIT' OR NOT EXISTS (
+             AND (job_type<>'RULES_SYNC' OR NOT EXISTS (
+               SELECT 1 FROM jobs r WHERE r.status='running' AND r.job_type='RULES_SYNC' AND r.repository_id=j.repository_id))
+             AND (job_type IN ('HEALTH_AUDIT','RULES_SYNC') OR NOT EXISTS (
                SELECT 1 FROM jobs r WHERE r.status='running' AND r.job_type<>'HEALTH_AUDIT' AND r.repository_id=j.repository_id
                  AND r.pr_number=j.pr_number))
            ORDER BY (job_type='HEALTH_AUDIT'),COALESCE((payload->>'humanReplyCreatedAt')::timestamptz,created_at),COALESCE((payload->>'sourceCommentId')::bigint,0),created_at

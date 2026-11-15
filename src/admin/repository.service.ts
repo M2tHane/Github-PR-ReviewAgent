@@ -4,7 +4,7 @@ import { repository, type JobPage, type Overview, type Repository, type Session 
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 import { MaintainerPermissionCache } from "./permission-cache.js";
 
-export const JOB_TYPES = ["PR_REVIEW", "REPLY_HANDLE", "DECISION_EXTRACT", "HEALTH_AUDIT"];
+export const JOB_TYPES = ["PR_REVIEW", "REPLY_HANDLE", "DECISION_EXTRACT", "HEALTH_AUDIT", "RULES_SYNC"];
 export const JOB_STATUSES = [
   "queued",
   "running",

@@ -17,6 +17,7 @@ import { createReplyProcessor } from "../reply/reply.processor.js";
 import { createHealthProcessor } from "../health/health.processor.js";
 import { enqueueDueHealthJobs } from "../health/health.scheduler.js";
 import { GitHubClient } from "../github/client.js";
+import { createRulesSyncProcessor } from "../rules-sync/processor.js";
 import { createJobDispatcher } from "../jobs/dispatcher.js";
 import { log } from "../logging.js";
 import { reviewNotificationChannel } from "../notifications/wecom.js";
@@ -57,6 +58,7 @@ export function createApplication(config = loadConfig(), overrides: Partial<type
           DECISION_EXTRACT: createDecisionProcessor(config, database, memories!),
           REPLY_HANDLE: createReplyProcessor(config, database, memories!),
           HEALTH_AUDIT: createHealthProcessor(config, database, memories!),
+          RULES_SYNC: createRulesSyncProcessor(config, database, github),
         }),
         500,
         { concurrency: config.workerConcurrency },
