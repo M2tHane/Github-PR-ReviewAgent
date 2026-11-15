@@ -60,7 +60,7 @@ npm run format           # Biome 格式化；check:format 只检查
 - **Pi 版本绑定。** RPC 事件、扩展钩子和 CLI 参数随 Pi 版本变化，升级 Pi 或 codegraph 后跑 `test/pi/session.test.ts`。Pi 的 grep / find 离线运行，需要系统里有 `rg`、`fd`（或 `fdfind`）。
 - **改 Prompt 或 Skill 都要回归。** `agent/AGENTS.md` 和 Skills 与 `REVIEW_PROMPT` 一样每次都会发出，不能写评测样本的答案。
 - **模型输出的校验。** `parseReviewResult`、`parseDecisionProposals`、`validateDisplay` 是信任边界。改字段时同步改 Prompt 里的 JSON 说明、`src/review/types.ts` 和对应测试。
-- **发布状态。** PR Review 总评末尾带 `<!-- pi-review:<fingerprint> -->` 标记；发布失败或上次中断时按这个标记查 GitHub 已有 Review 再决定（见 `review.publisher.ts`）。不要删掉这个标记。线程回复没有这套核对。`uncertain` 是终态，管理页只能查看、不能处理。
+- **发布状态。** PR Review 总评末尾带 `<!-- pi-review:<fingerprint> -->` 标记；发布失败或上次中断时按这个标记查 GitHub 已有 Review 再决定（见 `review.publisher.ts`）。线程回复末尾带 `<!-- pi-reply:<sourceCommentId> -->`，发布前以 pending 保存结果；重试先按线程根评论、Bot 作者和标记核对远端，已发出的补记账，未发出的复用结果并重新检查发布条件，不重跑 Agent。不要删掉这些标记。回复发布的网络错误按既有分类重试；无法核对且不能继续重试时进入 `uncertain` 终态，管理页只能查看、不能处理。
 - **重试判断先看错误类型。** `transient()` 依次认 `ProviderError`、`GitHubApiError`（按状态码）、`BudgetError`、`TimeoutError` 和网络错误码，最后才用 `\b5\d\d\b` 等正则兜底。新增的外部调用失败时抛带类型的错误；无类型的错误消息里不要出现无关的 5xx 形态数字。
 - **语言识别只有一份。** 扩展名映射和语言别名都在 `src/config/languages.ts`，变更画像和规则 Scope 共用，不要在别处再写一份。
 - **风格。** 用 Biome 格式化：提交前跑 `npm run format`，`npm run check:format` 检查。`npm run lint` 目前有存量报错（主要在管理页的无障碍规则），只作参考，不要顺手批量修。整体格式化的提交记在 `.git-blame-ignore-revs`，本地可执行 `git config blame.ignoreRevsFile .git-blame-ignore-revs`。
