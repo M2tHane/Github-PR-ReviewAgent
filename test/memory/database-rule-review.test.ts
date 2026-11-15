@@ -312,7 +312,8 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
       assert.ok(rows.find((row) => row.id === id).inferred_fixed_at);
     }
     assert.equal(rows.find((row) => row.id === yes).status, "OPEN");
-    for (const id of [no, failed, forcePushed, ...skipped]) assert.equal(rows.find((row) => row.id === id).inferred_fixed_at, null);
+    for (const id of [no, failed, forcePushed, ...skipped])
+      assert.equal(rows.find((row) => row.id === id).inferred_fixed_at, null);
     assert.equal(log.mock.callCount(), 1);
     const timestamp = rows.find((row) => row.id === yes).inferred_fixed_at;
     await process({ ...job, headSha: "merged", jobType: "DECISION_EXTRACT" });

@@ -281,7 +281,13 @@ test("Decision Extractor 走统一会话入口：有人类讨论时照常运行�
     const headSha = await git("rev-parse", "HEAD");
     const github = {
       installationToken: async () => "token",
-      getPullRequest: async () => ({ merged: true, merge_commit_sha: headSha, head: { sha: headSha }, title: "t", body: "" }),
+      getPullRequest: async () => ({
+        merged: true,
+        merge_commit_sha: headSha,
+        head: { sha: headSha },
+        title: "t",
+        body: "",
+      }),
       getFiles: async () => [],
       getConversationComments: async () => [
         { id: 11, html_url: "u", body: "以后 DTO 字段都不用 Optional", user: { login: "maintainer", type: "User" } },
@@ -345,7 +351,13 @@ test("没有正文非空的人类讨论时不跑规则抽取：不启动 Agent�
   const run = async (discussion: { comments?: unknown[]; reviews?: unknown[]; reviewComments?: unknown[] }) => {
     const github = {
       installationToken: async () => "token",
-      getPullRequest: async () => ({ merged: true, merge_commit_sha: "merged", head: { sha: "final" }, title: "t", body: "" }),
+      getPullRequest: async () => ({
+        merged: true,
+        merge_commit_sha: "merged",
+        head: { sha: "final" },
+        title: "t",
+        body: "",
+      }),
       getFiles: async () => [],
       getConversationComments: async () => discussion.comments ?? [],
       getReviews: async () => discussion.reviews ?? [],
