@@ -192,7 +192,6 @@ cp .env.example .env
 GITHUB_APP_ID
 GITHUB_PRIVATE_KEY_PATH
 GITHUB_WEBHOOK_SECRET
-GITHUB_ALLOWED_REPOSITORIES
 DATABASE_URL
 MODEL_PROVIDER
 MODEL_NAME
@@ -207,7 +206,7 @@ SESSION_SECRET
 
 `PROCESS_ROLE` 决定本进程的职责，取值为 `edge`、`worker`、`all`，未设置时默认 `all`；其他值（含空值）会在启动时报错。它只能通过环境变量设置，修改后需要重启。`PORT` 是本进程的 HTTP 监听端口，默认 3000；worker 只开放探针。
 
-时限、定时任务间隔、数据保留天数、模型名称和思考强度、健康检查开关、并发与开发任务额度，也可以在管理端「设置 → 服务设置」修改，改完最多 30 秒所有实例生效，不用重启；`.env` 里的值是没人改过时的默认值。只有 `SERVICE_ADMINS`（GitHub 用户名，逗号分隔）里的人能改，其他维护者只读。密钥、地址和允许的仓库列表只能改 `.env`。详见 [服务设置](docs/reliability-security.md#服务设置)。
+时限、定时任务间隔、数据保留天数、模型名称和思考强度、健康检查开关、并发与开发任务额度，也可以在管理端「设置 → 服务设置」修改，改完最多 30 秒所有实例生效，不用重启；`.env` 里的值是没人改过时的默认值。只有 `SERVICE_ADMINS`（GitHub 用户名，逗号分隔）里的人能改，其他维护者只读。密钥和地址只能改 `.env`。详见 [服务设置](docs/reliability-security.md#服务设置)。
 
 配置智能机器人长连接，并在「仓库 → 选择仓库 → 群内开发」启用群绑定：审查结果成功发布到 GitHub 后，机器人直接向该仓库绑定群发送完成状态和 PR 链接，不 @成员，也不需要 GitHub／企微成员映射或 Message Push Webhook。发送失败不会重新执行 AI 审查。配置、迁移和通知状态见 [企业微信通知](docs/wecom-notifications.md)。
 
@@ -297,7 +296,11 @@ Webhook：
 https://<your-domain>/github/webhook
 ```
 
-GitHub App 安装范围应与 `GITHUB_ALLOWED_REPOSITORIES` 保持一致。
+安装 GitHub App 后，服务管理员可在「设置 → 服务设置 → 仓库接入」选择仓库；本实例立即生效，其余 edge、worker、all 实例最多 30 秒同步，无需重启。列表包含未接入和已撤销仓库，并显示接入来源及最近操作人、时间；已撤销仓库须先在 GitHub 恢复授权。
+
+`GITHUB_ALLOWED_REPOSITORIES` 仍可配置固定白名单（逗号分隔，大小写不敏感，可留空），与管理页接入的仓库取并集。配置文件里的仓库不能在管理页移出，需改配置并重启相关实例。管理页移出后，新事件不再处理、普通仓库列表不再显示，执行中的任务在发布前检查时停止。首次完全通过页面接入时，先配置 `SERVICE_ADMINS` 和 OAuth 登录。
+
+管理页的 GitHub 维护权限按登录用户与仓库缓存：有权限 5 分钟、无权限 1 分钟，退出登录清除本实例该用户的缓存，新登录会话也不会复用其他实例上的旧缓存；服务白名单与撤销状态仍在每次授权时检查。
 
 服务停止中或数据库不可用时 Webhook 会失败，GitHub 不会自己重投。服务每 5 分钟（管理端可改）查一次 GitHub 的投递记录并请求重投这些事件（`WEBHOOK_REDELIVERY_ENABLED`，默认开启，设为 `false` 关闭；不需要额外的 App 权限）。规则和限制见 [reliability-security §9](docs/reliability-security.md#9-漏投递补偿)。
 

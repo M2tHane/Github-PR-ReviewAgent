@@ -161,7 +161,7 @@ function App() {
           ) : route === "settings" ? (
             <SettingsPage />
           ) : route === "settings/service" ? (
-            <ServiceSettingsPage />
+            <ServiceSettingsPage onRepositoriesChange={load} />
           ) : review ? (
             <ReviewDetails id={review[1]!} />
           ) : path === "reviews" ? (

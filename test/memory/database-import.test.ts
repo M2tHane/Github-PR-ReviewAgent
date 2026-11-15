@@ -187,10 +187,12 @@ test("确认批次失败全部回滚；预览绑定用户/目标/有效期", { s
   }
 });
 
-test("导入 API 每次校验 CSRF 和两端权限，不信任客户端来源与状态", { skip: !fixture.url }, async () => {
+test("导入 API 校验 CSRF 和两端权限，缓存到期重查，不信任客户端来源与状态", { skip: !fixture.url }, async (t) => {
   const { database, target, service } = await setup(706);
+  let permissionTime = Date.now();
+  t.mock.method(Date, "now", () => permissionTime);
   const secret = "rule-import-test-session-secret-32-bytes";
-  const session: Session = { ...actor, token: "test-token", csrf: "test-csrf", expiresAt: Date.now() + 60_000 };
+  const session: Session = { ...actor, token: "test-token", csrf: "test-csrf", expiresAt: Date.now() + 3_600_000 };
   const store = { get: async () => session, set: async () => true, delete: async () => {} };
   const allowed = new Set([target.fullName, "team/source-api"]);
   const config = {
@@ -234,8 +236,10 @@ test("导入 API 每次校验 CSRF 和两端权限，不信任客户端来源与
     assert.equal(preview.rules[0].source.kind, "markdown_import");
     assert.equal(preview.rules[0].source.pullRequestNumber, undefined);
     allowed.delete(target.fullName);
+    permissionTime += 5 * 60_000;
     assert.equal((await request("confirm", { previewId: preview.id, keys: ["TEAM-001"] })).status, 403);
     allowed.add(target.fullName);
+    permissionTime += 60_000;
     const source = repository(
       (
         await database.pool.query(
@@ -249,10 +253,12 @@ test("导入 API 每次校验 CSRF 和两端权限，不信任客户端来源与
     const input = { kind: "project", sourceRepositoryId: source.id, rules: [{ id: active[0]!.id, paths: ["src/**"] }] };
     const copy = (await (await request("preview", input)).json()) as any;
     allowed.delete(source.fullName);
+    permissionTime += 5 * 60_000;
     assert.equal((await request("confirm", { previewId: copy.id, keys: [active[0]!.id] })).status, 403);
     assert.equal((await request("preview", input)).status, 403);
     assert.equal((await service.active(target.id)).length, 0);
     allowed.add(source.fullName);
+    permissionTime += 60_000;
     assert.equal((await request("confirm", { previewId: copy.id, keys: [active[0]!.id] })).status, 200);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -145,6 +145,43 @@ export class GitHubClient {
     };
   }
 
+  // 服务管理员的接入清单：App 安装和每个 installation 的仓库都完整翻页。
+  async listInstalledRepositories() {
+    const repositories: Array<{ id: number; installation_id: number; full_name: string }> = [];
+    for (let page = 1; ; page++) {
+      const path = `/app/installations?per_page=100&page=${page}`;
+      const installations = await this.fetchJson<Array<{ id: number; suspended_at: string | null }>>(
+        `${api}${path}`,
+        { headers: this.appHeaders() },
+        path,
+        (response) => {
+          if (!response.ok) throw new GitHubApiError(path, response.status, retryAfterOf(response));
+        },
+      );
+      for (const installation of installations) {
+        // 暂停的安装无法签发 token；本地已有仓库仍由管理 API 列出。
+        if (installation.suspended_at) continue;
+        const token = await this.installationToken(installation.id);
+        for (let repoPage = 1; ; repoPage++) {
+          const result = await this.request<{
+            total_count: number;
+            repositories: Array<{ id: number; full_name: string }>;
+          }>(token, `/installation/repositories?per_page=100&page=${repoPage}`);
+          repositories.push(
+            ...result.repositories.map((repo) => ({
+              id: repo.id,
+              full_name: repo.full_name.toLowerCase(),
+              installation_id: installation.id,
+            })),
+          );
+          if (repoPage * 100 >= result.total_count) break;
+        }
+      }
+      if (installations.length < 100) break;
+    }
+    return repositories;
+  }
+
   private async request<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
     const headers = {
       authorization: `Bearer ${token}`,

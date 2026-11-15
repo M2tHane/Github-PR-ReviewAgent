@@ -5,7 +5,7 @@ import { log } from "../logging.js";
 import { HEALTH_LIMITS } from "../health/health.service.js";
 
 // 管理端可以修改的服务设置。值按 Config 里的单位保存（毫秒、天、token），页面按 scale 换算成分钟、小时等显示。
-// 没有记录的项用启动时 .env 或代码里的默认值；凭据、地址、允许的仓库列表不在这里，只能改 .env。
+// 没有记录的项用启动时 .env 或代码里的默认值；凭据和地址只能改 .env，仓库接入单独管理。
 export type SettingValue = number | boolean | string | null;
 
 export interface SettingDefinition {

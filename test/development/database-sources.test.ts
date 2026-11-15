@@ -127,7 +127,9 @@ async function setup() {
 
 test("管理 API 不绑群也能保存和派任务；CSRF、维护权限、启用、白名单、队列及输入边界", {
   skip: !fixture.url,
-}, async () => {
+}, async (t) => {
+  let permissionTime = Date.now();
+  t.mock.method(Date, "now", () => permissionTime);
   const s = await setup();
   try {
     const saved = await s.save();
@@ -189,7 +191,8 @@ test("管理 API 不绑群也能保存和派任务；CSRF、维护权限、启�
     assert.equal((await post("任务")).status, 403);
     s.config.allowedRepositories.add(s.repository);
     s.denyMaintainer();
-    assert.equal((await post("任务")).status, 403);
+    permissionTime += 5 * 60_000;
+    assert.equal((await post("任务", await s.headers("Maintainer"))).status, 403);
   } finally {
     await s.cleanup();
   }

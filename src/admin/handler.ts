@@ -21,6 +21,9 @@ import { createAgentSessionsRoute } from "./agent-sessions.routes.js";
 import { createServiceSettingsRoute } from "./service-settings.routes.js";
 import { ServiceSettings } from "../config/service-settings.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
+import { RepositoryAccess } from "../config/repository-access.js";
+import { createRepositoryOnboardingRoute } from "./repository-onboarding.routes.js";
+import { MaintainerPermissionCache } from "./permission-cache.js";
 
 export interface AdminStores {
   sessions: SessionStore<Session>;
@@ -38,12 +41,15 @@ export function createAdminHandler(
   },
   // 服务里共用一个实例，改完立即应用到本实例；单独使用管理页（测试）时自己建一个。
   settings = new ServiceSettings(config, database.pool),
+  repositoryAccess = new RepositoryAccess(config, database.pool),
 ) {
   const memories = new MemoryService(database);
+  const permissions = new MaintainerPermissionCache(github);
   const { allowedRepositories, listJobs, overview } = createRepositoryService(
     database,
     github,
     config.allowedRepositories,
+    permissions,
   );
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
   const ruleImportRoute = createRuleImportRoute(database, authorize);
@@ -51,6 +57,7 @@ export function createAdminHandler(
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
   const agentSessionsRoute = createAgentSessionsRoute(database, authorize);
   const serviceSettingsRoute = createServiceSettingsRoute(config, settings, allowedRepositories);
+  const repositoryOnboardingRoute = createRepositoryOnboardingRoute(config, database.pool, github, repositoryAccess);
   const configured = Boolean(
     config.githubClientId &&
       config.githubClientSecret &&
@@ -99,7 +106,7 @@ export function createAdminHandler(
       json(response, 403, { error: "仓库未授权" });
       return undefined;
     }
-    if (!(await github.hasMaintainerPermission(user.token, String(result.rows[0].full_name)))) {
+    if (!(await permissions.check(user, String(result.rows[0].full_name)))) {
       json(response, 403, { error: "需要 repository maintain 或 admin 权限" });
       return undefined;
     }
@@ -173,8 +180,10 @@ export function createAdminHandler(
       }
       if (request.method === "POST" && url.pathname === "/auth/logout") {
         const user = await session(request);
-        if (user && requireCsrf(request, response, user))
+        if (user && requireCsrf(request, response, user)) {
           await sessions.delete((cookies(request).session ?? "").split(".")[0]!);
+          permissions.clear(user);
+        }
         if (!response.headersSent) response.writeHead(204, { "set-cookie": cookie("session", "", 0) }).end();
         return;
       }
@@ -188,6 +197,14 @@ export function createAdminHandler(
         const user = await session(request);
         if (!user) return json(response, 401, { error: "请先登录" });
         if (request.method !== "GET" && !requireCsrf(request, response, user)) return;
+        const onboardingMatch = url.pathname.match(/^\/api\/repository-onboarding(?:\/(\d+))?$/);
+        if (onboardingMatch)
+          return await repositoryOnboardingRoute(
+            request,
+            response,
+            user,
+            onboardingMatch[1] === undefined ? undefined : Number(onboardingMatch[1]),
+          );
         const importMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/rule-import\/(source|preview|confirm)$/);
         if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
         const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development(\/tasks)?$/);

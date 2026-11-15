@@ -24,6 +24,7 @@ import { reviewNotificationChannel } from "../notifications/wecom.js";
 import { DevelopmentStore, developmentSource } from "../development/store.js";
 import { createDevelopmentProcessor } from "../development/processor.js";
 import { DevelopmentWorker } from "../development/worker.js";
+import { RepositoryAccess } from "../config/repository-access.js";
 
 const services = {
   Database,
@@ -82,8 +83,10 @@ export function createApplication(config = loadConfig(), overrides: Partial<type
     if (started && keys.includes("DATA_PURGE_INTERVAL_MS")) purgeTimer.reschedule();
     if (started && keys.includes("WEBHOOK_REDELIVERY_INTERVAL_MS")) redeliveryTimer.reschedule();
   });
+  const repositoryAccess = new RepositoryAccess(config, database.pool);
   const server = edge
-    ? createApp(config, database, createAdminHandler(config, database, github, undefined, settings)).server
+    ? createApp(config, database, createAdminHandler(config, database, github, undefined, settings, repositoryAccess))
+        .server
     : createProbeServer(database);
   const scheduleAbort = new AbortController();
   let started = false;
@@ -154,7 +157,9 @@ export function createApplication(config = loadConfig(), overrides: Partial<type
     async start() {
       // 先读一次管理端改过的设置，再开始领取任务；读不到（没跑迁移、数据库不可用）时用 .env 的值。
       await settings.refresh();
+      await repositoryAccess.refresh();
       settings.start();
+      repositoryAccess.start();
       database.resizePool(executionConcurrency());
       if (worker) {
         runner!.setConcurrency(config.workerConcurrency);
@@ -194,6 +199,7 @@ export function createApplication(config = loadConfig(), overrides: Partial<type
         scheduling,
         purging,
         redelivering,
+        repositoryAccess.stop(),
       ]);
       await database.close();
     },

@@ -33,7 +33,9 @@ test("OAuth stores release abandoned entries, reject overflow and preserve activ
   assert.equal(store.size, 0);
 });
 
-test("bootstrap checks each repository once, bounds concurrency and rechecks revoked permissions", async () => {
+test("bootstrap checks each repository once, bounds concurrency and rechecks permissions after cache expiry", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const repos = Array.from({ length: 9 }, (_, i) => ({
     id: i + 1,
     installation_id: 1,
@@ -102,10 +104,15 @@ test("bootstrap checks each repository once, bounds concurrency and rechecks rev
     revoked = true;
     calls = 0;
     response = await fetch(origin + "/api/bootstrap", { headers: { cookie } });
+    assert.equal(((await response.json()) as any).repositories.length, 9);
+    assert.equal(calls, 0);
+    now += 5 * 60_000;
+    response = await fetch(origin + "/api/bootstrap", { headers: { cookie } });
     data = await response.json();
     assert.deepEqual(data.repositories, []);
     assert.equal(calls, 9);
     fail = true;
+    now += 60_000;
     response = await fetch(origin + "/api/bootstrap", { headers: { cookie } });
     assert.equal(response.status, 500);
     fail = false;
@@ -121,6 +128,7 @@ test("OAuth rejects excess starts, consumes state once and rejects expired callb
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const config: any = {
     development: loadDevelopmentConfig({}),
+    allowedRepositories: new Set(),
     githubClientId: "client",
     githubClientSecret: "secret",
     githubOAuthCallbackUrl: "http://localhost/auth/github/callback",

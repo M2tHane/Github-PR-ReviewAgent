@@ -98,7 +98,7 @@ export function loadConfig(env = process.env): Config {
   const processRole = env.PROCESS_ROLE?.trim() ?? "all";
   if (processRole !== "edge" && processRole !== "worker" && processRole !== "all")
     throw new Error("配置 PROCESS_ROLE 只能是 edge / worker / all");
-  const repositories = required(env, "GITHUB_ALLOWED_REPOSITORIES")
+  const repositories = (env.GITHUB_ALLOWED_REPOSITORIES ?? "")
     .split(",")
     .map((x) => x.trim().toLowerCase())
     .filter(Boolean);
