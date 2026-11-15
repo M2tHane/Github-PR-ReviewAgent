@@ -1,0 +1,43 @@
+{
+  "id": "01-human-decision",
+  "description": "维护者明确约定，作者修改且已合并；应提取一条。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Make capture idempotent",
+  "body": "支付回调重试可能造成重复扣款，本次修复去重与事务边界。",
+  "changedFiles": [
+    {
+      "filename": "service/payments/Capture.ts",
+      "status": "modified",
+      "patch": "--- a/service/payments/Capture.ts\n+++ b/service/payments/Capture.ts\n@@ -1,4 +1,8 @@\n-export async function capture(tx, request) {\n-  await tx.debit(request.account, request.amount);\n-  return { ok: true };\n+export async function capture(db, request) {\n+  return db.transaction(async (tx) => {\n+    const previous = await tx.captureByKey(request.idempotencyKey);\n+    if (previous) return previous;\n+    await tx.debit(request.account, request.amount);\n+    return tx.saveCapture(request.idempotencyKey, { ok: true });\n+  });\n }\n",
+      "content": "export async function capture(db, request) {\n  return db.transaction(async (tx) => {\n    const previous = await tx.captureByKey(request.idempotencyKey);\n    if (previous) return previous;\n    await tx.debit(request.account, request.amount);\n    return tx.saveCapture(request.idempotencyKey, { ok: true });\n  });\n}\n"
+    }
+  ],
+  "discussions": [
+    {
+      "id": 101,
+      "body": "确认团队约定：今后支付扣款必须按请求幂等键去重，保存幂等结果和扣款必须在同一个数据库事务中完成。原因是上游超时会重放回调，不能再次扣款。",
+      "author": "maintainer-lin",
+      "human": true,
+      "authorType": "User",
+      "role": "maintainer",
+      "url": "https://example.invalid/pull/1#discussion-101"
+    },
+    {
+      "id": 102,
+      "body": "已按约定修改并补上重复回调测试，准备合并。",
+      "author": "author-chen",
+      "human": true,
+      "authorType": "User",
+      "role": "author",
+      "url": "https://example.invalid/pull/1#discussion-102"
+    }
+  ],
+  "existingRules": [],
+  "expected": [
+    {
+      "type": "engineering_rule",
+      "keywords": [["幂等", "idempotency", "去重"], ["事务", "transaction"], ["扣款", "debit", "支付", "payment"]]
+    }
+  ]
+}

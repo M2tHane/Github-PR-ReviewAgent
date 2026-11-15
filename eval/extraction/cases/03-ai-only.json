@@ -1,0 +1,29 @@
+{
+  "id": "03-ai-only",
+  "description": "只有 bot 建议；不构成人类决定。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Handle duplicate capture",
+  "body": "增加回调去重。",
+  "changedFiles": [
+    {
+      "filename": "service/payments/Capture.ts",
+      "status": "modified",
+      "patch": "--- a/service/payments/Capture.ts\n+++ b/service/payments/Capture.ts\n@@ -1,4 +1,8 @@\n-export async function capture(tx, request) {\n-  await tx.debit(request.account, request.amount);\n-  return { ok: true };\n+export async function capture(db, request) {\n+  return db.transaction(async (tx) => {\n+    const previous = await tx.captureByKey(request.idempotencyKey);\n+    if (previous) return previous;\n+    await tx.debit(request.account, request.amount);\n+    return tx.saveCapture(request.idempotencyKey, { ok: true });\n+  });\n }\n",
+      "content": "export async function capture(db, request) {\n  return db.transaction(async (tx) => {\n    const previous = await tx.captureByKey(request.idempotencyKey);\n    if (previous) return previous;\n    await tx.debit(request.account, request.amount);\n    return tx.saveCapture(request.idempotencyKey, { ok: true });\n  });\n}\n"
+    }
+  ],
+  "discussions": [
+    {
+      "id": 301,
+      "body": "建议今后支付扣款按幂等键去重，保存结果与扣款同事务，避免回调重放。",
+      "author": "review-assistant[bot]",
+      "human": false,
+      "authorType": "Bot",
+      "role": "bot",
+      "url": "https://example.invalid/pull/1#discussion-301"
+    }
+  ],
+  "existingRules": [],
+  "expected": []
+}

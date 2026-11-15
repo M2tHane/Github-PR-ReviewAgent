@@ -1,0 +1,47 @@
+{
+  "id": "04-unresolved-discussion",
+  "description": "合并的是试验性代码，讨论仍未定论。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Try idempotent capture",
+  "body": "仅用于当前渠道实验，不代表全团队约定，后续继续讨论。",
+  "changedFiles": [
+    {
+      "filename": "service/payments/Capture.ts",
+      "status": "modified",
+      "patch": "--- a/service/payments/Capture.ts\n+++ b/service/payments/Capture.ts\n@@ -1,4 +1,8 @@\n-export async function capture(tx, request) {\n-  await tx.debit(request.account, request.amount);\n-  return { ok: true };\n+export async function capture(db, request) {\n+  return db.transaction(async (tx) => {\n+    const previous = await tx.captureByKey(request.idempotencyKey);\n+    if (previous) return previous;\n+    await tx.debit(request.account, request.amount);\n+    return tx.saveCapture(request.idempotencyKey, { ok: true });\n+  });\n }\n",
+      "content": "export async function capture(db, request) {\n  return db.transaction(async (tx) => {\n    const previous = await tx.captureByKey(request.idempotencyKey);\n    if (previous) return previous;\n    await tx.debit(request.account, request.amount);\n    return tx.saveCapture(request.idempotencyKey, { ok: true });\n  });\n}\n"
+    }
+  ],
+  "discussions": [
+    {
+      "id": 401,
+      "body": "我建议所有支付都采用事务内去重，但需要评估锁竞争。",
+      "author": "maintainer-lin",
+      "human": true,
+      "authorType": "User",
+      "role": "maintainer",
+      "url": "https://example.invalid/pull/1#discussion-401"
+    },
+    {
+      "id": 402,
+      "body": "不同意作为通用规则；高吞吐渠道可能需要独立去重存储，还没有比较数据。",
+      "author": "reviewer-wang",
+      "human": true,
+      "authorType": "User",
+      "role": "reviewer",
+      "url": "https://example.invalid/pull/1#discussion-402"
+    },
+    {
+      "id": 403,
+      "body": "先合并这个渠道的实验实现，规则没有定论，压测后再决定。",
+      "author": "maintainer-lin",
+      "human": true,
+      "authorType": "User",
+      "role": "maintainer",
+      "url": "https://example.invalid/pull/1#discussion-403"
+    }
+  ],
+  "existingRules": [],
+  "expected": []
+}

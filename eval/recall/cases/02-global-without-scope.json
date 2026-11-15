@@ -1,0 +1,21 @@
+{
+  "id": "02-global-without-scope",
+  "description": "无 scope 全局规则不能依赖词重叠。",
+  "rules": [
+    {
+      "id": "audit-redaction",
+      "version": 1,
+      "type": "security_rule",
+      "title": "审计日志必须脱敏",
+      "content": "任何审计日志都不能包含完整凭据、银行卡号和个人证件号。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {}
+    }
+  ],
+  "change": {
+    "paths": ["api/AccountController.java"],
+    "title": "Add account lookup",
+    "body": ""
+  },
+  "expectedIds": ["audit-redaction"]
+}

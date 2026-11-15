@@ -1,0 +1,35 @@
+{
+  "id": "07-mixed-paths",
+  "description": "内部和公开导出同时改变，原规则和例外都需要提供。",
+  "rules": [
+    {
+      "id": "csv-safety",
+      "version": 1,
+      "type": "security_rule",
+      "title": "表格导出需防公式注入",
+      "content": "导出的文本单元格以等号、加号、减号或 @ 开头时必须转义。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "paths": ["public/export/**"]
+      }
+    },
+    {
+      "id": "machine-csv",
+      "version": 1,
+      "type": "exception",
+      "title": "机器交换文件例外",
+      "content": "内部机器读取的 CSV 保留原始字节，不适用于人下载的表格。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "paths": ["internal/exchange/**"]
+      },
+      "exceptionTo": "csv-safety"
+    }
+  ],
+  "change": {
+    "paths": ["internal/exchange/Export.ts", "public/export/Export.ts"],
+    "title": "Update both exports",
+    "body": ""
+  },
+  "expectedIds": ["machine-csv", "csv-safety"]
+}

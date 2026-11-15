@@ -1,0 +1,19 @@
+{
+  "id": "02-code-only",
+  "description": "只有代码写法；无讨论不能提取规范。",
+  "provenance": "synthetic",
+  "pullRequestNumber": 1,
+  "title": "Refactor payment capture",
+  "body": "整理支付服务内部实现。",
+  "changedFiles": [
+    {
+      "filename": "service/payments/Capture.ts",
+      "status": "modified",
+      "patch": "--- a/service/payments/Capture.ts\n+++ b/service/payments/Capture.ts\n@@ -1,4 +1,8 @@\n-export async function capture(tx, request) {\n-  await tx.debit(request.account, request.amount);\n-  return { ok: true };\n+export async function capture(db, request) {\n+  return db.transaction(async (tx) => {\n+    const previous = await tx.captureByKey(request.idempotencyKey);\n+    if (previous) return previous;\n+    await tx.debit(request.account, request.amount);\n+    return tx.saveCapture(request.idempotencyKey, { ok: true });\n+  });\n }\n",
+      "content": "export async function capture(db, request) {\n  return db.transaction(async (tx) => {\n    const previous = await tx.captureByKey(request.idempotencyKey);\n    if (previous) return previous;\n    await tx.debit(request.account, request.amount);\n    return tx.saveCapture(request.idempotencyKey, { ok: true });\n  });\n}\n"
+    }
+  ],
+  "discussions": [],
+  "existingRules": [],
+  "expected": []
+}

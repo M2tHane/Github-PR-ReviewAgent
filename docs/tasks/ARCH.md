@@ -39,6 +39,14 @@
 - 部署期间，一个 30 分钟的开发任务不会丢。
 - 不经过企微也能派任务（管理页、API、Issue 标签）。
 
+## 阶段 2：评测样例
+
+| 编号 | 内容 | 状态 |
+| --- | --- | --- |
+| ARCH-2-F | 规则召回评测与规则提取评测：16 个确定性召回样例、6 个真实模型提取样例、独立评分与运行说明 | 样例与评测入口已完成并实跑；质量缺口、上游故障已记录，真实合并 PR 标注集待补 |
+
+运行方法、评分口径和适用限制见 [评测说明](../../eval/README.md)。6 个合成提取样例不满足至少 30 个真实合并 PR 的阶段验收要求。
+
 ## 不做的项
 
 - 隔离与多团队门槛（独立系统用户、容器隔离、攻防测试、两个 GitHub App）：用户 2026-11-15 决定，服务只在公司内部使用，不做。
@@ -126,3 +134,13 @@
 
 **阶段 1 第一批合并后**（2026-11-15，`03040e5`）：`npm test` 282 项，182 通过、0 失败、100 跳过（数据库用例）；`npm run test:db` 135/135；`check:docs`、`check:format` 通过。
 
+
+**ARCH-2-F**（2026-11-15，基于 `e4bc57c`）
+
+- 改动：`eval/recall/cases/` 新增 16 个召回样例，`eval/extraction/cases/` 新增 6 个合成提取样例；召回入口调用现有 `selectReviewMemories`，保留可切换适配器与索引覆盖指标；提取入口在临时固定 Git 快照中调用现有 Pi 会话与 `parseDecisionProposals`，唯一生产源码变化是导出原 `SYSTEM_PROMPT`，内容和行为不变。评分支持关键词组、精确类型、关系目标和一对一匹配，失败、丢弃、未知消耗单独记录。运行方法见 [评测说明](../../eval/README.md)。
+- 召回：`npm run build && node eval/evaluate-recall.mjs` 成功执行，16 个用例的全文/可见覆盖均为 52/85（61.18%），全文正文预算口径总计 185,581 字符，完整规则 JSON 载荷总计 265,662 字符。缺失 33 条均来自预算截断；最差三个用例为 `15-service-model-overflow`（截掉 20 条）、`11-model-over-budget`（10 条）、`12-global-starvation`（2 条）。当前没有索引输出；没有修改召回逻辑来提高成绩。
+- 提取：`node --env-file=.env eval/evaluate-extraction.mjs --runs=3` 实际调用 `tuzi / gpt-6.1-sol`（high，openai-completions），18 次合计 458.920 秒，TP=5、FP=3、FN=4，精确率 62.5%、召回率 55.56%。13 次完整符合期望，2 次上游连接/断流失败，例外用例 3 次都把 `exceptionTo` 放到顶层而非 `relation.exceptionTo`，因此不计命中。已记录实际 token 67,131（输入 18,783、输出 5,468、缓存读 42,880、缓存写 0），未知预留 136,553 单列，不能当作零或实际 token。
+- 串行复核：AI-only 与 supersedes 用例各再跑 3 次，输出分别写入 `work/extraction-ai-recheck.json`、`work/extraction-supersedes-recheck.json`，未覆盖首跑。每组均 2 次正确、1 次上游失败；合计增加 158.401 秒、实际 token 16,130、未知预留 177,619。首批及复核共 24 次、617.321 秒、实际 token 83,261、未知预留 314,172。没有因接口不稳定改用替身或放宽评分。
+- 固定样例 SHA：支付相关 4 个用例 `7a7820fbf05c24121abdcac1d54f012de8b756f8`；例外 `0377c659c514a446f881a6a35eeefb16c8da68a3`；替代 `62e12ecb5df2fef04c1ae35e9570b4adf36eb48e`。角色为 Decision Extractor；这是本地合成快照，没有真实 delivery、Job、finding、Review 或 reply URL。
+- 验证：`npm test` 首跑 178 通过、1 失败、103 跳过，唯一失败为 CodeGraph 构建索引超过测试的 10 秒限制；随即 `node --test --test-concurrency=1 dist/test/*/*.test.js` 串行全量重跑 179 通过、0 失败、103 跳过。`node --test eval/metrics.test.mjs` 7/7 通过；`npm run format`、`npm run check:docs`（36 个文件、308 个本地链接与锚点）、`git diff --check` 通过。`--max-chars=100000` 复核覆盖 85/85；临时索引适配器验证 `--adapter` 切换后全文仍为 52/85、可见覆盖为 85/85，仅验证接口与指标，没有实现生产上下文编译器。
+- 限制：缺少至少 30 个人工标注的真实合并 PR，阶段 2 提取质量未验收。关键词匹配不判断完整语义、否定和 Scope 正确性。评测绕过无人类讨论时的生产提前结束分支，直接测试 Prompt 与解析结果；不覆盖 GitHub 取数、入库和审批。数据库代码和依赖未改，本任务不跑 `test:db` 或 `npm audit`。

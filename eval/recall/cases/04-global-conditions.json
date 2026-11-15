@@ -1,0 +1,34 @@
+{
+  "id": "04-global-conditions",
+  "description": "只有条件没有路径的全局规则也应提供。",
+  "rules": [
+    {
+      "id": "money-global",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "金额精度",
+      "content": "涉及金额时必须使用最小货币单位的整数。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "conditions": ["处理金额时"]
+      }
+    },
+    {
+      "id": "time-global",
+      "version": 1,
+      "type": "engineering_rule",
+      "title": "时区约定",
+      "content": "持久化时间统一使用 UTC。",
+      "rationale": "维护者确认的约定，减少跨模块协作时的行为差异。",
+      "scope": {
+        "conditions": ["写入时间戳时"]
+      }
+    }
+  ],
+  "change": {
+    "paths": ["lib/Invoice.ts"],
+    "title": "Persist invoice",
+    "body": ""
+  },
+  "expectedIds": ["money-global", "time-global"]
+}
