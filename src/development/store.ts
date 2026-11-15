@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { gzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import { LEASE_MS } from "../persistence/repositories/job.repository.js";
 import { transaction } from "../persistence/transaction.js";
 import type { TaskSource } from "../jobs/runner.js";
@@ -6,6 +8,9 @@ import type { Pool, PoolClient } from "pg";
 import type { Config } from "../config/config.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 import { isStartCommand } from "./policy.js";
+import { DevelopmentSideEffects } from "./side-effects.js";
+import { decodeSnapshot, encodeSnapshot, type SnapshotChange } from "./changes.js";
+import { log } from "../logging.js";
 import {
   DevelopmentError,
   type DevelopmentRole,
@@ -16,6 +21,10 @@ import {
   type PullRequestCommentInput,
   type TaskStatus,
 } from "./types.js";
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+const SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024;
 
 export class DevelopmentStore {
   constructor(readonly pool: Pool) {}
@@ -270,18 +279,19 @@ export class DevelopmentStore {
         await client.query("SELECT pg_advisory_xact_lock(4897042)");
         await client.query(
           `UPDATE development_tasks SET
-            status=CASE WHEN status='publishing' THEN 'uncertain' WHEN attempt>=4 THEN 'failed' ELSE 'queued' END,
-            result=CASE WHEN status='publishing' THEN '服务中断，PR 发布结果待核对；不会自动重复提交。'
+            status=CASE WHEN attempt>=4 AND status='publishing' THEN 'uncertain' WHEN attempt>=4 THEN 'failed' ELSE 'queued' END,
+            result=CASE WHEN attempt>=4 AND status='publishing' THEN '执行实例多次中断，发布结果无法核对；已停止重试。'
               WHEN attempt>=4 THEN '执行实例多次中断，已停止重试。' ELSE NULL END,
-            images=CASE WHEN status='publishing' OR attempt>=4 THEN '[]'::jsonb ELSE images END,
-            attempt=CASE WHEN status='running' AND attempt<4 THEN attempt+1 ELSE attempt END,
+            images=CASE WHEN attempt>=4 THEN '[]'::jsonb ELSE images END,
+            attempt=attempt+1,
+            duration_ms=attempt_duration_base_ms+(EXTRACT(EPOCH FROM (LEAST(now(),lease_expires_at)-started_at))*1000)::integer,
             owner_token=NULL,lease_expires_at=NULL,updated_at=now()
           WHERE status IN ('running','publishing') AND (lease_expires_at IS NULL OR lease_expires_at<=now())`,
         );
         await this.recoverIssues(client);
         return (
           await client.query(
-            `UPDATE development_tasks SET status='running',owner_token=$1,started_at=now(),updated_at=now(),
+            `UPDATE development_tasks SET status='running',owner_token=$1,attempt_duration_base_ms=COALESCE(duration_ms,0),started_at=now(),updated_at=now(),
             attempt=GREATEST(attempt,1),lease_expires_at=now()+make_interval(secs=>$2) WHERE id=(
           SELECT t.id FROM development_tasks t WHERE t.status='queued'
             AND NOT EXISTS (SELECT 1 FROM development_tasks r WHERE r.repository_id=t.repository_id AND r.status IN ('running','publishing')
@@ -302,7 +312,8 @@ export class DevelopmentStore {
     const rows = (
       await this.pool.query(
         `WITH renewed AS (
-        UPDATE development_tasks SET lease_expires_at=now()+make_interval(secs=>$3)
+        UPDATE development_tasks SET lease_expires_at=now()+make_interval(secs=>$3),
+          duration_ms=attempt_duration_base_ms+(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer
         WHERE id=ANY($1::uuid[]) AND owner_token=ANY($2::uuid[]) AND status IN ('running','publishing') AND lease_expires_at>now()
         RETURNING owner_token)
       SELECT t.owner_token,t.status,t.owner_token IN (SELECT owner_token FROM renewed) renewed
@@ -324,9 +335,8 @@ export class DevelopmentStore {
     // 发布不可盲目重放；完成状态保留，只有仍在运行的任务重新排队。停止不改变 attempt。
     await this.pool.query(
       `UPDATE development_tasks SET
-        status=CASE WHEN status='publishing' THEN 'uncertain' WHEN status='running' THEN 'queued' ELSE status END,
-        result=CASE WHEN status='publishing' THEN '服务中断，PR 发布结果待核对；不会自动重复提交。' ELSE result END,
-        images=CASE WHEN status='publishing' THEN '[]'::jsonb ELSE images END,
+        duration_ms=CASE WHEN status IN ('running','publishing') THEN attempt_duration_base_ms+(EXTRACT(EPOCH FROM (LEAST(now(),lease_expires_at)-started_at))*1000)::integer ELSE duration_ms END,
+        status=CASE WHEN status IN ('running','publishing') THEN 'queued' ELSE status END,
         owner_token=NULL,lease_expires_at=NULL,updated_at=now()
       WHERE id=$1 AND owner_token=$2`,
       [task.id, task.owner_token],
@@ -335,9 +345,13 @@ export class DevelopmentStore {
 
   async fail(task: DevelopmentTask) {
     await this.pool.query(
-      `UPDATE development_tasks SET status=CASE WHEN status='publishing' THEN 'uncertain' ELSE 'failed' END,
-        result=CASE WHEN status='publishing' THEN 'PR 发布结果待核对，任务不会自动重发。' ELSE '开发任务执行失败，请查看任务记录。' END,
-        images='[]',owner_token=NULL,lease_expires_at=NULL,updated_at=now()
+      `UPDATE development_tasks SET
+        status=CASE WHEN status='publishing' AND attempt>=4 THEN 'uncertain' WHEN status='publishing' THEN 'queued' ELSE 'failed' END,
+        result=CASE WHEN status='publishing' AND attempt>=4 THEN 'PR 发布结果无法核对，已停止重试。'
+          WHEN status='publishing' THEN NULL ELSE '开发任务执行失败，请查看任务记录。' END,
+        attempt=attempt+1,
+        duration_ms=attempt_duration_base_ms+(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer,
+        images=CASE WHEN status='publishing' AND attempt<4 THEN images ELSE '[]'::jsonb END,owner_token=NULL,lease_expires_at=NULL,updated_at=now()
       WHERE id=$1 AND owner_token=$2 AND status IN ('running','publishing') AND lease_expires_at>now()`,
       [task.id, task.owner_token],
     );
@@ -573,12 +587,12 @@ export class DevelopmentStore {
     );
   }
 
-  // 上一次处理完这个 PR 评论的开始时间；之后的评论算新评论。
+  // 上一次成功处理时看过的最新评论时间；只比较 GitHub 时钟。
   async lastRevisionAt(task: DevelopmentTask): Promise<Date | undefined> {
     return (
       (
         await this.pool.query(
-          `SELECT max(started_at) at FROM development_tasks WHERE repository_id=$1 AND pr_number=$2 AND kind='revise'
+          `SELECT max(last_revision_comment_at) at FROM development_tasks WHERE repository_id=$1 AND pr_number=$2 AND kind='revise'
         AND status='succeeded' AND id<>$3`,
           [task.repository_id, task.pr_number, task.id],
         )
@@ -613,7 +627,7 @@ export class DevelopmentStore {
 
   async recordIssue(task: DevelopmentTask, issueNumber: number) {
     await this.pool.query(
-      "INSERT INTO development_issues(repository_id,issue_number,origin_task_id,status) VALUES($1,$2,$3,'discussing')",
+      "INSERT INTO development_issues(repository_id,issue_number,origin_task_id,status) VALUES($1,$2,$3,'discussing') ON CONFLICT(repository_id,issue_number) DO NOTHING",
       [task.repository_id, issueNumber, task.id],
     );
   }
@@ -696,10 +710,10 @@ export class DevelopmentStore {
       protections: row.protections as DevelopmentSettings["protections"],
     };
   }
-  async finish(task: DevelopmentTask, status: TaskStatus, result: string) {
+  async finish(task: DevelopmentTask, status: TaskStatus, result: string, durationMs?: number) {
     const updated = await this.pool.query(
-      "UPDATE development_tasks SET status=$2,result=$3,images='[]',duration_ms=(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer,updated_at=now() WHERE id=$1 AND owner_token=$4 AND status IN ('running','publishing') AND lease_expires_at>now()",
-      [task.id, status, result, task.owner_token],
+      "UPDATE development_tasks SET status=$2,result=$3,images='[]',duration_ms=COALESCE($5,attempt_duration_base_ms+(EXTRACT(EPOCH FROM (now()-started_at))*1000)::integer),updated_at=now() WHERE id=$1 AND owner_token=$4 AND status IN ('running','publishing') AND lease_expires_at>now()",
+      [task.id, status, result, task.owner_token, durationMs],
     );
     if (updated.rowCount) task.status = status;
     return Boolean(updated.rowCount);
@@ -711,6 +725,58 @@ export class DevelopmentStore {
       [task.id, task.owner_token],
     );
   }
+  sideEffects(task: DevelopmentTask) {
+    return new DevelopmentSideEffects(this.pool, task);
+  }
+
+  async saveSnapshot(task: DevelopmentTask, baseSha: string, changes: SnapshotChange[]) {
+    const raw = encodeSnapshot(changes);
+    const compressed = await gzipAsync(raw);
+    if (compressed.byteLength > SNAPSHOT_MAX_BYTES) {
+      log("info", "development_snapshot_skipped", {
+        taskId: task.id,
+        files: changes.length,
+        bytes: compressed.byteLength,
+      });
+      await this.pool.query(
+        `DELETE FROM development_snapshots WHERE task_id=$1 AND EXISTS (
+        SELECT 1 FROM development_tasks WHERE id=$1 AND owner_token=$2 AND lease_expires_at>now())`,
+        [task.id, task.owner_token],
+      );
+      return false;
+    }
+    const bytes = changes.reduce(
+      (sum, change) => sum + (change.content ? Buffer.byteLength(change.content, "base64") : 0),
+      0,
+    );
+    await this.pool.query(
+      `INSERT INTO development_snapshots(task_id,base_sha,changes,files,bytes)
+       SELECT $1,$2,$3,$4,$5 FROM development_tasks
+       WHERE id=$1 AND owner_token=$6 AND status IN ('running','publishing') AND lease_expires_at>now()
+       ON CONFLICT(task_id) DO UPDATE SET base_sha=$2,changes=$3,files=$4,bytes=$5,created_at=now()`,
+      [task.id, baseSha, compressed, changes.length, bytes, task.owner_token],
+    );
+    return true;
+  }
+
+  async loadSnapshot(
+    taskId: string,
+  ): Promise<{ baseSha: string; changes: SnapshotChange[]; files: number; bytes: number } | undefined> {
+    const row = (
+      await this.pool.query<{ base_sha: string; changes: Buffer; files: number; bytes: number }>(
+        "SELECT base_sha,changes,files,bytes FROM development_snapshots WHERE task_id=$1",
+        [taskId],
+      )
+    ).rows[0];
+    if (!row) return undefined;
+    return {
+      baseSha: row.base_sha,
+      changes: decodeSnapshot(await gunzipAsync(row.changes)),
+      files: row.files,
+      bytes: row.bytes,
+    };
+  }
+
   async checkpoint(
     task: DevelopmentTask,
     fields: {
@@ -724,13 +790,15 @@ export class DevelopmentStore {
       prNumber?: number;
       model?: string;
       issueNumber?: number;
+      proposal?: unknown;
+      lastRevisionCommentAt?: Date;
     },
   ) {
     const result = await this.pool.query(
       `UPDATE development_tasks SET base_sha=COALESCE($3,base_sha),head_sha=COALESCE($4,head_sha),
       title=COALESCE($5,title),rule_snapshot=COALESCE($6,rule_snapshot),usage=COALESCE($7,usage),duration_ms=COALESCE($8,duration_ms),
       status=CASE WHEN $9 THEN 'publishing' ELSE status END,pr_number=COALESCE($10,pr_number),model=COALESCE($11,model),
-      issue_number=COALESCE($12,issue_number),updated_at=now()
+      issue_number=COALESCE($12,issue_number),proposal=COALESCE($13,proposal),last_revision_comment_at=COALESCE($14,last_revision_comment_at),updated_at=now()
       WHERE id=$1 AND owner_token=$2 AND status IN ('running','publishing') AND lease_expires_at>now()`,
       [
         task.id,
@@ -745,6 +813,8 @@ export class DevelopmentStore {
         fields.prNumber,
         fields.model,
         fields.issueNumber,
+        fields.proposal === undefined ? null : JSON.stringify(fields.proposal),
+        fields.lastRevisionCommentAt,
       ],
     );
     if (!result.rowCount) throw new DevelopmentError("任务执行权已失效", "cancelled");
@@ -797,7 +867,7 @@ export function developmentSource(store: DevelopmentStore): TaskSource<Developme
     claim: ({ leaseMs }) => store.claim(leaseMs),
     renew: (tasks, leaseMs) => store.renew(tasks, leaseMs),
     finish: (task, stopped) => (stopped ? store.release(task) : store.complete(task)),
-    // 模型临时故障由处理器在发布前重试；执行器不重复播放开发侧的外部写入。
+    // 发布错误放回队列；下一次接手由副作用台账先核对再继续。
     fail: (task) => store.fail(task),
     release: (task) => store.release(task),
     describe: (task) => ({

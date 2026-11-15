@@ -14,13 +14,16 @@ import { log } from "../logging.js";
 import { AgentSessionRecorder, AgentSessionRepository } from "../persistence/repositories/agent-session.repository.js";
 import { DevelopmentError, type DevelopmentTask } from "./types.js";
 import { enforceProtections, safePath, WRITING_LIMITS } from "./policy.js";
-import { collectChanges, NoChangesError, repositoryFiles } from "./changes.js";
+import { applySnapshot, collectChanges, NoChangesError, repositoryFiles } from "./changes.js";
 import { createRuleBook } from "./rules.js";
+import { snapshotRecorder } from "./snapshots.js";
 import { WORKSPACE_RULES } from "./prompt-rules.js";
 import type { DevelopmentStore } from "./store.js";
 
 type RevisionGitHub = Pick<
   GitHubClient,
+  | "developmentCommitTree"
+  | "findDevelopmentComment"
   | "installationToken"
   | "developmentSnapshot"
   | "createDevelopmentCommit"
@@ -148,9 +151,15 @@ export function createRevisionProcessor(
   const sessions = new AgentSessionRepository(store.pool);
   return async (task: DevelopmentTask, parentSignal: AbortSignal) => {
     const started = Date.now();
+    const previousDuration = task.duration_ms ?? 0;
+    const elapsed = () => previousDuration + Date.now() - started;
     const abort = new AbortController();
     const timeoutMs = config.development.timeoutMs;
-    const signal = AbortSignal.any([parentSignal, abort.signal, AbortSignal.timeout(timeoutMs)]);
+    const signal = AbortSignal.any([
+      parentSignal,
+      abort.signal,
+      AbortSignal.timeout(Math.max(0, timeoutMs - previousDuration)),
+    ]);
     const guard = async () => {
       signal.throwIfAborted();
       return store.permission(task, config);
@@ -171,16 +180,37 @@ export function createRevisionProcessor(
     }, 1000);
     let token: string | undefined;
     let publishing = false;
+    const effects = store.sideEffects(task);
     let recorder: AgentSessionRecorder | undefined;
     const record = async (attempt: number) => {
       recorder = new AgentSessionRecorder(sessions, { developmentTaskId: task.id, role: "revision", attempt });
       await recorder.start();
     };
-    const comment = (body: string) =>
-      github.createIssueComment(token!, task.repository, task.pr_number!, body, AbortSignal.timeout(15_000));
+    const comment = (body: string, purpose = "reply") =>
+      effects.once(`comment-${purpose}`, {
+        kind: "issue_comment",
+        verify: async () => {
+          const found = await github.findDevelopmentComment(
+            token!,
+            task.repository,
+            task.pr_number!,
+            `<!-- pi-dev:${task.id}:${purpose} -->`,
+            AbortSignal.timeout(15_000),
+          );
+          return found ? { id: found.id } : undefined;
+        },
+        perform: () =>
+          github.createIssueComment(
+            token!,
+            task.repository,
+            task.pr_number!,
+            `${body}\n\n<!-- pi-dev:${task.id}:${purpose} -->`,
+            AbortSignal.timeout(15_000),
+          ),
+      });
     try {
-      if (await store.laterRevision(task)) {
-        await store.finish(task, "cancelled", "后面还有新评论，合并到下一次一起处理。");
+      if (!task.proposal && (await store.laterRevision(task))) {
+        await store.finish(task, "cancelled", "后面还有新评论，合并到下一次一起处理。", elapsed());
         await store.skipNotification(task);
         return;
       }
@@ -190,13 +220,25 @@ export function createRevisionProcessor(
       const pr = await github.getPullRequest(token, task.repository, task.pr_number!, signal);
       if (pr.state !== "open" || pr.head.ref !== task.branch)
         throw new DevelopmentError("PR 已关闭或分支已变化，评论不再处理。", "cancelled");
-      const snapshot = await recorder!.step("snapshot", "获取 PR 分支最新提交", () =>
+      const latestSnapshot = await recorder!.step("snapshot", "获取 PR 分支最新提交", () =>
         github.developmentSnapshot(token!, task.repository, Number(task.repository_id), task.branch, signal),
       );
+      const snapshot = task.base_sha
+        ? {
+            sha: task.base_sha,
+            tree: await github.developmentCommitTree(token!, task.repository, task.base_sha, signal),
+          }
+        : latestSnapshot;
       const since = await store.lastRevisionAt(task);
       const thread = await recorder!.step("comments", "读取 PR 评论", () =>
         pullRequestThread(github, token!, task, pr, since),
       );
+      const latestCommentAt =
+        task.last_revision_comment_at ??
+        thread.comments.reduce<Date | undefined>((latest, comment) => {
+          const date = new Date(comment.createdAt);
+          return !latest || date > latest ? date : latest;
+        }, since);
       const originalRequest = await store.pullRequestOrigin(task);
       const ruleRows = (
         await store.pool.query(
@@ -205,16 +247,86 @@ export function createRevisionProcessor(
         )
       ).rows;
       await store.checkpoint(task, { baseSha: snapshot.sha, model: `${config.modelProvider}/${config.modelName}` });
+      let savedSnapshot = await store.loadSnapshot(task.id);
       const spent = emptyUsage();
+      addUsage(spent, (task.usage ?? {}) as Partial<AgentUsage>);
       const total = (usage: Partial<AgentUsage>) => {
         const sum = emptyUsage();
         addUsage(sum, spent);
         addUsage(sum, usage);
         return sum;
       };
+      const remainingBudget = () => {
+        const budget = config.development.budgetTokens;
+        return budget === undefined
+          ? Number.POSITIVE_INFINITY
+          : Math.max(0, budget - spent.totalTokens - spent.unreportedTokens);
+      };
+      const publish = async (commit: { sha: string; title: string; body: string }) => {
+        const current = recorder!;
+        const { sha, title: message } = commit;
+        await guard();
+        await store.checkpoint(task, { headSha: sha, title: message, publishing: true });
+        publishing = true;
+        await current.step("push", "推送到 PR 分支", async () => {
+          await effects.once("push", {
+            kind: "branch_update",
+            verify: async () => {
+              const now = await github
+                .developmentSnapshot(
+                  token!,
+                  task.repository,
+                  Number(task.repository_id),
+                  task.branch,
+                  AbortSignal.timeout(15_000),
+                )
+                .catch((error) => {
+                  if (error instanceof GitHubApiError && error.status === 404) return undefined;
+                  throw error;
+                });
+              return now?.sha === sha ? { sha } : undefined;
+            },
+            perform: async () => {
+              try {
+                await github.updateDevelopmentBranch(token!, task.repository, task.branch, sha, signal);
+                return { sha };
+              } catch (error) {
+                if (error instanceof TaskLeaseLostError || parentSignal.aborted) throw error;
+                const now = await github
+                  .developmentSnapshot(
+                    token!,
+                    task.repository,
+                    Number(task.repository_id),
+                    task.branch,
+                    AbortSignal.timeout(15_000),
+                  )
+                  .catch((checkError) => {
+                    if (checkError instanceof GitHubApiError && checkError.status === 404) return undefined;
+                    throw checkError;
+                  });
+                if (now?.sha === sha) return { sha };
+                if (error instanceof GitHubApiError && error.status === 422) {
+                  publishing = false;
+                  throw new DevelopmentError("PR 分支在修改期间有新提交，这次的改动没有推上去；请再评论一次。");
+                }
+                throw error;
+              }
+            },
+          });
+        });
+        await current.step("reply", "在 PR 里回复", () => comment(`${commit.body}\n\n提交：${sha.slice(0, 7)}`));
+        await store.checkpoint(task, { lastRevisionCommentAt: latestCommentAt });
+        await store.finish(task, "succeeded", `已按评论更新 PR #${task.pr_number}。`, elapsed());
+        await current.finish("succeeded");
+      };
+      const completedCommit = await effects.result<{ sha: string; title: string; body: string }>("commit");
+      if (completedCommit) {
+        await publish(completedCommit);
+        return;
+      }
       const runOnce = async () => {
         const current = recorder!;
-        const rules = createRuleBook(ruleRows);
+        const rules = createRuleBook(ruleRows, task.proposal ? task.rule_snapshot : undefined);
         const preparing = current.begin("workspace", "准备工作区：克隆 PR 分支");
         await workspace(
           `https://github.com/${task.repository}.git`,
@@ -225,6 +337,8 @@ export function createRevisionProcessor(
             const files = await repositoryFiles(root, snapshot.sha, signal);
             const repositoryInstructions = await readBaseFile(root, snapshot.sha, "AGENTS.md");
             preparing.done();
+            if (savedSnapshot && savedSnapshot.baseSha === snapshot.sha)
+              await applySnapshot(root, savedSnapshot.changes);
             const reads = new Set<string>(),
               written = new Set<string>(),
               redacted = new Set<string>();
@@ -240,86 +354,113 @@ export function createRevisionProcessor(
             };
             let followedUp = false,
               shortened = false;
-            const run = await agent({
-              root,
-              provider: config.modelProvider,
-              modelName: config.modelName,
-              apiKey: config.modelApiKey,
-              endpoint: config.modelEndpoint,
-              timeoutMs: timeoutMs - (Date.now() - started),
-              budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
-              signal,
-              builtinTools: WRITE_TOOLS,
-              browser: true,
-              cacheDir: config.development.cacheDir,
-              skills: ["development", "commit-pr"],
-              repositoryInstructions,
-              systemPrompt: PROMPT,
-              bridge: {
-                read: async (path, wasRedacted) => {
-                  reads.add(path);
-                  if (wasRedacted) redacted.add(path);
-                  return { rules: rules.forFile(path) };
-                },
-                // 写入前逐次检查，规则同开发任务：保护范围、覆盖前先读、含打码凭据的文件只能局部编辑。
-                write: async (path, tool) => {
-                  signal.throwIfAborted();
-                  try {
-                    safePath(path);
-                    enforceProtections([path], task.role, access.protections);
-                  } catch (error) {
-                    return { allow: false, reason: (error as Error).message };
-                  }
-                  if (tool === "write" && redacted.has(path))
-                    return { allow: false, reason: "文件含已打码的凭据，不能整体覆盖，请用 edit 局部修改" };
-                  if (tool === "write" && !reads.has(path) && !written.has(path) && existsSync(join(root, path)))
-                    return { allow: false, reason: "覆盖已有文件前先用 read 读取；局部修改请用 edit" };
-                  return { allow: true };
-                },
-                written: async (path) => {
-                  written.add(path);
-                  return { rules: rules.forFile(path, "write") };
-                },
-              },
-              onUsage: (usage) => store.checkpoint(task, { usage: total(usage) }),
-              onSession: current.agent,
-              // 先查回复字数（超了压缩一次），改了代码再补发新文件命中的团队规则（一次）。
-              followUp: async (text) => {
-                let result: RevisionResult;
-                try {
-                  result = parseRevisionResult(text);
-                } catch {
-                  return undefined;
-                }
-                if (!shortened && result.action !== "none" && result.reply.length > WRITING_LIMITS.issueReply) {
-                  shortened = true;
-                  return `回复有 ${result.reply.length} 字，超过 ${WRITING_LIMITS.issueReply} 字的上限。压缩到上限以内，只留对方需要知道的，重新输出完整的 JSON。`;
-                }
-                if (followedUp || result.action !== "change") return undefined;
-                followedUp = true;
-                return rules.followUp((await changesOf()).paths);
-              },
-              prompt: {
-                originalRequest,
-                pullRequest: thread,
-                role: task.role,
-                protections: access.protections,
-                ...rules.prompt(),
-                repository: task.repository,
-                branch: task.branch,
-                headSha: snapshot.sha,
-              },
-            });
-            await store.checkpoint(task, { usage: total(run.usage), durationMs: Date.now() - started });
-            const result = parseRevisionResult(run.text);
+            let result = task.proposal as RevisionResult | null;
+            if (result?.action === "change" && !savedSnapshot) result = null;
+            if (!result) {
+              const snapshots = snapshotRecorder(store, task, root, snapshot.sha, files);
+              let run: Awaited<ReturnType<typeof agent>>;
+              try {
+                run = await agent({
+                  root,
+                  provider: config.modelProvider,
+                  modelName: config.modelName,
+                  apiKey: config.modelApiKey,
+                  endpoint: config.modelEndpoint,
+                  timeoutMs: timeoutMs - elapsed(),
+                  budgetTokens: remainingBudget(),
+                  signal,
+                  builtinTools: WRITE_TOOLS,
+                  browser: true,
+                  cacheDir: config.development.cacheDir,
+                  skills: ["development", "commit-pr"],
+                  repositoryInstructions,
+                  systemPrompt: savedSnapshot
+                    ? `${PROMPT}\n工作区已恢复中断前的改动，先查看现状再继续，不要从头重写。`
+                    : PROMPT,
+                  bridge: {
+                    read: async (path, wasRedacted) => {
+                      reads.add(path);
+                      if (wasRedacted) redacted.add(path);
+                      return { rules: rules.forFile(path) };
+                    },
+                    // 写入前逐次检查，规则同开发任务：保护范围、覆盖前先读、含打码凭据的文件只能局部编辑。
+                    write: async (path, tool) => {
+                      signal.throwIfAborted();
+                      try {
+                        safePath(path);
+                        enforceProtections([path], task.role, access.protections);
+                      } catch (error) {
+                        return { allow: false, reason: (error as Error).message };
+                      }
+                      if (tool === "write" && redacted.has(path))
+                        return { allow: false, reason: "文件含已打码的凭据，不能整体覆盖，请用 edit 局部修改" };
+                      if (tool === "write" && !reads.has(path) && !written.has(path) && existsSync(join(root, path)))
+                        return { allow: false, reason: "覆盖已有文件前先用 read 读取；局部修改请用 edit" };
+                      return { allow: true };
+                    },
+                    written: async (path) => {
+                      written.add(path);
+                      return { rules: rules.forFile(path, "write") };
+                    },
+                  },
+                  onUsage: (usage) => store.checkpoint(task, { usage: total(usage), durationMs: elapsed() }),
+                  onSession: current.agent,
+                  // 先查回复字数（超了压缩一次），改了代码再补发新文件命中的团队规则（一次）。
+                  followUp: async (text) => {
+                    let result: RevisionResult;
+                    try {
+                      result = parseRevisionResult(text);
+                    } catch {
+                      return undefined;
+                    }
+                    if (!shortened && result.action !== "none" && result.reply.length > WRITING_LIMITS.issueReply) {
+                      shortened = true;
+                      return `回复有 ${result.reply.length} 字，超过 ${WRITING_LIMITS.issueReply} 字的上限。压缩到上限以内，只留对方需要知道的，重新输出完整的 JSON。`;
+                    }
+                    if (followedUp || result.action !== "change") return undefined;
+                    followedUp = true;
+                    return rules.followUp((await changesOf()).paths);
+                  },
+                  prompt: {
+                    originalRequest,
+                    pullRequest: thread,
+                    role: task.role,
+                    protections: access.protections,
+                    ...rules.prompt(),
+                    repository: task.repository,
+                    branch: task.branch,
+                    headSha: snapshot.sha,
+                    ...(savedSnapshot ? { resume: { files: savedSnapshot.changes.map((change) => change.path) } } : {}),
+                  },
+                });
+              } finally {
+                await snapshots.finish();
+              }
+              await store.checkpoint(task, { usage: total(run!.usage), durationMs: elapsed() });
+              result = parseRevisionResult(run!.text);
+              task.proposal = result;
+              await store.checkpoint(task, {
+                proposal: result,
+                rules: rules.snapshot(),
+                lastRevisionCommentAt: latestCommentAt,
+              });
+            }
+            await guard();
             // 只回答或不处理：工作区里即使留了改动也不推送。
             if (result.action !== "change") {
-              if (result.action === "reply")
-                await current.step("reply", "在 PR 里回复", () => comment(redactSecrets(result.reply)));
+              if (result.action === "reply") {
+                await store.checkpoint(task, { publishing: true });
+                publishing = true;
+                await current.step("reply", "在 PR 里回复", () =>
+                  comment(redactSecrets((result as { reply: string }).reply), "reply"),
+                );
+              }
+              await store.checkpoint(task, { lastRevisionCommentAt: latestCommentAt });
               await store.finish(
                 task,
                 "succeeded",
                 result.action === "none" ? "评论不需要处理。" : `已在 PR #${task.pr_number} 回复。`,
+                elapsed(),
               );
               await store.skipNotification(task);
               await current.finish("succeeded");
@@ -337,41 +478,25 @@ export function createRevisionProcessor(
             if (latest.state !== "open") throw new DevelopmentError("PR 已关闭，改动没有推送。", "cancelled");
             await guard();
             const message = redactSecrets(result.commitMessage).replace(/\s+/g, " ").trim();
-            const sha = await current.step("commit", "创建提交", () =>
-              github.createDevelopmentCommit(token!, task.repository, snapshot, changes, message, signal),
-            );
-            await guard();
-            await store.checkpoint(task, { headSha: sha, title: message, publishing: true });
-            publishing = true;
-            await current.step("push", "推送到 PR 分支", async () => {
-              try {
-                await github.updateDevelopmentBranch(token!, task.repository, task.branch, sha, signal);
-              } catch (error) {
-                // 响应丢失时按分支实际指向判断；不是快进（分支有别人的新提交）时 GitHub 明确拒绝，没有推上去。
-                const now = await github
-                  .developmentSnapshot(
+            const commit = await current.step("commit", "创建提交", () =>
+              effects.once("commit", {
+                kind: "commit",
+                verify: async () => undefined,
+                perform: async () => ({
+                  sha: await github.createDevelopmentCommit(
                     token!,
                     task.repository,
-                    Number(task.repository_id),
-                    task.branch,
-                    AbortSignal.timeout(15_000),
-                  )
-                  .catch(() => undefined);
-                if (now?.sha === sha) return;
-                if (error instanceof GitHubApiError && error.status === 422) {
-                  publishing = false;
-                  throw new DevelopmentError("PR 分支在修改期间有新提交，这次的改动没有推上去；请再评论一次。");
-                }
-                throw error;
-              }
-            });
-            await current.step("reply", "在 PR 里回复", () =>
-              comment(`${redactSecrets(result.reply)}\n\n提交：${sha.slice(0, 7)}`).catch((error) =>
-                log("error", "development_revision_comment_failed", { taskId: task.id }, error),
-              ),
+                    snapshot,
+                    changes,
+                    message,
+                    signal,
+                  ),
+                  title: message,
+                  body: redactSecrets(result.reply),
+                }),
+              }),
             );
-            await store.finish(task, "succeeded", `已按评论更新 PR #${task.pr_number}。`);
-            await current.finish("succeeded");
+            await publish(commit);
           },
           { signal },
         ).catch((error) => {
@@ -397,33 +522,48 @@ export function createRevisionProcessor(
           );
           await delay(retryDelayMs * attempt, undefined, { signal });
           await record(attempt + 1);
+          savedSnapshot = await store.loadSnapshot(task.id);
         }
     } catch (error) {
+      if (error instanceof TaskLeaseLostError) {
+        await recorder?.finish("cancelled", error.message);
+        throw error;
+      }
       if (parentSignal.reason instanceof RunnerStoppedError || parentSignal.reason instanceof TaskLeaseLostError) {
         await recorder?.finish("cancelled", parentSignal.reason.message);
         throw parentSignal.reason;
       }
       const cause = signal.aborted ? signal.reason : error;
+      const manualPublishingFailure =
+        cause instanceof DevelopmentError && cause.status === "failed" && /人工核对/.test(cause.message);
+      if (publishing && !manualPublishingFailure) {
+        await recorder?.finish("failed", (cause as Error | undefined)?.message ?? "发布步骤中断，等待下一次接手");
+        throw error;
+      }
       const status = publishing
-        ? "uncertain"
+        ? manualPublishingFailure
+          ? "failed"
+          : "uncertain"
         : cause instanceof DevelopmentError
           ? cause.status
           : signal.aborted
             ? "cancelled"
             : "failed";
       const message = publishing
-        ? "推送结果待核对，不会自动重推；请在 PR 里查看分支最新提交。"
+        ? manualPublishingFailure
+          ? redactSecrets(cause.message)
+          : "推送结果待核对，任务将在下一次接手时先核对远端。"
         : cause instanceof DevelopmentError
           ? redactSecrets(cause.message)
           : signal.aborted
             ? "处理已取消或超时。"
             : "处理评论失败，请在管理页查看任务记录后再评论一次。";
       log("error", "development_revision_failed", { taskId: task.id, repository: task.repository, status }, cause);
-      const finished = await store.finish(task, status, message);
+      const finished = await store.finish(task, status, message, elapsed());
       await store.skipNotification(task).catch(() => undefined);
       // 没改成的原因贴回 PR；取消（PR 关闭、设置变化、有更新的评论）不贴。
       if (finished && token && (status === "failed" || status === "refused"))
-        await comment(`这次没改成：${message}`).catch((error) =>
+        await comment(`这次没改成：${message}`, "failure").catch((error) =>
           log("error", "development_revision_comment_failed", { taskId: task.id }, error),
         );
       const timedOut = cause instanceof TimeoutError || (cause as Error | undefined)?.name === "TimeoutError";

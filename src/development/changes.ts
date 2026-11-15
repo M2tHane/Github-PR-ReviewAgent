@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdtemp, readFile, readlink, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { gitEnv } from "../workspace/workspace.js";
 import { DevelopmentError, type FileChange } from "./types.js";
@@ -41,6 +41,7 @@ export async function collectChanges(root: string, sha: string, files: Map<strin
   const result: Array<FileChange & { mode: string }> = [];
   for (const [path, file] of files) {
     signal.throwIfAborted();
+    safePath(path);
     if (file.mode === "160000") continue;
     const stat = await lstat(join(root, path)).catch(() => undefined);
     if (file.mode === "120000") {
@@ -138,6 +139,103 @@ async function untracked(root: string, sha: string, signal: AbortSignal) {
     return stdout.split("\0").filter(Boolean);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export interface SnapshotChange {
+  path: string;
+  content: string | null;
+  mode: string;
+}
+
+// 补丁快照保留完整文件内容（base64），不套用发布时的文件数／单文件大小限制。
+// 它仍沿用 .gitignore、路径和符号链接过滤，确保恢复不会把 Workspace 之外的内容带回任务。
+export async function collectSnapshot(
+  root: string,
+  sha: string,
+  files: Map<string, SnapshotFile>,
+  signal: AbortSignal,
+): Promise<SnapshotChange[]> {
+  const result: SnapshotChange[] = [];
+  for (const [path, file] of files) {
+    signal.throwIfAborted();
+    await snapshotPath(root, path);
+    const stat = await lstat(join(root, path)).catch(() => undefined);
+    if (file.mode === "160000") continue;
+    if (file.mode === "120000") {
+      const target = stat?.isSymbolicLink() ? await readlink(join(root, path), "buffer") : undefined;
+      if (!target || blobId(target, file.object) !== file.object)
+        throw new DevelopmentError(`不能修改或删除符号链接：${path}`);
+      continue;
+    }
+    if (!stat) {
+      result.push({ path, content: null, mode: file.mode });
+      continue;
+    }
+    if (!stat.isFile()) throw new DevelopmentError(`不能把文件改成符号链接或目录：${path}`);
+    const content = await readFile(join(root, path), { signal });
+    if (blobId(content, file.object) !== file.object)
+      result.push({ path, content: content.toString("base64"), mode: file.mode });
+  }
+  for (const path of await untracked(root, sha, signal)) {
+    signal.throwIfAborted();
+    await snapshotPath(root, path);
+    if (path.split("/")[0] === ".codegraph") continue;
+    if (path.endsWith("/")) throw new DevelopmentError(`不能新增嵌套的 Git 仓库：${path}`);
+    const stat = await lstat(join(root, path));
+    if (!stat.isFile()) throw new DevelopmentError(`不能新建符号链接：${path}`);
+    const content = await readFile(join(root, path), { signal });
+    result.push({ path, content: content.toString("base64"), mode: stat.mode & 0o111 ? "100755" : "100644" });
+  }
+  return result;
+}
+
+export interface EncodedSnapshot {
+  changes: SnapshotChange[];
+}
+
+export function encodeSnapshot(changes: SnapshotChange[]) {
+  return Buffer.from(JSON.stringify({ changes } satisfies EncodedSnapshot), "utf8");
+}
+
+export function decodeSnapshot(data: Buffer | Uint8Array): SnapshotChange[] {
+  const parsed = JSON.parse(Buffer.from(data).toString("utf8")) as EncodedSnapshot;
+  if (!parsed || !Array.isArray(parsed.changes)) throw new Error("开发快照格式无效");
+  return parsed.changes;
+}
+
+async function snapshotPath(root: string, path: string) {
+  safePath(path);
+  // Agent 可用 bash 替换父目录；只检查文件本身会沿父目录链接读到宿主机。
+  let parent = dirname(path);
+  while (parent !== ".") {
+    const stat = await lstat(join(root, parent)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (stat?.isSymbolicLink()) throw new DevelopmentError(`快照路径经过符号链接：${path}`);
+    parent = dirname(parent);
+  }
+}
+
+export async function applySnapshot(root: string, changes: SnapshotChange[]) {
+  for (const change of changes) {
+    await snapshotPath(root, change.path);
+    const path = join(root, change.path);
+    const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+      return undefined;
+    });
+    if (stat && !stat.isFile()) throw new DevelopmentError(`快照不能覆盖符号链接或目录：${change.path}`);
+    if (change.content === null) {
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      continue;
+    }
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, Buffer.from(change.content, "base64"));
+    await chmod(path, change.mode === "100755" ? 0o755 : 0o644);
   }
 }
 

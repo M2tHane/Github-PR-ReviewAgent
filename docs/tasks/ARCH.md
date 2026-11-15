@@ -28,7 +28,7 @@
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
 | ARCH-1-A | 开发任务由统一执行器在 worker 上领取（租约、心跳），和企微解耦；重启和部署不再取消任务；去掉"目标分支有新提交就放弃" | 已完成（`d477ef6`，合并 `03040e5`） |
-| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 进行中 |
+| ARCH-1-B | 开发任务补丁快照与接手续做；开发分支、提交、PR、issue 评论走副作用台账，发布中断后核对远端再继续 | 已完成（`c8729fa`、`ee51c09`）；真实 GitHub／模型演练未做 |
 | ARCH-1-C | 不经企微派任务：管理页／管理 API、给 issue 打 `pi-dev` 标签；仓库可以不绑群 | 已完成（`f51d9ad`，合并 `c2ad48f`） |
 | ARCH-1-D | 进程角色 `PROCESS_ROLE`（edge、worker、all），部署说明 | 已完成（`c0536d1`）；真实滚动部署未验收 |
 | ARCH-1-E | 线程回复加隐藏标记与发布前核对，中断后不重复回复；Review／Reply／规则提取的中断回归测试 | 已完成（`37e957c`，合并 `c72d824`） |
@@ -182,3 +182,13 @@
 - 验收（合并到 `feat/integration` 后）：`node --test dist/test/admin/*.test.js dist/test/config/*.test.js dist/test/bootstrap/*.test.js dist/test/memory/decision.test.js` 32 通过、2 跳过；`node --env-file=.env --test dist/test/admin/database-onboarding.test.js dist/test/admin/database-admin.test.js` 6/6。看过 60 仓库 1024 宽和 0 仓库 1600 宽截图。
 - 限制：没有调用真实 GitHub 安装清单、没有测试真实权限撤销；暂停的 installation 只能显示本地已有仓库。
 
+**ARCH-1-B**（2026-11-15，`arch/p1-b-resume`；首版 `c8729fa` 及其后续修订）
+
+- 改动：迁移 017 保存开发副作用台账、gzip 补丁快照、最终提案、最新评论时间和历史执行耗时基数。develop/revise 从固定基线恢复快照；已有提案跳过 Agent，commit 台账已完成时不建工作区，直接核对并继续发布。discuss/notice 的评论同样按台账和本 App 标记核对。
+- 故障回归：开发 Agent 运行中、proposal 后、commit 台账写入而 head 未落盘、分支后、PR 后分别过期旧租约并由另一个 PersistentRunner 接手；最终均只有 1 个分支和 1 个 PR。分支/PR/issue/评论已经在 GitHub 替身生效但响应丢失时，不重复写入。commit 未落台账时允许重做无引用提交，只引用最终提交。
+- revise 回归：proposal、commit、推送、回复各步骤中断后恢复，分支只推进一次、回复只发一条；保持 Agent 实际见过的评论游标，恢复期间新到的评论不会被记作已处理。
+- 快照回归：虚拟时钟验证每 5 分钟保存，真实 stop 验证最后快照落库后放回；旧 owner 不能覆盖接手实例的快照。31 个 700 KB 随机文件不受发布限制影响，gzip 约 21.8 MB 时清除旧快照并从头完成。覆盖新增、删除、可执行位、忽略文件及父目录符号链接拒绝。
+- 根因修复：`lastRevisionAt` 原来混用 PostgreSQL `started_at` 和 GitHub `created_at`，现在只比较已成功处理的 GitHub 评论时间；早/晚 5 秒两个用例均通过。恢复时不重置 token/未知预留与执行时间，排队不计时；发布失败重排增加尝试次数，到上限才 uncertain。不同 SHA 分支停止并提示人工核对。
+- 最终验证：`npm test` 306 项，181 通过、125 跳过、0 失败（39.20 秒，普通命令未加载数据库）；随后 `npm run test:db` 157/157 通过，0 跳过（106.43 秒）。定向恢复、长评论分页核对与执行权边界测试均通过。GitHub 和模型均为替身，临时 schema 在结束后删除；无真实 delivery/Job/finding/Review/reply URL。developer 用量累计断言为 150+150=300 tokens，revision 为 120 tokens，均非真实模型耗费。
+- 开销与限制：普通 commit/ref/PR 每步约增加 6 次短 SQL；快照多遍历工作区并编码压缩一次，峰值内存随改动量增长，未做生产压测。硬崩溃最多丢失最近约 5 分钟未保存改动（保存故障另记日志），耗时保守计到租约截止；正常 stop 等待最终快照。新 issue 核对最近 100 个，评论完整分页。未运行真实 GitHub/模型、真实 Webhook、跨物理机器或 OS kill 演练；未修改进程角色拆分相关文件。
+- 收尾检查：全量后 `npm run format` 检查 201 个文件，无需修改；`npm run check:docs` 36 个 Markdown 文件、306 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。

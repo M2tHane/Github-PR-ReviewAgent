@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { createHmac, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile, symlink } from "node:fs/promises";
+import { createHmac, randomUUID, randomBytes } from "node:crypto";
+import { mkdtemp, mkdir, rm, writeFile, symlink, readFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { PersistentRunner } from "../../src/jobs/runner.js";
+import { PersistentRunner, TaskLeaseLostError } from "../../src/jobs/runner.js";
 import { Database } from "../../src/persistence/database.js";
 import { useTestDatabase, waitFor } from "../helpers/database.js";
 import { DevelopmentStore, developmentSource } from "../../src/development/store.js";
+import { snapshotRecorder } from "../../src/development/snapshots.js";
 import { createDevelopmentProcessor } from "../../src/development/processor.js";
-import { collectChanges, repositoryFiles } from "../../src/development/changes.js";
+import { applySnapshot, collectChanges, collectSnapshot, repositoryFiles } from "../../src/development/changes.js";
 import { emptyUsage, ProviderError, type runAgentSession } from "../../src/review/agent.js";
 import { gitEnv } from "../../src/workspace/workspace.js";
 import type { Config } from "../../src/config/config.js";
@@ -84,6 +85,13 @@ async function setup() {
     pushes: string[] = [];
   const github = {
     installationToken: async () => "token",
+    developmentCommitTree: async () => "b".repeat(40),
+    findDevelopmentIssue: async (_token: string, _repo: string, marker: string) =>
+      issues.find((i) => i.body.includes(marker)) ? { number: 7 } : undefined,
+    findDevelopmentComment: async (_token: string, _repo: string, number: number, marker: string) => {
+      const i = issueComments.findIndex((c) => c.number === number && c.body.includes(marker));
+      return i < 0 ? undefined : { id: i + 1 };
+    },
     developmentSnapshot: async () => ({ sha, tree: "b".repeat(40) }),
     createDevelopmentCommit: async (..._args: unknown[]) => {
       calls.push("commit");
@@ -168,6 +176,7 @@ async function setup() {
     git("checkout", "--quiet", "--", ".");
     git("clean", "-fdq");
   };
+  let workspaceCount = 0;
   const process = (model = agent()) =>
     createDevelopmentProcessor(
       config,
@@ -175,6 +184,7 @@ async function setup() {
       github,
       model,
       async (_url, _token, _base, _head, run) => {
+        workspaceCount++;
         reset();
         return run(root);
       },
@@ -206,6 +216,7 @@ async function setup() {
     agent,
     process,
     getTask,
+    workspaceCount: () => workspaceCount,
     cleanup: async () => {
       await database.pool.query("DELETE FROM jobs WHERE repository_id=$1", [repoId]);
       await database.pool.query("DELETE FROM memories WHERE repository_id=$1", [repoId]);
@@ -582,7 +593,7 @@ test("PR 回调先于创建响应仍免审查；后续新提交也免审查，�
     await s.cleanup();
   }
 });
-test("PR 创建响应丢失仅只读核对，不重复创建；不可核对保留 uncertain", { skip: !fixture.url }, async () => {
+test("PR 创建响应丢失仅只读核对，不重复创建；不可核对时由执行器重排", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
     const task = await s.enqueue();
@@ -598,14 +609,15 @@ test("PR 创建响应丢失仅只读核对，不重复创建；不可核对保�
     assert.equal(s.calls.filter((x) => x === "pr").length, 1);
     const uncertain = await s.enqueue();
     s.github.findDevelopmentPullRequest = async () => [];
-    await s.process()(uncertain, new AbortController().signal);
-    assert.equal((await s.getTask(uncertain.id)).status, "uncertain");
+    await assert.rejects(s.process()(uncertain, new AbortController().signal), /timeout/);
+    await s.store.fail(uncertain);
+    assert.equal((await s.getTask(uncertain.id)).status, "queued");
     assert.equal(s.calls.filter((x) => x === "pr").length, 2);
   } finally {
     await s.cleanup();
   }
 });
-test("发布租约过期隔离旧执行权，发布/发送中断保留 uncertain", { skip: !fixture.url }, async () => {
+test("发布租约过期隔离旧执行权，发布中断重新领取，发送中断保留 uncertain", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
     const task = await s.enqueue();
@@ -617,12 +629,13 @@ test("发布租约过期隔离旧执行权，发布/发送中断保留 uncertain
     await s.store.claim();
     await s.store.recover(s.botId);
     const row = await s.getTask(task.id);
-    assert.equal(row.status, "uncertain");
+    assert.equal(row.status, "running");
+    assert.equal(row.attempt, 2);
     assert.equal(row.notification_status, "uncertain");
     await assert.rejects(s.store.permission(task, s.config), /取消/);
     await assert.rejects(s.store.checkpoint(task, { prNumber: 123 }), /执行权/);
     await s.store.finish(task, "succeeded", "stale");
-    assert.equal((await s.getTask(task.id)).status, "uncertain");
+    assert.equal((await s.getTask(task.id)).status, "running");
   } finally {
     await s.cleanup();
   }
@@ -1302,14 +1315,21 @@ test("issue 讨论：评论排讨论回复，只有提需求的人说“开始�
     await run(discussion);
     assert.equal((await s.getTask(discussion.id)).status, "succeeded");
     assert.equal((await s.getTask(discussion.id)).notification_status, "skipped", "讨论回复不发群");
-    assert.deepEqual(s.issueComments.at(-1), { number: 7, body: "上限按 1 万做，超出时报错。没问题请回复“开始”。" });
+    assert.deepEqual(s.issueComments.at(-1), {
+      number: 7,
+      body: `上限按 1 万做，超出时报错。没问题请回复“开始”。\n\n<!-- pi-dev:${discussion.id}:discussion -->`,
+    });
     assert.equal(prompts.at(-1).originalRequest, "修改代码");
     assert.equal(prompts.at(-1).issue.comments[0].author, "bob");
     assert.deepEqual(prompts.at(-1).requesterLogins, ["alice"]);
     // 别人说“开始”不算数，回一条提示。
     assert.deepEqual(await comment(s, 102, "bob", "开始"), { kind: "accepted", taskKind: "notice" });
-    await run((await s.store.claim())!);
-    assert.equal(s.issueComments.at(-1)!.body, "只有提需求的 @alice 回复“开始”才会开工。");
+    const notice = (await s.store.claim())!;
+    await run(notice);
+    assert.equal(
+      s.issueComments.at(-1)!.body,
+      `只有提需求的 @alice 回复“开始”才会开工。\n\n<!-- pi-dev:${notice.id}:notice -->`,
+    );
     // 讨论里顺口提到“开始”不算指令。
     assert.equal((await comment(s, 103, "Alice", "那就开始吧，上限 1 万")).taskKind, "discuss");
     await s.database.pool.query("DELETE FROM development_tasks WHERE message_id='issue-comment:103'");
@@ -1325,7 +1345,10 @@ test("issue 讨论：评论排讨论回复，只有提需求的人说“开始�
     assert.equal(done.pr_number, 42);
     assert.equal(done.notification_status, "pending", "开发结果照常通知群里");
     assert.match(s.prBodies.at(-1)!, /\n\nCloses #7$/);
-    assert.deepEqual(s.issueComments.at(-1), { number: 7, body: "PR 建好了：#42" });
+    assert.deepEqual(s.issueComments.at(-1), {
+      number: 7,
+      body: `PR 建好了：#42\n\n<!-- pi-dev:${develop.id}:issue-pr -->`,
+    });
     const opened = await s.getTask(origin.id);
     assert.deepEqual(
       [opened.status, opened.result],
@@ -1367,7 +1390,10 @@ test("issue 里开始后仍有没定的地方：把问题贴成评论、回到�
     const refused = (await s.store.claim())!;
     await s.process(s.agent("src/protected.ts"))(refused, new AbortController().signal);
     assert.equal((await s.getTask(refused.id)).status, "refused");
-    assert.match(s.issueComments.at(-1)!.body, /^这次没有建 PR：已拒绝整个任务[\s\S]*再回复“开始”。$/);
+    assert.match(
+      s.issueComments.at(-1)!.body,
+      /^这次没有建 PR：已拒绝整个任务[\s\S]*再回复“开始”。\n\n<!-- pi-dev:[^:]+:issue-failure -->$/,
+    );
     assert.equal(await status(), "discussing");
   } finally {
     await s.cleanup();
@@ -1523,7 +1549,10 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
     assert.equal(changed.notification_status, "pending", "改了代码才通知群里");
     assert.equal(changed.title, "fix: value 改为 3");
     assert.deepEqual(s.pushes, [`${branch}@${s.head}`], "推到原来的开发分支");
-    assert.deepEqual(s.issueComments.at(-1), { number: 42, body: `${reply}\n\n提交：${s.head.slice(0, 7)}` });
+    assert.deepEqual(s.issueComments.at(-1), {
+      number: 42,
+      body: `${reply}\n\n提交：${s.head.slice(0, 7)}\n\n<!-- pi-dev:${revise.id}:reply -->`,
+    });
     assert.equal(prompts[0].originalRequest, "修改代码");
     assert.deepEqual(
       prompts[0].pullRequest.comments.map((c: any) => [c.author, c.new, c.body]),
@@ -1539,7 +1568,10 @@ test("开发 PR 的评论：改代码推到同一分支并在 PR 回复、通知
     const answered = await s.getTask(question.id);
     assert.deepEqual([answered.status, answered.notification_status], ["succeeded", "skipped"]);
     assert.equal(s.pushes.length, 1);
-    assert.deepEqual(s.issueComments.at(-1), { number: 42, body: "项目里同类值都直接写在这里。" });
+    assert.deepEqual(s.issueComments.at(-1), {
+      number: 42,
+      body: `项目里同类值都直接写在这里。\n\n<!-- pi-dev:${question.id}:reply -->`,
+    });
     assert.deepEqual(
       prompts[1].pullRequest.comments.map((c: any) => c.new),
       [false, true],
@@ -1889,7 +1921,7 @@ for (const kind of ["discuss", "revise", "notice"] as const) {
   });
 }
 
-test("停止发布中的任务保留 uncertain；企微恢复不取消活跃租约", { skip: !fixture.url }, async () => {
+test("停止发布中的任务放回队列；企微恢复不取消活跃租约", { skip: !fixture.url }, async () => {
   const s = await setup();
   try {
     const task = await s.enqueue();
@@ -1898,10 +1930,10 @@ test("停止发布中的任务保留 uncertain；企微恢复不取消活跃租�
     await s.store.checkpoint(task, { publishing: true, headSha: s.head });
     await s.store.release(task);
     const row = await s.getTask(task.id);
-    assert.equal(row.status, "uncertain");
+    assert.equal(row.status, "queued");
     assert.equal(row.owner_token, null);
     assert.equal(row.attempt, 1);
-    assert.equal(await s.store.claim(), undefined);
+    assert.equal((await s.store.claim())!.attempt, 1);
   } finally {
     await s.cleanup();
   }
@@ -2029,3 +2061,527 @@ test("管理页和 issue 标签派的任务没有企微 Bot，也由执行器领
     await s.cleanup();
   }
 });
+
+// 接手用另一个真实执行器，初次执行不再续租；过期的 owner 不能写回。
+async function expireDevelopment(s: Awaited<ReturnType<typeof setup>>, task: DevelopmentTask): Promise<never> {
+  await s.database.pool.query(
+    "UPDATE development_tasks SET lease_expires_at=now()-interval '1 millisecond' WHERE id=$1",
+    [task.id],
+  );
+  throw new TaskLeaseLostError("模拟 worker 崩溃");
+}
+async function reclaimDevelopment(s: Awaited<ReturnType<typeof setup>>, id: string, agent: typeof runAgentSession) {
+  const runner = new PersistentRunner(developmentSource(s.store), s.process(agent), 10, {
+    leaseMs: 5000,
+    heartbeatMs: 100,
+  });
+  try {
+    await runner.start();
+    await waitFor(async () =>
+      ["succeeded", "discussing", "failed", "cancelled", "uncertain"].includes((await s.getTask(id)).status),
+    );
+  } finally {
+    await runner.stop();
+  }
+  return s.getTask(id);
+}
+
+for (const stage of ["agent", "proposal", "commit", "branch", "pr"] as const) {
+  test(`开发恢复：${stage} 中断后另一执行器接手，复用快照/提交且只建一个分支和 PR`, {
+    skip: !fixture.url,
+  }, async () => {
+    const s = await setup();
+    try {
+      if (stage === "proposal")
+        await s.database.pool.query(
+          `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,confidence,status,source_fingerprint)
+         VALUES($1,1,$2,1,'engineering_rule','代码规则','使用常量','便于维护','{"paths":["src/**"]}','{"pullRequestNumber":1}',1,'ACTIVE',$3)`,
+          [randomUUID(), s.repoId, randomUUID()],
+        );
+      const task = await s.enqueue();
+      let interrupted = false;
+      const checkpoint = s.store.checkpoint.bind(s.store);
+      s.store.checkpoint = async (task, fields) => {
+        await checkpoint(task, fields);
+        if (stage === "proposal" && fields.proposal && !interrupted) {
+          interrupted = true;
+          await expireDevelopment(s, task);
+        }
+      };
+      const sideEffects = s.store.sideEffects.bind(s.store);
+      s.store.sideEffects = (task) => {
+        const effects = sideEffects(task);
+        const once = effects.once.bind(effects);
+        effects.once = async (key, options) => {
+          const result = await once(key, options);
+          if (stage === key && !interrupted) {
+            interrupted = true;
+            await expireDevelopment(s, task);
+          }
+          return result;
+        };
+        return effects;
+      };
+      const agent: typeof runAgentSession = async (input) => {
+        const result = await s.agent()(input);
+        if (stage === "agent") {
+          // 代表五分钟定时保存已落盘；后续硬中断的 finally 不能覆盖它。
+          const files = await repositoryFiles(input.root, s.sha, input.signal!);
+          await s.store.saveSnapshot(task, s.sha, await collectSnapshot(input.root, s.sha, files, input.signal!));
+          await expireDevelopment(s, task);
+        }
+        return result;
+      };
+      await assert.rejects(s.process(agent)(task, new AbortController().signal), /模拟 worker 崩溃/);
+      const before = await s.getTask(task.id);
+      if (stage === "commit") assert.equal(before.head_sha, null, "commit 已 done 但 head checkpoint 未写入");
+      let resumed = 0;
+      const row = await reclaimDevelopment(s, task.id, async (input) => {
+        resumed++;
+        assert.equal(stage, "agent", "proposal/commit 后不再调用 Agent");
+        assert.deepEqual((input.prompt as any).resume.files, ["src/normal.ts"]);
+        assert.match(input.systemPrompt!, /不要从头重写/);
+        assert.match(await readFile(join(input.root, "src/normal.ts"), "utf8"), /value = 2/);
+        assert.equal(input.budgetTokens, s.config.development.budgetTokens! - 150);
+        return s.agent()(input);
+      });
+      assert.equal(row.status, "succeeded", row.result);
+      assert.equal(row.attempt, 2);
+      assert.equal(resumed, stage === "agent" ? 1 : 0);
+      assert.equal(s.workspaceCount(), ["agent", "proposal"].includes(stage) ? 2 : 1);
+      assert.equal(row.usage.totalTokens, stage === "agent" ? 300 : 150);
+      assert(row.duration_ms >= before.duration_ms);
+      assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
+    } finally {
+      await s.cleanup();
+    }
+  });
+}
+
+for (const stage of ["branch", "pr"] as const) {
+  test(`开发恢复：${stage} 已在 GitHub 生效但响应丢失，pending 先核对不再写入`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    try {
+      const task = await s.enqueue();
+      if (stage === "branch") {
+        const create = s.github.createDevelopmentBranch;
+        s.github.createDevelopmentBranch = async () => {
+          await create();
+          return expireDevelopment(s, task);
+        };
+        s.github.developmentSnapshot = async (..._args: unknown[]) => ({ sha: s.head, tree: "b".repeat(40) });
+        // 首次工作区仍固定在真正的基线。
+        await s.store.checkpoint(task, { baseSha: s.sha });
+        task.base_sha = s.sha;
+      } else {
+        const create = s.github.createDevelopmentPullRequest;
+        s.github.createDevelopmentPullRequest = async (...args) => {
+          await create(...args);
+          return expireDevelopment(s, task);
+        };
+        s.github.findDevelopmentPullRequest = async () =>
+          s.calls.includes("pr")
+            ? [
+                {
+                  number: 42,
+                  head: { sha: s.head, ref: task.branch, repo: { full_name: s.repository } },
+                  base: { ref: "dev" },
+                },
+              ]
+            : [];
+      }
+      await assert.rejects(s.process()(task, new AbortController().signal), /模拟 worker 崩溃/);
+      assert.equal(
+        (await s.database.pool.query("SELECT status FROM side_effects WHERE key=$1", [`${task.id}:${stage}`])).rows[0]
+          .status,
+        "pending",
+      );
+      const row = await reclaimDevelopment(s, task.id, async () => {
+        throw new Error("不应重跑 Agent");
+      });
+      assert.equal(row.status, "succeeded", row.result);
+      assert.deepEqual(s.calls, ["commit", "branch", "pr"]);
+      assert.equal(s.workspaceCount(), 1);
+    } finally {
+      await s.cleanup();
+    }
+  });
+}
+
+test("停止放回时保存代码快照，重新领取保留耗时与用量并从工作区继续", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  const task = await s.enqueue();
+  await s.store.release(task);
+  let started = false;
+  const runner = new PersistentRunner(
+    developmentSource(s.store),
+    s.process(async (input) => {
+      await s.agent()(input);
+      started = true;
+      return new Promise((_resolve, reject) =>
+        input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true }),
+      );
+    }),
+    10,
+  );
+  try {
+    await runner.start();
+    await waitFor(async () => started);
+    await runner.stop();
+    const stopped = await s.getTask(task.id);
+    assert.equal(stopped.status, "queued");
+    assert.equal((await s.store.loadSnapshot(task.id))!.changes[0]!.path, "src/normal.ts");
+    const row = await reclaimDevelopment(s, task.id, async (input) => {
+      assert.match(await readFile(join(input.root, "src/normal.ts"), "utf8"), /value = 2/);
+      assert((input.prompt as any).resume);
+      assert(input.timeoutMs <= s.config.development.timeoutMs - stopped.duration_ms);
+      return s.agent()(input);
+    });
+    assert.equal(row.status, "succeeded");
+    assert.equal(row.attempt, 1);
+    assert.equal(row.usage.totalTokens, 300);
+    assert(row.duration_ms >= stopped.duration_ms);
+  } finally {
+    await runner.stop();
+    await s.cleanup();
+  }
+});
+
+test("revise 推进分支生效、回复前崩溃：不重建工作区，分支只推进一次且评论只发一条", {
+  skip: !fixture.url,
+}, async () => {
+  const s = await setup();
+  try {
+    const origin = await s.enqueue();
+    await s.process()(origin, new AbortController().signal);
+    s.pull.ref = origin.branch;
+    await prComment(s, 8001, "carol", "改为 3");
+    const task = (await s.store.claim())!;
+    const push = s.github.updateDevelopmentBranch;
+    s.github.updateDevelopmentBranch = async (...args) => {
+      await push(...args);
+      return expireDevelopment(s, task);
+    };
+    await assert.rejects(
+      s.process(revisionAgent({ action: "change", reply: "已修改", commitMessage: "fix: 修改常量" }))(
+        task,
+        new AbortController().signal,
+      ),
+      /模拟 worker 崩溃/,
+    );
+    s.github.developmentSnapshot = async () => ({ sha: s.head, tree: "b".repeat(40) });
+    const count = s.workspaceCount();
+    const row = await reclaimDevelopment(s, task.id, async () => {
+      throw new Error("不应重跑 Agent");
+    });
+    assert.equal(row.status, "succeeded", row.result);
+    assert.equal(s.workspaceCount(), count);
+    assert.equal(s.pushes.length, 1);
+    assert.equal(s.issueComments.length, 1);
+    assert.match(s.issueComments[0]!.body, /已修改/);
+    assert.equal(row.usage.totalTokens, 120);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+for (const stage of ["issue", "discuss", "notice"] as const) {
+  test(`${stage} 写入生效但响应丢失，接手只读核对后完成`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    try {
+      let task = await s.enqueue();
+      if (stage !== "issue") {
+        await s.process(issueAgent(s, [issueAnswer]))(task, new AbortController().signal);
+        await comment(s, 8101, "bob", stage === "notice" ? "开始" : "请解释一下");
+        task = (await s.store.claim())!;
+      }
+      if (stage === "issue") {
+        const create = s.github.createIssue;
+        s.github.createIssue = async (...args) => {
+          await create(...args);
+          return expireDevelopment(s, task);
+        };
+      } else {
+        const create = s.github.createIssueComment;
+        s.github.createIssueComment = async (...args) => {
+          await create(...args);
+          return expireDevelopment(s, task);
+        };
+      }
+      await assert.rejects(
+        s.process(issueAgent(s, [issueAnswer]))(task, new AbortController().signal),
+        /模拟 worker 崩溃/,
+      );
+      const row = await reclaimDevelopment(s, task.id, async () => {
+        throw new Error("proposal 已保存，不应再跑 Agent");
+      });
+      assert.equal(row.status, stage === "issue" ? "discussing" : "succeeded", row.result);
+      assert.equal(s.issues.length, 1);
+      assert.equal(s.issueComments.length, stage === "issue" ? 0 : 1);
+    } finally {
+      await s.cleanup();
+    }
+  });
+}
+
+test("快照不套发布文件数/大小限制，gzip 超过 20 MB 清除旧快照且接手从头完成", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    await s.store.saveSnapshot(task, s.sha, [{ path: "old.txt", content: "b2xk", mode: "100644" }]);
+    for (let i = 0; i < 31; i++) await writeFile(join(s.root, `temp-${i}.bin`), randomBytes(700_000));
+    const files = await repositoryFiles(s.root, s.sha, new AbortController().signal);
+    const changes = await collectSnapshot(s.root, s.sha, files, new AbortController().signal);
+    assert.equal(changes.length, 31);
+    assert.equal(await s.store.saveSnapshot(task, s.sha, changes), false);
+    assert.equal(await s.store.loadSnapshot(task.id), undefined);
+    await assert.rejects(expireDevelopment(s, task));
+    const row = await reclaimDevelopment(s, task.id, async (input) => {
+      assert.equal((input.prompt as any).resume, undefined);
+      return s.agent()(input);
+    });
+    assert.equal(row.status, "succeeded", row.result);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+for (const offset of [-5000, 5000]) {
+  test(`评论时间比数据库时钟${offset}毫秒，下一次只把后续 GitHub 评论标为 new`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    try {
+      const origin = await s.enqueue();
+      await s.process()(origin, new AbortController().signal);
+      s.pull.ref = origin.branch;
+      const prompts: any[] = [];
+      await prComment(s, 8201, "carol", "第一次问题");
+      const dbNow = (await s.database.pool.query("SELECT now() at")).rows[0].at.getTime();
+      s.prComments[0]!.created_at = new Date(dbNow + offset).toISOString();
+      await s.process(revisionAgent({ action: "reply", reply: "答复" }, prompts))(
+        (await s.store.claim())!,
+        new AbortController().signal,
+      );
+      await prComment(s, 8202, "carol", "第二次问题");
+      s.prComments[1]!.created_at = new Date(dbNow + offset + 1000).toISOString();
+      await s.process(revisionAgent({ action: "reply", reply: "答复" }, prompts))(
+        (await s.store.claim())!,
+        new AbortController().signal,
+      );
+      assert.deepEqual(
+        prompts[1].pullRequest.comments.map((c: any) => c.new),
+        [false, true],
+      );
+    } finally {
+      await s.cleanup();
+    }
+  });
+}
+
+test("五分钟定时快照、最终快照串行落盘；失去执行权的旧 worker 不能覆盖新快照", { skip: !fixture.url }, async (t) => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    const files = await repositoryFiles(s.root, s.sha, new AbortController().signal);
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    const snapshots = snapshotRecorder(s.store, task, s.root, s.sha, files);
+    await writeFile(join(s.root, "src/normal.ts"), "periodic\n");
+    t.mock.timers.tick(5 * 60_000 - 1);
+    assert.equal(await s.store.loadSnapshot(task.id), undefined);
+    t.mock.timers.tick(1);
+    await waitFor(async () => Boolean(await s.store.loadSnapshot(task.id)));
+    assert.equal(
+      Buffer.from((await s.store.loadSnapshot(task.id))!.changes[0]!.content!, "base64").toString(),
+      "periodic\n",
+    );
+    await writeFile(join(s.root, "src/normal.ts"), "final\n");
+    await snapshots.finish();
+    t.mock.timers.reset();
+    assert.equal(
+      Buffer.from((await s.store.loadSnapshot(task.id))!.changes[0]!.content!, "base64").toString(),
+      "final\n",
+    );
+    await s.store.release(task);
+    const successor = (await s.store.claim())!;
+    await s.store.saveSnapshot(successor, s.sha, [{ path: "new.txt", content: "bmV3", mode: "100644" }]);
+    await s.store.saveSnapshot(task, s.sha, [{ path: "stale.txt", content: "b2xk", mode: "100644" }]);
+    assert.equal((await s.store.loadSnapshot(task.id))!.changes[0]!.path, "new.txt");
+    await assert.rejects(
+      s.store.sideEffects(task).once("stale-comment", {
+        kind: "issue_comment",
+        verify: async () => undefined,
+        perform: async () => {
+          throw new Error("不能发请求");
+        },
+      }),
+      /执行权/,
+    );
+  } finally {
+    t.mock.timers.reset();
+    await s.cleanup();
+  }
+});
+
+test("发布核对持续不可用，达到尝试上限才 uncertain；不同 SHA 分支直接人工核对", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    let task = await s.enqueue();
+    const id = task.id;
+    s.github.createDevelopmentBranch = async () => {
+      s.calls.push("branch");
+      throw new Error("network unavailable");
+    };
+    s.github.developmentSnapshot = async () => ({ sha: s.sha, tree: "b".repeat(40) });
+    await assert.rejects(s.process()(task, new AbortController().signal), /network/);
+    await s.store.fail(task);
+    // 基线 tree 直接按固定 SHA 读；分支核对持续失败。
+    s.github.developmentSnapshot = async (_token?: string, _repo?: string, _id?: number, branch?: string) => {
+      if (branch?.startsWith("bot/")) throw new Error("verification unavailable");
+      return { sha: s.sha, tree: "b".repeat(40) };
+    };
+    for (let attempt = 2; attempt <= 4; attempt++) {
+      task = (await s.store.claim())!;
+      assert.equal(task.attempt, attempt);
+      await assert.rejects(s.process()(task, new AbortController().signal), /verification/);
+      await s.store.fail(task);
+      assert.equal((await s.getTask(id)).status, attempt < 4 ? "queued" : "uncertain");
+    }
+    assert.deepEqual(s.calls, ["commit", "branch"], "核对失败时没有重复写入");
+    assert.equal(await s.store.claim(), undefined);
+
+    const conflict = await s.enqueue();
+    s.github.developmentSnapshot = async () => ({ sha: s.sha, tree: "b".repeat(40) });
+    await assert.rejects(s.process()(conflict, new AbortController().signal), /network/);
+    await s.store.fail(conflict);
+    const resumed = (await s.store.claim())!;
+    await s.process()(resumed, new AbortController().signal);
+    assert.equal((await s.getTask(conflict.id)).status, "failed");
+    assert.match((await s.getTask(conflict.id)).result, /人工核对/);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("快照恢复校验父目录链接，保留新增、删除与可执行位并过滤忽略文件", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const signal = new AbortController().signal;
+    const files = await repositoryFiles(s.root, s.sha, signal);
+    await writeFile(join(s.root, ".gitignore"), "cache/\n");
+    await mkdir(join(s.root, "cache"));
+    await writeFile(join(s.root, "cache/tmp"), "private cache");
+    await mkdir(join(s.root, ".codegraph"));
+    await writeFile(join(s.root, ".codegraph/index"), "index");
+    await rm(join(s.root, "src/normal.ts"));
+    await writeFile(join(s.root, "run.sh"), "#!/bin/sh\n", { mode: 0o755 });
+    const changes = await collectSnapshot(s.root, s.sha, files, signal);
+    assert.deepEqual(changes.map((c) => c.path).sort(), [".gitignore", "run.sh", "src/normal.ts"]);
+    assert.equal(changes.find((c) => c.path === "run.sh")!.mode, "100755");
+    assert.equal(changes.find((c) => c.path === "src/normal.ts")!.content, null);
+    await rm(join(s.root, "run.sh"));
+    await applySnapshot(s.root, changes);
+    assert.equal(await readFile(join(s.root, "run.sh"), "utf8"), "#!/bin/sh\n");
+    await rm(join(s.root, "src"), { recursive: true });
+    await symlink("/tmp", join(s.root, "src"));
+    await assert.rejects(collectSnapshot(s.root, s.sha, files, signal), /符号链接/);
+    await assert.rejects(
+      applySnapshot(s.root, [{ path: "src/test", content: "dGVzdA==", mode: "100644" }]),
+      /符号链接/,
+    );
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test("commit 请求成功但台账未落盘：允许孤立提交重做，只有一个提交被分支引用", { skip: !fixture.url }, async () => {
+  const s = await setup();
+  try {
+    const task = await s.enqueue();
+    let commits = 0;
+    const referenced: string[] = [];
+    s.github.createDevelopmentCommit = async () => {
+      commits++;
+      if (commits === 1) return expireDevelopment(s, task);
+      return s.head;
+    };
+    s.github.createDevelopmentBranch = async (...args: unknown[]) => {
+      referenced.push(String(args[3]));
+    };
+    await assert.rejects(s.process()(task, new AbortController().signal), /模拟 worker 崩溃/);
+    const row = await reclaimDevelopment(s, task.id, async () => {
+      throw new Error("已有 proposal");
+    });
+    assert.equal(row.status, "succeeded", row.result);
+    assert.equal(commits, 2);
+    assert.deepEqual(referenced, [s.head]);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+for (const stage of ["proposal", "commit", "reply"] as const) {
+  test(`revise ${stage} 中断后复用结果，保持原评论游标且回复去重`, { skip: !fixture.url }, async () => {
+    const s = await setup();
+    try {
+      const origin = await s.enqueue();
+      await s.process()(origin, new AbortController().signal);
+      s.pull.ref = origin.branch;
+      await prComment(s, 8301, "carol", "改为 3");
+      const task = (await s.store.claim())!;
+      const observed = s.prComments[0]!.created_at;
+      let interrupted = false;
+      const checkpoint = s.store.checkpoint.bind(s.store);
+      s.store.checkpoint = async (current, fields) => {
+        await checkpoint(current, fields);
+        if (!interrupted && stage === "proposal" && fields.proposal) {
+          interrupted = true;
+          await expireDevelopment(s, current);
+        }
+      };
+      const sideEffects = s.store.sideEffects.bind(s.store);
+      s.store.sideEffects = (current) => {
+        const effects = sideEffects(current);
+        const once = effects.once.bind(effects);
+        effects.once = async (key, options) => {
+          const result = await once(key, options);
+          if (!interrupted && stage === "commit" && key === "commit") {
+            interrupted = true;
+            await expireDevelopment(s, current);
+          }
+          return result;
+        };
+        return effects;
+      };
+      if (stage === "reply") {
+        const comment = s.github.createIssueComment;
+        s.github.createIssueComment = async (...args) => {
+          await comment(...args);
+          return expireDevelopment(s, task);
+        };
+      }
+      await assert.rejects(
+        s.process(revisionAgent({ action: "change", reply: "已修改", commitMessage: "fix: 修改常量" }))(
+          task,
+          new AbortController().signal,
+        ),
+        /模拟 worker 崩溃/,
+      );
+      const workspaceCount = s.workspaceCount();
+      s.prComments.push({
+        id: 8302,
+        body: "期间又发的新问题",
+        created_at: new Date(new Date(observed).getTime() + 1000).toISOString(),
+        user: { login: "carol", type: "User" },
+      });
+      const row = await reclaimDevelopment(s, task.id, async () => {
+        throw new Error("不应再次调用 Agent");
+      });
+      assert.equal(row.status, "succeeded", row.result);
+      assert.equal(s.workspaceCount(), workspaceCount + (stage === "proposal" ? 1 : 0));
+      assert.equal(row.last_revision_comment_at.toISOString(), observed);
+      assert.equal(s.pushes.length, 1);
+      assert.equal(s.issueComments.length, 1);
+    } finally {
+      await s.cleanup();
+    }
+  });
+}

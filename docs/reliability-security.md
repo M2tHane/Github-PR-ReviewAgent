@@ -145,7 +145,7 @@ repository
 
 - 最多执行 5 次；等待 30 秒、1、2、4 分钟（单次最长 15 分钟），能撑过一次几分钟的服务故障。
 - 服务方给了 Retry-After 或限流重置时间时照它等，最长 1 小时。
-- Token 预算按任务累计：重试沿用同一个任务，之前尝试用掉的 Token（含未回报的预留）从预算里扣掉，用完就不再重试。PR Review、Reply 和健康检查都这样；Decision Extract 没有 agent run 记录，仍按单次预算。
+- Token 预算按任务累计：重试沿用同一个任务，之前尝试用掉的 Token（含未回报的预留）从预算里扣掉，用完就不再重试。PR Review、Reply、健康检查和开发任务都这样；Decision Extract 没有 agent run 记录，仍按单次预算。
 
 不可持续重试：
 
@@ -165,7 +165,7 @@ repository
 - **领取原子性**：领取在一把全局 advisory lock 下进行，同一个 PR 同一时间只跑一个任务（Review、Reply、Decision Extract），同仓库不同 PR 的任务可以同时跑：Reply 要按回复时间处理，同一 PR 的 Review 和 Reply 读写同一批 finding；规则抽取只产生候选、不影响召回，不需要跨 PR 串行。健康检查不受这条限制，但有多个槽位时至少留一个给 PR 任务。
 - **租约**：领取时写 `lease_token`、`locked_by`、`lease_expires_at`（60 秒），Worker 每 5 秒续租。只有持有租约的实例能写回结果。
 - **实例崩溃**：租约过期的任务在下一次领取时重新排队；已被要求取消的直接结束；失联满 3 次的标为 failed，防止一个任务反复拖垮实例。对应的 running agent run 标为 cancelled。
-- **正常停止（部署）**：不再领取新任务，中止正在跑的会话，任务放回队列且不计入尝试次数。Reply 已暂存的 pending 结果保留，接手时先按线程和隐藏标记核对 GitHub，再决定补记账或发布；已经进入 `uncertain` 的发布记录不自动重发。
+- **正常停止（部署）**：不再领取新任务，中止正在跑的会话，开发任务（包括 `publishing`）放回队列且不计入尝试次数。开发 Agent 的工作区改动在放回前写入数据库 gzip 快照；接手时从固定 `base_sha` 恢复，若最终 `proposal` 和所需快照已保存则跳过 Agent；commit 台账已完成时直接继续发布，不再建立工作区。快照每 5 分钟及 Agent 结束时保存，超过 20 MB 清除旧快照并记日志；保存按顺序完成并检查 owner_token，旧实例不能覆盖接手实例。开发任务的提交、分支、PR、issue 和评论都经 `side_effects` 台账处理：`pending` 先只读核对远端，核对到补记 `done`，核对不到才重做。issue/评论核对同时检查本 App 身份与隐藏标记；分支 SHA 不一致时停止并交人工核对。任务耗时和 token 用量跨接手累计，排队时间不计入时限，未回报用量仍占预算。只有核对不可用且尝试耗尽才进入 `uncertain`；PR Review 的发布台账和企微通知状态保持原规则。
 - **跨实例取消**：PR 关闭、有新提交、仓库停用时，本实例的会话立即中止；其他实例上的任务写入 `cancel_requested`，执行实例续租时看到即中止。
 - **升级**：迁移给已有 running 任务 10 分钟租约，让旧版本进程跑完。
 - **探针**：`GET /healthz` 只看进程；`GET /readyz` 检查数据库，停止中返回 503。

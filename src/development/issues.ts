@@ -6,6 +6,7 @@ import { READ_ONLY_TOOLS } from "../pi/session.js";
 import { readBaseFile, withWorkspace } from "../workspace/workspace.js";
 import { parseModelJson, requiredText, strictObject } from "../shared/model-json.js";
 import { redactSecrets } from "../health/secrets.js";
+import { addUsage, emptyUsage, type AgentUsage } from "../pi/types.js";
 import { log } from "../logging.js";
 import { AgentSessionRecorder, AgentSessionRepository } from "../persistence/repositories/agent-session.repository.js";
 import { DevelopmentError, type DevelopmentTask } from "./types.js";
@@ -14,7 +15,12 @@ import type { DevelopmentStore } from "./store.js";
 
 type IssueGitHub = Pick<
   GitHubClient,
-  "installationToken" | "developmentSnapshot" | "getIssue" | "listIssueComments" | "createIssueComment"
+  | "findDevelopmentComment"
+  | "installationToken"
+  | "developmentSnapshot"
+  | "getIssue"
+  | "listIssueComments"
+  | "createIssueComment"
 >;
 
 // 交给模型的讨论全文最多这么多字；更早的评论省略，正文和最近的讨论总是保留。
@@ -93,12 +99,19 @@ export function createDiscussionProcessor(
   const sessions = new AgentSessionRepository(store.pool);
   return async (task: DevelopmentTask, parentSignal: AbortSignal) => {
     const started = Date.now();
-    const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(config.agentTimeoutMs)]);
+    const previousDuration = task.duration_ms ?? 0;
+    const elapsed = () => previousDuration + Date.now() - started;
+    const signal = AbortSignal.any([
+      parentSignal,
+      AbortSignal.timeout(Math.max(0, config.agentTimeoutMs - previousDuration)),
+    ]);
     const recorder = new AgentSessionRecorder(sessions, { developmentTaskId: task.id, role: "discussion", attempt: 1 });
+    const effects = store.sideEffects(task);
+    let publishing = false;
     await recorder.start();
     try {
-      if (await store.laterDiscussion(task)) {
-        await store.finish(task, "cancelled", "后面还有新回复，合并到下一条一起回。");
+      if (!task.proposal && (await store.laterDiscussion(task))) {
+        await store.finish(task, "cancelled", "后面还有新回复，合并到下一条一起回。", elapsed());
         await recorder.finish("cancelled", "后面还有新回复，合并到下一条一起回。");
         return;
       }
@@ -113,74 +126,121 @@ export function createDiscussionProcessor(
       const logins = origin.requester_login
         ? [origin.requester_login]
         : await store.requesterLogins(task.repository_id, origin.requester);
-      await workspace(
-        `https://github.com/${task.repository}.git`,
-        token,
-        snapshot.sha,
-        snapshot.sha,
-        async (root) => {
-          let shortened = false;
-          const run = await agent({
-            root,
-            provider: config.modelProvider,
-            modelName: config.modelName,
-            apiKey: config.modelApiKey,
-            endpoint: config.modelEndpoint,
-            timeoutMs: config.agentTimeoutMs - (Date.now() - started),
-            budgetTokens: config.development.budgetTokens ?? Number.POSITIVE_INFINITY,
-            signal,
-            builtinTools: READ_ONLY_TOOLS,
-            skills: ["development", "commit-pr"],
-            repositoryInstructions: await readBaseFile(root, snapshot.sha, "AGENTS.md"),
-            systemPrompt: DISCUSSION_PROMPT,
-            onUsage: (usage) => store.checkpoint(task, { usage }),
-            onSession: recorder.agent,
-            followUp: (text) => {
-              if (shortened) return undefined;
-              try {
-                const reply = parseReply(text);
-                if (reply.length <= WRITING_LIMITS.issueReply) return undefined;
-                shortened = true;
-                return `回复有 ${reply.length} 字，超过 ${WRITING_LIMITS.issueReply} 字的上限。压缩到上限以内，只留对方需要知道的，重新输出完整的 JSON。`;
-              } catch {
-                return undefined;
-              }
+      const spent = emptyUsage();
+      addUsage(spent, (task.usage ?? {}) as Partial<AgentUsage>);
+      const total = (usage: Partial<AgentUsage>) => {
+        const sum = emptyUsage();
+        addUsage(sum, spent);
+        addUsage(sum, usage);
+        return sum;
+      };
+      const budget = config.development.budgetTokens;
+      const publish = async (reply: string) => {
+        signal.throwIfAborted();
+        await store.permission(task, config);
+        await store.checkpoint(task, { publishing: true });
+        publishing = true;
+        await recorder.step("comment", "在 issue 里回复", () =>
+          effects.once("comment", {
+            kind: "issue_comment",
+            verify: async () => {
+              const found = await github.findDevelopmentComment(
+                token,
+                task.repository,
+                task.issue_number!,
+                `<!-- pi-dev:${task.id}:discussion -->`,
+                AbortSignal.timeout(15_000),
+              );
+              return found ? { id: found.id } : undefined;
             },
-            prompt: {
-              originalRequest: origin.prompt,
-              issue: thread,
-              requesterLogins: logins,
-              repository: task.repository,
-              targetBranch: task.target_branch,
+            perform: () =>
+              github.createIssueComment(
+                token,
+                task.repository,
+                task.issue_number!,
+                `${reply}\n\n<!-- pi-dev:${task.id}:discussion -->`,
+                signal,
+              ),
+          }),
+        );
+      };
+      if (task.proposal) {
+        await publish((task.proposal as { reply: string }).reply);
+      } else
+        await workspace(
+          `https://github.com/${task.repository}.git`,
+          token,
+          snapshot.sha,
+          snapshot.sha,
+          async (root) => {
+            let shortened = false;
+            const run = await agent({
+              root,
+              provider: config.modelProvider,
+              modelName: config.modelName,
+              apiKey: config.modelApiKey,
+              endpoint: config.modelEndpoint,
+              timeoutMs: config.agentTimeoutMs - elapsed(),
+              budgetTokens:
+                budget === undefined
+                  ? Number.POSITIVE_INFINITY
+                  : Math.max(0, budget - spent.totalTokens - spent.unreportedTokens),
+              signal,
+              builtinTools: READ_ONLY_TOOLS,
+              skills: ["development", "commit-pr"],
+              repositoryInstructions: await readBaseFile(root, snapshot.sha, "AGENTS.md"),
+              systemPrompt: DISCUSSION_PROMPT,
+              onUsage: (usage) => store.checkpoint(task, { usage: total(usage) }),
+              onSession: recorder.agent,
+              followUp: (text) => {
+                if (shortened) return undefined;
+                try {
+                  const reply = parseReply(text);
+                  if (reply.length <= WRITING_LIMITS.issueReply) return undefined;
+                  shortened = true;
+                  return `回复有 ${reply.length} 字，超过 ${WRITING_LIMITS.issueReply} 字的上限。压缩到上限以内，只留对方需要知道的，重新输出完整的 JSON。`;
+                } catch {
+                  return undefined;
+                }
+              },
+              prompt: {
+                originalRequest: origin.prompt,
+                issue: thread,
+                requesterLogins: logins,
+                repository: task.repository,
+                targetBranch: task.target_branch,
+                baseSha: snapshot.sha,
+              },
+            });
+            await store.checkpoint(task, {
+              usage: total(run.usage),
+              durationMs: elapsed(),
               baseSha: snapshot.sha,
-            },
-          });
-          await store.checkpoint(task, {
-            usage: run.usage,
-            durationMs: Date.now() - started,
-            baseSha: snapshot.sha,
-            model: `${config.modelProvider}/${config.modelName}`,
-          });
-          const reply = redactSecrets(parseReply(run.text));
-          await recorder.step("comment", "在 issue 里回复", () =>
-            github.createIssueComment(token, task.repository, task.issue_number!, reply, signal),
-          );
-        },
-        { signal },
-      );
-      await store.finish(task, "succeeded", `已在 issue #${task.issue_number} 回复。`);
+              model: `${config.modelProvider}/${config.modelName}`,
+            });
+            const reply = redactSecrets(parseReply(run.text));
+            await store.checkpoint(task, { proposal: { reply } });
+            await publish(reply);
+          },
+          { signal },
+        );
+      await store.finish(task, "succeeded", `已在 issue #${task.issue_number} 回复。`, elapsed());
       await recorder.finish("succeeded");
     } catch (error) {
       if (parentSignal.reason instanceof RunnerStoppedError || parentSignal.reason instanceof TaskLeaseLostError) {
         await recorder?.finish("cancelled", parentSignal.reason.message);
         throw parentSignal.reason;
       }
+      if (publishing || error instanceof TaskLeaseLostError) {
+        await recorder.finish("failed", (error as Error).message);
+        throw error;
+      }
       const cause = signal.aborted ? signal.reason : error;
       const status = cause instanceof DevelopmentError ? cause.status : signal.aborted ? "cancelled" : "failed";
       const message =
         cause instanceof DevelopmentError ? cause.message : "讨论回复失败，请在管理页查看任务记录后重新回复。";
       log("error", "development_discussion_failed", { taskId: task.id, repository: task.repository, status }, cause);
-      await store.finish(task, status, message);
+      await store.finish(task, status, message, elapsed());
       await recorder.finish(status === "cancelled" ? "cancelled" : "failed", (cause as Error | undefined)?.message);
     }
   };
@@ -189,20 +249,50 @@ export function createDiscussionProcessor(
 // 固定提示：谁能说“开始”、开发中的回复不会用上、群内开发已关闭等。不调用模型。
 export function createNoticeProcessor(
   store: DevelopmentStore,
-  github: Pick<GitHubClient, "installationToken" | "createIssueComment">,
+  github: Pick<
+    GitHubClient,
+    "findDevelopmentComment" | "installationToken" | "createIssueComment" | "listIssueComments"
+  >,
 ) {
   return async (task: DevelopmentTask, signal: AbortSignal) => {
+    const started = Date.now();
+    const elapsed = () => (task.duration_ms ?? 0) + Date.now() - started;
+    const effects = store.sideEffects(task);
+    let publishing = false;
     try {
       const token = await github.installationToken(Number(task.installation_id), signal);
       // issue 里的提示发到 issue，开发 PR 里的发到 PR。
       const number = task.issue_number ?? task.pr_number!;
-      await github.createIssueComment(token, task.repository, number, task.prompt, signal);
-      await store.finish(task, "succeeded", `已在 #${number} 回复提示。`);
+      await store.checkpoint(task, { publishing: true });
+      publishing = true;
+      await effects.once("comment", {
+        kind: "issue_comment",
+        verify: async () => {
+          const found = await github.findDevelopmentComment(
+            token,
+            task.repository,
+            number,
+            `<!-- pi-dev:${task.id}:notice -->`,
+            AbortSignal.timeout(15_000),
+          );
+          return found ? { id: found.id } : undefined;
+        },
+        perform: () =>
+          github.createIssueComment(
+            token,
+            task.repository,
+            number,
+            `${task.prompt}\n\n<!-- pi-dev:${task.id}:notice -->`,
+            signal,
+          ),
+      });
+      await store.finish(task, "succeeded", `已在 #${number} 回复提示。`, elapsed());
     } catch (error) {
       if (signal.reason instanceof RunnerStoppedError || signal.reason instanceof TaskLeaseLostError)
         throw signal.reason;
+      if (publishing || error instanceof TaskLeaseLostError) throw error;
       log("error", "development_notice_failed", { taskId: task.id, repository: task.repository }, error);
-      await store.finish(task, "failed", "issue 提示发送失败。");
+      await store.finish(task, "failed", "issue 提示发送失败。", elapsed());
     }
   };
 }

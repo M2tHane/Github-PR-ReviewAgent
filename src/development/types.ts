@@ -61,7 +61,7 @@ export interface DevelopmentTask {
   source: DevelopmentSource;
   requester_login: string | null;
   lease_expires_at: Date | null;
-  // 首次执行为 1，只在租约过期后重排时增加；部署停止不计。
+  // 首次执行为 1；租约过期或发布失败重排时增加，部署停止不计。
   attempt: number;
   bot_id: string | null;
   message_id: string | null;
@@ -84,8 +84,17 @@ export interface DevelopmentTask {
   pr_number: number | null;
   title: string | null;
   result: string | null;
+  duration_ms: number | null;
+  usage: unknown;
+  rule_snapshot: Array<
+    import("./rules.js").TeamRuleRow & {
+      delivered: { via: "prompt" | "read" | "write" | "follow_up"; path?: string } | null;
+    }
+  >;
   kind: TaskKind;
   issue_number: number | null;
+  proposal: unknown;
+  last_revision_comment_at: Date | null;
 }
 // 开发 PR 下的一条评论：PR 对话里的评论（comment）、代码行上的评论（review_comment）或 review 的正文（review）。
 export interface PullRequestCommentInput {

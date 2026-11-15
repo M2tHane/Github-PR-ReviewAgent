@@ -97,3 +97,68 @@ test("App 接入清单翻完安装和仓库页，用 installation token 读仓�
     (error) => error instanceof GitHubApiError && error.status === 502,
   );
 });
+
+test("开发发布核对仅匹配本 App 的 issue/评论，忽略人类、其他 App 和 PR", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const client = new GitHubClient("123", "");
+  const marker = "<!-- pi-dev-task:task -->";
+  const entries = [
+    { id: 1, number: 1, body: marker, user: { type: "User" }, performed_via_github_app: null },
+    { id: 2, number: 2, body: marker, user: { type: "Bot" }, performed_via_github_app: { id: 456 } },
+    { id: 3, number: 3, body: marker, user: { type: "Bot" }, performed_via_github_app: { id: 123 }, pull_request: {} },
+    { id: 4, number: 4, body: marker, user: { type: "Bot" }, performed_via_github_app: { id: 123 } },
+  ];
+  globalThis.fetch = (async (url) => {
+    const address = String(url);
+    if (address.includes("/comments?")) return new Response(JSON.stringify(entries.filter((e) => !e.pull_request)));
+    assert.match(address, /issues\?state=all&sort=created&direction=desc&per_page=100$/);
+    return new Response(JSON.stringify(entries));
+  }) as typeof fetch;
+  const signal = new AbortController().signal;
+  assert.equal((await client.findDevelopmentIssue("token", "o/r", marker, signal))!.number, 4);
+  assert.equal((await client.findDevelopmentComment("token", "o/r", 4, marker, signal))!.id, 4);
+  assert.equal(await client.findDevelopmentIssue("token", "o/r", "missing", signal), undefined);
+});
+
+test("开发评论核对读过第十页，避免长线程重复发评论", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  let requests = 0;
+  globalThis.fetch = (async (url) => {
+    requests++;
+    const page = Number(new URL(String(url)).searchParams.get("page"));
+    return new Response(
+      JSON.stringify(
+        page <= 10
+          ? Array.from({ length: 100 }, (_, i) => ({
+              id: page * 100 + i,
+              body: "human",
+              user: { type: "User" },
+              performed_via_github_app: null,
+            }))
+          : [
+              {
+                id: 1101,
+                body: "<!-- pi-dev:task:reply -->",
+                user: { type: "Bot" },
+                performed_via_github_app: { id: 123 },
+              },
+            ],
+      ),
+    );
+  }) as typeof fetch;
+  const found = await new GitHubClient("123", "").findDevelopmentComment(
+    "token",
+    "o/r",
+    1,
+    "<!-- pi-dev:task:reply -->",
+    new AbortController().signal,
+  );
+  assert.equal(found!.id, 1101);
+  assert.equal(requests, 11);
+});
