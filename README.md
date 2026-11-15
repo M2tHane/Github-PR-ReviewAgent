@@ -279,9 +279,11 @@ PROCESS_ROLE=all PORT=3000 npm start
 建议权限：
 
 - Metadata: Read
-- Contents: Read（启用群内开发时 Read & Write）
-- Pull requests: Read & Write
+- Contents: Read（启用群内开发或规则文件同步时 Read & Write，即 `contents: write`）
+- Pull requests: Read & Write（`pull_requests: write`，用于审查及规则同步 PR）
 - Issues: Read & Write（群内开发的需求 issue）
+
+仓库维护者可在「仓库 → 审查 → 规则文件同步」逐个开启规则同步（默认关闭）。规则变更后，服务通过 PR 更新固定的 `.pi-review/rules.md`，并在 AGENTS.md／CLAUDE.md 追加引用，供本地 Codex／Claude Code 读取；不会直接推默认分支或自动合并。需要维护者合并 PR 并在本地拉取后生效，详见 [规则文件同步](docs/memory-design.md#14-通过-pr-同步给本地-ai-工具)。上述写权限已由群内开发任务使用。
 
 订阅事件：
 

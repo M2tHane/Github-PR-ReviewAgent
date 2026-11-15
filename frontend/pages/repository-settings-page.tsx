@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { api, messageOf } from "../api/client.js";
+import { dateText } from "../format.js";
 import { Status } from "../components/common/status-badge.js";
 import { DevelopmentForm, DevelopmentTasks, useDevelopment } from "../features/repositories/development-settings.js";
 import { HealthScheduleForm, ReviewSettingsForm } from "../features/repositories/repository-settings.js";
@@ -51,6 +54,7 @@ export function RepositorySettingsPage({
       {/* 四个页签一直挂着、只切换显示：换页签不会丢掉没保存的修改。 */}
       <div hidden={tab !== "review"}>
         <ReviewSettingsForm repo={repo} onSaved={onRepositoryUpdated} />
+        <RulesSyncSettings repo={repo} onSaved={onRepositoryUpdated} />
       </div>
       <div hidden={tab !== "health"}>
         <HealthScheduleForm repo={repo} onSaved={onRepositoryUpdated} />
@@ -60,6 +64,100 @@ export function RepositorySettingsPage({
       </div>
       <div hidden={tab !== "tasks"}>
         <DevelopmentTasks dev={development} repo={repo} />
+      </div>
+    </section>
+  );
+}
+
+function RulesSyncSettings({ repo, onSaved }: { repo: Repository; onSaved: (repo: Repository) => void }) {
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState("");
+  async function run(enabled?: boolean) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      if (enabled !== undefined) {
+        const updated = await api<Repository>(`/api/repositories/${repo.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ rulesSyncEnabled: enabled }),
+        });
+        onSaved(updated);
+        setNotice(
+          enabled
+            ? repo.enabled
+              ? "已开启，首次同步已加入队列。"
+              : "已开启，将在仓库恢复启用后同步。"
+            : "已关闭同步。已有 PR 仍由维护者处理。",
+        );
+      } else {
+        const result = await api<{ jobId: string | null }>(`/api/repositories/${repo.id}/rules-sync`, {
+          method: "POST",
+        });
+        setNotice(
+          result.jobId
+            ? "同步已加入队列；已有排队任务时会复用。完成后刷新页面查看结果。"
+            : "仓库已暂停或同步已关闭，未加入队列。",
+        );
+      }
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section
+      className="card repo-form"
+      aria-label="规则文件同步"
+      style={{ marginTop: "1rem", overflowWrap: "anywhere" }}
+    >
+      <h3>规则文件同步</h3>
+      {error && (
+        <p className="alert" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className="feedback" role="status">
+          {notice}
+        </p>
+      )}
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={repo.rulesSyncEnabled}
+          disabled={busy}
+          onChange={(event) => void run(event.target.checked)}
+        />
+        通过 PR 把规则同步到仓库文件
+      </label>
+      <p className="muted">
+        默认关闭。开启后，规则变更会更新 .pi-review/rules.md，并在 AGENTS.md／CLAUDE.md 引用，供本地 Codex／Claude Code
+        读取。服务只提 PR，由维护者决定是否合并。
+      </p>
+      <div>
+        <strong>最近一次同步</strong>
+        {repo.rulesSyncAt && <small> · {dateText(repo.rulesSyncAt)}</small>}
+        {!repo.rulesSyncStatus && (
+          <p className="muted">{repo.rulesSyncEnabled ? "暂无记录，等待首次同步。" : "尚未开启同步。"}</p>
+        )}
+        {repo.rulesSyncStatus === "pr" && (
+          <p>
+            规则 PR：
+            <a href={repo.rulesSyncPrUrl!} target="_blank" rel="noreferrer">
+              {repo.rulesSyncPrUrl}
+            </a>
+          </p>
+        )}
+        {repo.rulesSyncStatus === "unchanged" && <p>无变化，默认分支中的规则文件已是最新。</p>}
+        {repo.rulesSyncStatus === "failed" && <p className="error">同步失败：{repo.rulesSyncError}</p>}
+      </div>
+      <div className="repo-form-foot">
+        <button type="button" disabled={busy || !repo.rulesSyncEnabled || !repo.enabled} onClick={() => void run()}>
+          {busy ? "处理中…" : "立即同步"}
+        </button>
       </div>
     </section>
   );

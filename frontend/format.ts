@@ -69,6 +69,7 @@ export const jobLabels: Record<string, string> = {
   REPLY_HANDLE: "回复复核",
   DECISION_EXTRACT: "规则提取",
   HEALTH_AUDIT: "健康检查",
+  RULES_SYNC: "规则文件同步",
 };
 
 // 占比：不足 1% 但不为零时写“<1%”，避免把有数的项显示成 0%。

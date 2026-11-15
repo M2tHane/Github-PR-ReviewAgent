@@ -59,7 +59,10 @@ export function JobsPage() {
                   <h3>
                     {jobLabels[job.job_type] ?? job.job_type}
                     <span className="run-target">
-                      {job.repository} · {job.job_type === "HEALTH_AUDIT" ? "默认分支" : `PR #${job.pr_number}`}
+                      {job.repository} ·{" "}
+                      {job.job_type === "HEALTH_AUDIT" || job.job_type === "RULES_SYNC"
+                        ? "默认分支"
+                        : `PR #${job.pr_number}`}
                     </span>
                   </h3>
                   <span className="muted">
@@ -68,8 +71,20 @@ export function JobsPage() {
                   </span>
                 </div>
                 <Status value={job.status} />
-                <a href={job.job_type === "HEALTH_AUDIT" ? `#health/${job.id}` : `#reviews/${job.id}`}>
-                  {job.job_type === "HEALTH_AUDIT" ? "查看健康检查" : "查看详情"}
+                <a
+                  href={
+                    job.job_type === "RULES_SYNC"
+                      ? `#repositories/${job.repository_id}`
+                      : job.job_type === "HEALTH_AUDIT"
+                        ? `#health/${job.id}`
+                        : `#reviews/${job.id}`
+                  }
+                >
+                  {job.job_type === "RULES_SYNC"
+                    ? "查看同步结果"
+                    : job.job_type === "HEALTH_AUDIT"
+                      ? "查看健康检查"
+                      : "查看详情"}
                 </a>
               </div>
               {job.last_error && <p className="error run-error">{job.last_error}</p>}

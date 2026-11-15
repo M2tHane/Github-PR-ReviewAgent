@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import { SYNC_BRANCH_PREFIX, SYNC_MARKER } from "../rules-sync/content.js";
 import type { ReviewJob } from "../jobs/types.js";
 
 const api = "https://api.github.com";
@@ -444,6 +445,92 @@ export class GitHubClient {
     >(token, `/repos/${repository}/pulls?${params}`, { signal });
   }
 
+  async rulesSyncBranch(token: string, repository: string, branch: string, signal: AbortSignal) {
+    try {
+      const ref = await this.request<{ object: { sha: string } }>(
+        token,
+        `/repos/${repository}/git/ref/heads/${branchPath(branch)}`,
+        { signal },
+      );
+      return ref.object.sha;
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async rulesSyncFile(
+    token: string,
+    repository: string,
+    sha: string,
+    path: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    let file: { type: string; content: string; encoding: string; sha: string };
+    try {
+      file = await this.request(
+        token,
+        `/repos/${repository}/contents/${branchPath(path)}?ref=${encodeURIComponent(sha)}`,
+        { signal },
+      );
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return null;
+      throw error;
+    }
+    if (file.type !== "file") throw new Error(`规则同步目标不是普通文件：${path}`);
+    // Contents API 对大文件不返回正文，按 blob SHA 读取，不能把空内容当成已同步。
+    const blob =
+      file.encoding === "base64"
+        ? file
+        : await this.request<{ content: string; encoding: string }>(
+            token,
+            `/repos/${repository}/git/blobs/${file.sha}`,
+            { signal },
+          );
+    if (blob.encoding !== "base64") throw new Error(`GitHub 文件编码无效：${path}`);
+    return Buffer.from(blob.content, "base64").toString("utf8");
+  }
+
+  // 列表只筛候选，再用 issue 的 App 身份核对；用户复制标记或分支名不能让服务接管其 PR。
+  async findRulesSyncPullRequest(
+    token: string,
+    repository: string,
+    signal: AbortSignal,
+    branch?: string,
+  ): Promise<RulesSyncPullRequest | undefined> {
+    for (let page = 1; ; page++) {
+      const params = new URLSearchParams({ state: branch ? "all" : "open", per_page: "100", page: String(page) });
+      if (branch) params.set("head", `${repository.split("/")[0]}:${branch}`);
+      const pulls = await this.request<RulesSyncPullRequest[]>(token, `/repos/${repository}/pulls?${params}`, {
+        signal,
+      });
+      for (const pr of pulls) {
+        if (
+          !pr.head.ref.startsWith(SYNC_BRANCH_PREFIX) ||
+          !pr.body?.includes(SYNC_MARKER) ||
+          pr.head.repo?.full_name.toLowerCase() !== repository.toLowerCase() ||
+          (branch && pr.head.ref !== branch)
+        )
+          continue;
+        const issue = await this.request<{ performed_via_github_app: { id: number } | null; user: { type: string } }>(
+          token,
+          `/repos/${repository}/issues/${pr.number}`,
+          { signal },
+        );
+        if (String(issue.performed_via_github_app?.id) === this.appId && issue.user.type === "Bot") return pr;
+      }
+      if (pulls.length < 100) return undefined;
+    }
+  }
+
+  updateRulesSyncPullRequest(token: string, repository: string, number: number, body: string, signal: AbortSignal) {
+    return this.request(token, `/repos/${repository}/pulls/${number}`, {
+      method: "PATCH",
+      body: JSON.stringify({ body }),
+      signal,
+    });
+  }
+
   healthChecks(token: string, repository: string, sha: string, signal: AbortSignal) {
     return this.request<{ total_count: number; check_runs: Array<Record<string, any>> }>(
       token,
@@ -610,3 +697,11 @@ export class GitHubClient {
 
 // 分支名里的 / 是路径分隔，逐段编码（bot/development/<id> 整体编码成 %2F 时 GitHub 找不到分支）。
 const branchPath = (branch: string) => branch.split("/").map(encodeURIComponent).join("/");
+
+export interface RulesSyncPullRequest {
+  number: number;
+  body: string | null;
+  html_url: string;
+  state: "open" | "closed";
+  head: { sha: string; ref: string; repo: { full_name: string } | null };
+}

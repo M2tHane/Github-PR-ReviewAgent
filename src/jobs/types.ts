@@ -63,4 +63,21 @@ export interface HealthJob
   scope: HealthScope;
 }
 
-export type AgentJob = ReviewJob | HealthJob;
+export interface RulesSyncJob
+  extends Pick<
+    ReviewJob,
+    | "id"
+    | "installationId"
+    | "repositoryId"
+    | "repository"
+    | "title"
+    | "headSha"
+    | "status"
+    | "error"
+    | "attempt"
+    | "leaseToken"
+  > {
+  jobType: "RULES_SYNC";
+}
+
+export type AgentJob = ReviewJob | HealthJob | RulesSyncJob;

@@ -3,6 +3,20 @@ import type { StoredFinding } from "../review/types.js";
 
 export function rowToJob(row: Record<string, unknown>): AgentJob {
   const payload = row.payload as Record<string, any>;
+  if (row.job_type === "RULES_SYNC")
+    return {
+      id: String(row.id),
+      title: payload.title,
+      jobType: "RULES_SYNC",
+      installationId: Number(row.installation_id),
+      repositoryId: Number(row.repository_id),
+      repository: String(row.repository),
+      headSha: String(row.target_sha),
+      status: row.status as AgentJob["status"],
+      error: row.last_error ? String(row.last_error) : undefined,
+      attempt: Number(row.attempt),
+      leaseToken: row.lease_token ? String(row.lease_token) : undefined,
+    };
   if (row.job_type === "HEALTH_AUDIT")
     return {
       id: String(row.id),

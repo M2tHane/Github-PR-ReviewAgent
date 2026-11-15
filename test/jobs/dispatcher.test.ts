@@ -15,12 +15,15 @@ test("Job Dispatcher routes each supported type and rejects unknown types", asyn
     REPLY_HANDLE: async () => {
       seen.push("REPLY_HANDLE");
     },
+    RULES_SYNC: async () => {
+      seen.push("RULES_SYNC");
+    },
     HEALTH_AUDIT: async () => {
       seen.push("HEALTH_AUDIT");
     },
   });
-  for (const jobType of ["PR_REVIEW", "DECISION_EXTRACT", "REPLY_HANDLE", "HEALTH_AUDIT"] as const)
+  for (const jobType of ["PR_REVIEW", "DECISION_EXTRACT", "REPLY_HANDLE", "HEALTH_AUDIT", "RULES_SYNC"] as const)
     await dispatch({ jobType } as AgentJob);
-  assert.deepEqual(seen, ["PR_REVIEW", "DECISION_EXTRACT", "REPLY_HANDLE", "HEALTH_AUDIT"]);
+  assert.deepEqual(seen, ["PR_REVIEW", "DECISION_EXTRACT", "REPLY_HANDLE", "HEALTH_AUDIT", "RULES_SYNC"]);
   assert.throws(() => dispatch({ jobType: "UNRECOGNIZED" } as unknown as AgentJob), /Unknown job type: UNRECOGNIZED/);
 });

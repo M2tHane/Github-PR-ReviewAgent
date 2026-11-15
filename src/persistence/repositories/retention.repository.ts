@@ -43,6 +43,7 @@ export class RetentionRepository {
             DELETE FROM jobs WHERE id IN (
               SELECT j.id FROM jobs j
               WHERE j.job_type<>'HEALTH_AUDIT' AND j.status NOT IN ('queued','running')
+                AND (j.job_type<>'RULES_SYNC' OR j.updated_at<$1)
                 AND NOT EXISTS (
                   SELECT 1 FROM jobs r
                   WHERE r.repository_id=j.repository_id AND r.pr_number=j.pr_number AND r.job_type<>'HEALTH_AUDIT'
