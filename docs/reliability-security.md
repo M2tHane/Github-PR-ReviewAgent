@@ -218,7 +218,7 @@ repository
 - read / grep / find / ls。
 - 受限 git diff / log / blame。
 - 当前 Job 范围内 GitHub 读取。
-- 当前 team / repository 范围内 Memory 读取。
+- 当前 repository 范围内 Memory 读取。
 
 禁止：
 
@@ -249,7 +249,7 @@ repository
 - Tool 权限。
 - Memory 生效条件。
 - GitHub 发布对象。
-- repository / team 归属。
+- repository 归属。
 - 服务加载的 AGENTS.md、Skills 和扩展。
 
 ## 12. Pi 资源加载
@@ -326,8 +326,8 @@ Pull requests Write 只用于 COMMENT Review / 评论。
 
 所有核心对象都必须带归属：
 
-- Job → team + repository。
-- Memory → team + repository / authorized scope。
+- Job → repository。
+- Memory → repository / authorized scope。
 - Review Result → repository + PR + SHA。
 - Audit Record → source Job + user / system actor。
 
