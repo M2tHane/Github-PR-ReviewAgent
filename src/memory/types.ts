@@ -33,23 +33,9 @@ export type ImportedMemorySource = {
   commitSha?: never;
   commentIds?: never;
 };
-export type PromotionSource = {
-  kind: "promotion";
-  repositoryId: number;
-  memoryId: string;
-  version: number;
-  pullRequestNumber?: never;
-  commitSha?: never;
-  commentIds?: never;
-};
-export type MemorySource = (DecisionProposal["source"] & { kind?: never }) | ImportedMemorySource | PromotionSource;
-export class MemoryPromotionError extends Error {}
+export type MemorySource = (DecisionProposal["source"] & { kind?: never }) | ImportedMemorySource;
 export type RuleLevel = "must" | "should" | "info";
-export type MemoryOwner = number | { teamId: string };
-export const ownerColumn = (owner: MemoryOwner) => (typeof owner === "number" ? "repository_id" : "team_id");
-export const ownerId = (owner: MemoryOwner) => (typeof owner === "number" ? owner : owner.teamId);
-export const memoryOwner = (memory: MemoryRecord): MemoryOwner =>
-  memory.teamId ? { teamId: memory.teamId } : memory.repositoryId!;
+export type MemoryOwner = number;
 export const ruleLevelLabels: Record<RuleLevel, string> = {
   must: "必须",
   should: "建议",
@@ -57,7 +43,6 @@ export const ruleLevelLabels: Record<RuleLevel, string> = {
 };
 
 export function memorySourceLabel(source: MemorySource | { kind?: never; pullRequestNumber?: number }) {
-  if (source.kind === "promotion") return `项目提升 · v${source.version}`;
   if (source.kind === "markdown_import") return `Markdown 导入 · ${source.documentName} · ${source.documentRuleId}`;
   if (source.kind === "project_import") return `项目导入 · ${source.repositoryName} · v${source.memoryVersion}`;
   return source.pullRequestNumber ? `来源 PR #${source.pullRequestNumber}` : "来源未记录";
@@ -67,9 +52,8 @@ export interface MemoryRecord {
   activeVersion?: number;
   id: string;
   version: number;
-  repositoryId: number | null;
-  installationId: number | null;
-  teamId?: string;
+  repositoryId: number;
+  installationId: number;
   level: RuleLevel;
   type: DecisionProposal["type"];
   title: string;

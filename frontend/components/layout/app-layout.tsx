@@ -2,7 +2,6 @@ import type React from "react";
 import { ThemeSwitch } from "../common/theme-switch.js";
 
 type Navigation = {
-  teams: boolean;
   overview: boolean;
   reviews: boolean;
   rules: boolean;
@@ -47,7 +46,6 @@ export function AppLayout({
             ["overview", "概览", navigation.overview],
             ["reviews", "PR 审查", navigation.reviews],
             ["rules", "规则", navigation.rules],
-            ["teams", "团队", navigation.teams],
             ["repositories", "仓库", navigation.repositories],
           ].map(([id, label, active]) => (
             <a

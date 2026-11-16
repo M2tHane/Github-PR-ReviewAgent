@@ -209,7 +209,7 @@ const referenced = (memory: MemoryRecord) => ({
 test("超上限规则出现在索引；读取全文后可以引用，同一 id 重读只装载一次", async (t) => {
   const indexed = rule("indexed", { content: "x".repeat(30_001) });
   const full = rule("full", { level: "must" });
-  const context = compileMemoryContext([full, indexed], [], { paths: ["src/a.ts"], text: "" });
+  const context = compileMemoryContext([full, indexed], { paths: ["src/a.ts"], text: "" });
   let loads = 0;
   const checks = [{ id: full.id, version: full.version, result: "followed" }];
   const { model, run } = await review(

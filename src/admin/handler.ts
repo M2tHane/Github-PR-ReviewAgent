@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type { Config } from "../config/config.js";
 import type { Database } from "../persistence/database.js";
 import { GitHubClient } from "../github/client.js";
-import { MemoryService, toMemory, type CandidatePatch } from "../memory/memory.service.js";
+import { MemoryService, type CandidatePatch } from "../memory/memory.service.js";
 import { HealthRequestError } from "../health/health.scheduler.js";
 import { repository, type Repository, type Session } from "./dto.js";
 import { json, cookies, body } from "./http.js";
@@ -20,9 +20,8 @@ import { createDevelopmentRoute } from "./development.routes.js";
 import { createAgentSessionsRoute } from "./agent-sessions.routes.js";
 import { createServiceSettingsRoute } from "./service-settings.routes.js";
 import { ServiceSettings } from "../config/service-settings.js";
-import { createTeamRoutes, TeamRequestError } from "./teams.routes.js";
 import { RuleImportError } from "../memory/import-format.js";
-import { MemoryPromotionError, ownerColumn, ownerId, type MemoryOwner } from "../memory/types.js";
+import type { MemoryOwner } from "../memory/types.js";
 import { SESSION_SUMMARY } from "../persistence/repositories/agent-session.repository.js";
 import { RepositoryAccess } from "../config/repository-access.js";
 import { createRepositoryOnboardingRoute } from "./repository-onboarding.routes.js";
@@ -57,7 +56,6 @@ export function createAdminHandler(
     permissions,
   );
   const healthRoutes = createHealthRoutes(config, database, github, authorize, allowedRepositories);
-  const teams = createTeamRoutes(config, database, authorize, allowedRepositories);
   const ruleImportRoute = createRuleImportRoute(database, authorize);
   const developmentRoute = createDevelopmentRoute(config, database, github, authorize);
   const notificationMembersRoute = createNotificationMembersRoute(config, database, authorize);
@@ -211,12 +209,6 @@ export function createAdminHandler(
             user,
             onboardingMatch[1] === undefined ? undefined : Number(onboardingMatch[1]),
           );
-        if (
-          url.pathname === "/api/teams" ||
-          url.pathname.startsWith("/api/teams/") ||
-          /^\/api\/repositories\/\d+\/(team-rules|rule-overrides|promotions)(\/|$)/.test(url.pathname)
-        )
-          return await teams.route(request, response, url, user);
         const importMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/rule-import\/(source|preview|confirm)$/);
         if (importMatch) return await ruleImportRoute(request, response, Number(importMatch[1]), importMatch[2]!);
         const developmentMatch = url.pathname.match(/^\/api\/repositories\/(\d+)\/development(\/tasks)?$/);
@@ -231,11 +223,9 @@ export function createAdminHandler(
         if (request.method === "GET" && url.pathname === "/api/bootstrap") {
           const repositories = await allowedRepositories(user);
           const memoryLists = await Promise.all(repositories.map((item) => memories.list(item.id)));
-          const visibleTeams = await teams.list(user, repositories);
           return json(response, 200, {
             repositories,
-            teams: visibleTeams,
-            memories: [...memoryLists.flat(), ...(await teams.visibleMemories(visibleTeams, repositories))],
+            memories: memoryLists.flat(),
           });
         }
         if (request.method === "GET" && url.pathname === "/api/overview") {
@@ -356,48 +346,24 @@ export function createAdminHandler(
           const repositories = await allowedRepositories(user);
           const status = url.searchParams.get("status") ?? undefined;
           const values = (await Promise.all(repositories.map((item) => memories.list(item.id, status as any)))).flat();
-          const teamRules = await teams.visibleMemories(await teams.list(user, repositories), repositories);
-          return json(response, 200, [...values, ...teamRules.filter((memory) => !status || memory.status === status)]);
+          return json(response, 200, values);
         }
         if (request.method === "GET" && url.pathname === "/api/rule-review") {
           const repositories = await allowedRepositories(user);
-          const managedTeams = (await teams.list(user, repositories)).filter((team) => team.canManage);
-          return json(
-            response,
-            200,
-            await ruleReview.list([
-              ...repositories.map((repository) => repository.id),
-              ...managedTeams.map((team) => ({ teamId: team.id })),
-            ]),
-          );
+          return json(response, 200, await ruleReview.list(repositories.map((repository) => repository.id)));
         }
         const memoryMatch = url.pathname.match(
           /^\/api\/memories\/([0-9a-f-]+)(?:\/(approve|reject|deprecate|supersede|dismiss-review))?$/i,
         );
         if (memoryMatch) {
           const result = await database.pool.query(
-            "SELECT repository_id,team_id FROM memories WHERE id=$1 ORDER BY version DESC LIMIT 1",
+            "SELECT repository_id FROM memories WHERE id=$1 ORDER BY version DESC LIMIT 1",
             [memoryMatch[1]],
           );
           if (!result.rows[0]) return json(response, 404, { error: "Memory 不存在" });
           const row = result.rows[0];
-          const owner: MemoryOwner = row.team_id ? { teamId: row.team_id } : Number(row.repository_id);
-          if (row.team_id) {
-            if (request.method === "GET" && (await teams.manageable(user, row.team_id)) === false) {
-              const repos = await allowedRepositories(user);
-              const related = await database.pool.query(
-                "SELECT 1 FROM team_repositories WHERE team_id=$1 AND repository_id=ANY($2::bigint[])",
-                [row.team_id, repos.map((repo) => repo.id)],
-              );
-              if (!related.rowCount) return json(response, 403, { error: "需要团队管理或所属仓库维护权限" });
-              const active = await database.pool.query(
-                "SELECT * FROM memories WHERE id=$1 AND team_id=$2 AND status='ACTIVE' ORDER BY version DESC",
-                [memoryMatch[1], row.team_id],
-              );
-              if (!active.rowCount) return json(response, 404, { error: "该团队规则尚未生效" });
-              return json(response, 200, { ...toMemory(active.rows[0]), versions: active.rows });
-            } else await teams.requireManager(user, row.team_id);
-          } else if (!(await authorize(request, response, Number(row.repository_id)))) return;
+          const owner: MemoryOwner = Number(row.repository_id);
+          if (!(await authorize(request, response, owner))) return;
           if (request.method === "POST" && memoryMatch[2] === "dismiss-review") {
             const value = (await body(request)) as { reason?: unknown; note?: unknown } | null;
             if (
@@ -421,8 +387,8 @@ export function createAdminHandler(
           if (request.method === "GET" && !memoryMatch[2]) {
             const current = await memories.get(owner, memoryMatch[1]!);
             const versions = await database.pool.query(
-              `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY version DESC`,
-              [ownerId(owner), memoryMatch[1]],
+              `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY version DESC`,
+              [owner, memoryMatch[1]],
             );
             return json(response, 200, { ...current, versions: versions.rows });
           }
@@ -473,11 +439,10 @@ export function createAdminHandler(
               return json(response, 422, { error: "Memory 修改无效" });
             if (value.exceptionTo !== undefined && value.exceptionTo !== null) {
               const original = await database.pool.query(
-                `SELECT 1 FROM memories WHERE (${ownerColumn(owner)}=$1 OR ($4::bigint IS NOT NULL AND team_id IN (SELECT team_id FROM team_repositories WHERE repository_id=$4))) AND id::text=lower($2) AND id<>$3 LIMIT 1`,
-                [ownerId(owner), value.exceptionTo, memoryMatch[1], typeof owner === "number" ? owner : null],
+                `SELECT 1 FROM memories WHERE repository_id=$1 AND id::text=lower($2) AND id<>$3 LIMIT 1`,
+                [owner, value.exceptionTo, memoryMatch[1]],
               );
-              if (!original.rowCount)
-                return json(response, 422, { error: "例外必须关联同归属或本项目所属团队的其他规则" });
+              if (!original.rowCount) return json(response, 422, { error: "例外必须关联本仓库的其他规则" });
             }
             return json(response, 200, await memories.edit(owner, memoryMatch[1]!, value, user));
           }
@@ -515,8 +480,6 @@ export function createAdminHandler(
       }
       json(response, 404, { error: "not found" });
     } catch (error) {
-      if (error instanceof MemoryPromotionError) return json(response, 409, { error: error.message });
-      if (error instanceof TeamRequestError) return json(response, error.status, { error: error.message });
       if (error instanceof RuleImportError) return json(response, 422, { error: error.message });
       if (error instanceof HealthRequestError) return json(response, error.status, { error: error.message });
       if (error instanceof SyntaxError) return json(response, 400, { error: "JSON 无效" });

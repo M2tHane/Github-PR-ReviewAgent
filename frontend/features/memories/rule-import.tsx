@@ -2,7 +2,7 @@ import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
-import type { Memory, Repository, Team } from "../../types.js";
+import type { Memory, Repository } from "../../types.js";
 import { memorySourceLabel } from "../../../src/memory/types.js";
 import {
   RULE_IMPORT_EXAMPLE,
@@ -15,22 +15,18 @@ import { ScopeChips } from "./memory-detail.js";
 
 export function RuleImport({
   repositories,
-  teams,
   initialTarget,
   mode,
   close,
   imported,
 }: {
   repositories: Repository[];
-  teams: Team[];
   initialTarget: string;
   mode: "markdown" | "project";
   close: () => void;
   imported: (result: ImportResult, target: string) => Promise<void>;
 }) {
-  const [target, setTarget] = useState(
-    initialTarget === "ALL" || (mode === "project" && initialTarget.startsWith("team:")) ? "" : initialTarget,
-  );
+  const [target, setTarget] = useState(initialTarget === "ALL" ? "" : initialTarget);
   const [source, setSource] = useState("");
   const [rules, setRules] = useState<Memory[]>([]);
   const [chosen, setChosen] = useState<string[]>([]);
@@ -83,13 +79,10 @@ export function RuleImport({
                   .filter(Boolean),
               })),
             };
-      const value = await api<ImportPreview>(
-        `${target.startsWith("team:") ? `/api/teams/${target.slice(5)}` : `/api/repositories/${target}`}/rule-import/preview`,
-        {
-          method: "POST",
-          body: JSON.stringify(input),
-        },
-      );
+      const value = await api<ImportPreview>(`/api/repositories/${target}/rule-import/preview`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
       setPreview(value);
       setSelected(value.rules.map((rule) => rule.key));
     } catch (cause) {
@@ -102,13 +95,10 @@ export function RuleImport({
     setBusy(true);
     setError("");
     try {
-      const value = await api<ImportResult>(
-        `${target.startsWith("team:") ? `/api/teams/${target.slice(5)}` : `/api/repositories/${target}`}/rule-import/confirm`,
-        {
-          method: "POST",
-          body: JSON.stringify({ previewId: preview!.id, keys: selected }),
-        },
-      );
+      const value = await api<ImportResult>(`/api/repositories/${target}/rule-import/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ previewId: preview!.id, keys: selected }),
+      });
       setResult(value);
       await imported(value, target);
     } catch (cause) {
@@ -147,13 +137,7 @@ export function RuleImport({
               if (source === value) setSource("");
             }}
           >
-            <option value="">请选择项目或团队</option>
-            {mode === "markdown" &&
-              teams.map((team) => (
-                <option key={team.id} value={`team:${team.id}`}>
-                  团队 · {team.name}
-                </option>
-              ))}
+            <option value="">请选择仓库</option>
             {repositories.map((repo) => (
               <option key={repo.id} value={repo.id}>
                 {repo.fullName}

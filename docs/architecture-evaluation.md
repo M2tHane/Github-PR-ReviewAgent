@@ -4,6 +4,8 @@
 
 > 本文从产品定位、系统架构、Agent 架构和核心工作流评估当前实现，并给出面向"多仓库、团队级 AI 工程协作系统"的目标架构与实施路线。文中 `文件:行号` 基于提交 `beea169`，代码变动后行号可能偏移。目标是两条相互关联的能力：PR Review 与工程知识沉淀、基于工程知识的 AI 开发，形成"PR Review → 知识沉淀 → 规则复用 → AI 开发 → PR → 新的 Review → 知识迭代"的闭环。
 
+> 用户 2026-11-15 撤销独立团队层：每个仓库就是一个团队，规则只属于仓库；保留 must／should／info、上下文编译器和现有跨仓库复制导入。下文模型与阶段 2 已按此决定调整，历史问题与未采纳的远期设想不代表当前任务。
+
 ## 结论先行
 
 1. **产品方向成立，但现在的系统还不是一个靠知识运转的闭环。** 它实际上是"PR Review 服务 + 旁边挂着的一个开发机器人"。
@@ -55,7 +57,7 @@
 | Reply Handler（只处理本 App 的线程） | 已实现，PR #3 四种结论各验证 1 次 | 合理。它产出的"例外线索"走不到可批准的规则（见 P0-1） |
 | Decision Extractor | 已实现，真实运行只产出过 1 条 | 看不到已有规则 |
 | 规则库：候选→确认→版本／替代／例外 | 已实现，按仓库隔离 | 生命周期可用，但维度不够 |
-| 团队级作用域 `team_id` | **只在文档里**（[memory-design](memory-design.md) §4） | 代码和迁移里都没有 |
+| 仓库级作用域 | 每个仓库独立管理规则（[memory-design](memory-design.md) §6） | 用户已撤销独立团队层 |
 | 跨项目规则 | 做成了一次性复制导入（`src/memory/import.service.ts`） | 复制后各自演化，不是共享 |
 | Health + Security Auditor | 已实现，两次真实验收都是 partial | 不在两条核心能力里 |
 | 开发任务（企微→PR、issue 讨论、按 PR 评论修改） | 企微→PR 真实跑通过；"按 PR 评论修改"没有验证记录（[DEV 清单](tasks/DEV.md)） | 是第二套独立的任务引擎 |
@@ -65,7 +67,7 @@
 
 1. **"规则"和"知识"要分开管。** "怎么跑测试""模块怎么分"是事实，应自动生成，用实际运行来校验。"资金变更必须幂等"是规范，需要人背书。"上次这里误报过"是案例，应自动沉淀、自动衰减。全部塞进一张需要人工确认的规则表，结果是：要么维护者被淹没，要么事实类知识根本进不来。
 2. **挖掘合并 PR 产出低、噪声大。** 大多数 PR 讨论里没有可以复用的规范（3 个 PR 出 1 条）。值得沉淀的规范更多藏在现有文档里、在反复出现的同类问题里、在人对 AI 代码的纠正里。
-3. **跨项目共享要克制。** 最有价值的规则往往和具体业务强相关，比如 tuzi-api 的计费、资金规则，并不适合别的项目。共享应该是"显式订阅规则包"，再加上"有多个项目的证据才提升"，而不是自动继承一切。
+3. **跨项目共享要克制。** 最有价值的规则往往和具体业务强相关，比如 tuzi-api 的计费、资金规则，并不适合别的项目。复用通过维护者确认的跨仓库复制导入，副本各自演进。
 4. **"自主开发"要设边界。** 目标定在边界清楚的中小任务。大需求先拆成多个 Issue，合并永远由人来。真实记录里，单个任务曾跑了 29.5 分钟，`go test` 整包超时（`DEV.md:325-329`）。
 5. **先定义度量，否则飞轮转没转起来无从判断。** 至少要有四个指标：
    - 规则召回的准确率和覆盖率；
@@ -92,12 +94,10 @@
   - 同义规则在不同 PR 里反复出现。
   - 规则只增不减，回答不了"知识有没有让结果变好"。
 
-**P0-2 知识模型只有"仓库"一个维度**
-- **证据**：
-  - `memories.repository_id NOT NULL`，唯一键是"仓库 + 来源指纹"（`migrations/001_baseline.sql:73,95`）。
-  - 跨项目是复制导入。
-  - 没有 org、team 实体，`team_id` 只在文档里。
-- **影响**：全局、团队、项目三层规则以及继承和覆盖，在现有表结构上做不出来，必须重新设计。
+**P0-2 仓库归属保持为规则边界（原多层模型建议已撤销）**
+- `memories.repository_id NOT NULL`，唯一键是“仓库 + 来源指纹”。
+- 跨项目通过人工确认复制导入；每条规则保留 must／should／info 级别。
+- 用户决定不引入独立团队、继承、项目覆盖或提升。
 
 **P0-3 两套执行引擎，开发任务不能恢复，而且绑死企微**
 - **证据**：
@@ -220,13 +220,13 @@
 ### 3.4 实体关系
 
 ```
-Org 1─* Team *─* Project（一个负责团队，可被其他团队订阅）
-Principal（GitHub 登录 ↔ 企微 ID）*─* RoleBinding（org/team/project × admin/maintainer/developer/viewer）
-Org/Team/Project 1─* RuleSet 1─* Rule 1─* RuleVersion ; Project *─* RuleSet（继承/订阅，带优先级）
+Project（GitHub 仓库）1─* Rule 1─* RuleVersion
+Principal（GitHub 登录 ↔ 企微 ID）─→ 仓库维护权限 / 开发角色
+跨仓库导入 ─→ 目标仓库独立 Rule
 Project 1─* PullRequest 1─* ReviewRun 1─* Finding ─(引用)→ RuleVersion
 Project 1─* DevTask 1─1 Issue ; DevTask 1─* Iteration ─→ PR
 Finding 结局 / Reply 结论 / 开发迭代 / CI 失败 ─→ KnowledgeSignal ─→ RuleCandidate ─→ RuleVersion
-企微群 *─* Project（默认一对一；也可以绑定到团队，再用关键字选项目）
+企微群 ─→ Project（按仓库配置）
 ```
 
 ### 3.5 部署形态，以及哪些东西不引入
@@ -315,23 +315,19 @@ Finding 结局 / Reply 结论 / 开发迭代 / CI 失败 ─→ KnowledgeSignal 
 ### 5.2 数据模型
 
 ```sql
-orgs(id, name)  teams(id, org_id, name)
-projects(id = GitHub 仓库 id, org_id, owner_team_id, full_name, installation_id, default_branch, enabled, settings)
+projects(id = GitHub 仓库 id, full_name, installation_id, default_branch, enabled, settings)
 principals(id, github_login, wecom_userid)
-role_bindings(principal_id, scope_type, scope_id, role)
+role_bindings(principal_id, project_id, role)
 
-rule_sets(id, owner_type[global|org|team|project], owner_id, name)    -- "规则包"也是一个 rule_set
-rule_set_links(project_id, rule_set_id, priority)                     -- 项目继承/订阅哪些规则集
-rules(id, rule_set_id, kind[constraint|decision|convention|exception|deprecated], status, current_version)
+rules(id, project_id, kind[constraint|decision|convention|exception|deprecated], status, current_version)
 rule_versions(rule_id, version, status[candidate|active|superseded|retired|rejected],
   statement, rationale,
   applicability{paths, exclude_paths, languages, frameworks, modules, when /*自然语言条件*/},
   enforcement{level[must|should|info], default_severity},
   check_guidance, examples{violating[], compliant[]},
-  provenance{kind[extraction|import|manual|promotion], refs}, evidence[],
+  provenance{kind[extraction|import|manual], refs}, evidence[],
   approved_by, approved_at, review_after, expires_at)
 rule_relations(from_rule, to_rule, type[exception_of|supersedes|refines|duplicates|conflicts_with], status)
-rule_overrides(project_id, rule_id, action[disable|narrow|severity], params, reason, actor)
 
 knowledge_signals(id, project_id, kind, refs, payload, at)
 rule_candidates(id, project_id, op, target_rule_id, draft, signal_ids[], support, distinct_people,
@@ -347,18 +343,16 @@ repo_profiles(project_id, sha, commands{install,build,test,lint}, verified{命�
 - 关系用一张独立的表，以后可以加类型。
 - "条件"改成自然语言字段，交给 Agent 判断，不再精确匹配。
 
-### 5.3 作用域、继承与优先级
+### 5.3 仓库作用域与规则级别
 
-上下文编译器按下面的顺序确定一个项目实际适用的规则，每一步都是确定性代码：
+上下文编译器用确定性代码计算本仓库实际适用的规则：
 
-1. **收集规则集。** 按"项目自有 > 显式订阅 > 负责团队 > org > global"收集，只取生效的版本。global 只放极少量的平台基线。
-2. **应用项目覆盖。** 包括停用、收窄范围、调整级别，每一项都必须写理由。
-3. **按适用范围过滤。** paths、languages、modules 精确匹配；frameworks 对照仓库画像判断；"条件"不参与过滤，交给 Agent。
-4. **处理例外。** 例外**按路径生效**：某个路径命中了例外，原规则只在这个路径上失效。
-5. **处理冲突。** 已确认冲突的两条规则，层级更具体的胜出（project > team > org > global）。同一层级、同样具体时，两条都不执行，列进"待裁决冲突"并通知维护者。现在这一步写在 Skill 里交给模型（`agent/skills/memory-conflict-review`），应该改由代码保证。
-6. **排序并控制体量。** must 级规则全部给出，超过上限就告警，而不是悄悄截断。should 和 info 级按相关度给正文，其余放进索引，Agent 需要时再读。
+1. **收集本仓库规则。** 只取 ACTIVE 最新版本，候选更新不替代旧的有效版本。
+2. **按适用范围过滤。** paths、languages、modules 匹配；自然语言条件交给 Agent 结合正文判断。
+3. **带出例外依赖。** 例外须关联本仓库生效原规则，限定路径；同范围规则保留，编译器不推断语义冲突。
+4. **排序并控制体量。** must 全部给出，超过上限告警；should、info 按相关度给正文，其余放进索引，Agent 需要时再读。
 
-**提升为团队规则必须经人批准。** 当两个以上项目有等价的生效规则（先按向量相似度找，再让模型判断是否等价）时，生成一条"提升"候选，团队管理员批准后创建团队规则，原来的项目规则标记为重复。
+跨仓库复用沿用“从其他项目导入”，由目标仓库维护者确认，生成独立规则，不引入继承或提升。
 
 ### 5.4 提取流程
 
@@ -561,14 +555,14 @@ Extractor 必须逐项填写，服务检查其中可以机器判定的几项：
 
 **阶段 2：知识模型 v2 和上下文编译器（4–6 周）**
 - **要做的事**：
-  - 租户、角色、权限缓存，不重启就能接入新仓库。
-  - 规则集、版本、关系、覆盖、度量。
+  - 仓库维护权限缓存，不重启就能接入新仓库。
+  - 仓库规则、版本、关系、规则级别、度量。
   - Review、Reply、Developer 全部改用上下文编译器。
   - 候选聚类和排序审核队列，批准时检查冲突，衰减任务。
 - **验收标准**（数值是初始目标，跑起来以后再校准）：
   - 规则提取评测集（至少 30 个人工标注的合并 PR）：准确率 ≥ 0.7。
   - 规则召回评测集：在给定的体量预算下，覆盖率 ≥ 0.9。
-  - 跨项目订阅和项目覆盖都能生效。
+  - 仓库规则隔离生效，跨仓库复制导入照常工作。
   - 噪声大的规则会被自动标出。
 
 **阶段 3：开发闭环 v2（4–6 周）**

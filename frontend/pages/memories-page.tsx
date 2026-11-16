@@ -8,7 +8,7 @@ import { Pager } from "../components/common/pager.js";
 import { Status } from "../components/common/status-badge.js";
 import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
 import { dateText, numberText } from "../format.js";
-import type { Memory, Team, RuleOverride, Repository as Repo } from "../types.js";
+import type { Memory, Repository as Repo } from "../types.js";
 import { shortText } from "../../src/review/presentation.js";
 import type { RuleReviewQueue } from "../../src/memory/types.js";
 import { RuleReviewRows } from "../features/memories/rule-review.js";
@@ -17,50 +17,23 @@ const PAGE_SIZE = 20;
 
 export function MemoriesPage({
   items,
-  teams,
   repositories,
   reload,
   route,
 }: {
   items: Memory[];
-  teams: Team[];
   repositories: Repo[];
   reload: () => Promise<void>;
   route: string;
 }) {
   const [path, query = ""] = route.split("?");
   const params = new URLSearchParams(query);
-  const [ownership, setOwnership] = useState(params.has("team") ? "team" : "ALL"),
-    [teamId, setTeamId] = useState(params.get("team") ?? "ALL");
   const [filter, setFilter] = useState(
       path === "rules/review" ? "REVIEW" : path === "rules/pending" ? "CANDIDATE" : "ALL",
     ),
     [repositoryId, setRepositoryId] = useState(params.get("repo") ?? "ALL"),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(1);
-  const [projectOverrides, setProjectOverrides] = useState<{ repositoryId: string; items: RuleOverride[] }>();
-  const [overrideError, setOverrideError] = useState("");
-  useEffect(() => {
-    let active = true;
-    setProjectOverrides(undefined);
-    setOverrideError("");
-    if (repositoryId !== "ALL")
-      void api<{ overrides: RuleOverride[] }>(`/api/repositories/${repositoryId}/team-rules`).then(
-        (data) => {
-          if (active) setProjectOverrides({ repositoryId, items: data.overrides });
-        },
-        (cause) => {
-          if (active) setOverrideError(messageOf(cause));
-        },
-      );
-    return () => {
-      active = false;
-    };
-  }, [repositoryId, items]);
-  const overrideFor = (id: string) =>
-    projectOverrides?.repositoryId === repositoryId
-      ? projectOverrides.items.find((entry) => entry.memoryId === id)
-      : undefined;
   const [importMode, setImportMode] = useState<"markdown" | "project" | null>(null);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -90,14 +63,9 @@ export function MemoriesPage({
   const match = path!.match(/^rules\/([0-9a-f-]{36})(\/edit)?$/i),
     selected = items.find((item) => item.id === match?.[1]),
     editing = Boolean(match?.[2]);
-  const suffix = `${repositoryId !== "ALL" ? `?repo=${repositoryId}` : teamId !== "ALL" ? `?team=${teamId}` : ""}`;
-  const canManage = (item: Memory) => !item.teamId || Boolean(teams.find((team) => team.id === item.teamId)?.canManage);
-  const sameOwner = (a: Memory, b: Memory) => a.repositoryId === b.repositoryId && a.teamId === b.teamId;
+  const suffix = repositoryId !== "ALL" ? `?repo=${repositoryId}` : "";
+  const sameOwner = (a: Memory, b: Memory) => a.repositoryId === b.repositoryId;
   useEffect(() => {
-    if (params.has("team")) {
-      setTeamId(params.get("team")!);
-      setOwnership("team");
-    }
     if (params.has("repo")) setRepositoryId(params.get("repo")!);
     if (path === "rules/pending") setFilter("CANDIDATE");
     if (path === "rules/review") setFilter("REVIEW");
@@ -111,11 +79,7 @@ export function MemoriesPage({
         ? item.status === "ACTIVE" || Boolean(item.activeVersion)
         : item.status === status);
   const inScope = (item: Memory) =>
-    (ownership === "ALL" || (ownership === "team" ? Boolean(item.teamId) : !item.teamId)) &&
-    (teamId === "ALL" || item.teamId === teamId) &&
-    (repositoryId === "ALL" ||
-      item.repositoryId === Number(repositoryId) ||
-      teams.some((team) => team.id === item.teamId && team.repositoryIds.includes(Number(repositoryId)))) &&
+    (repositoryId === "ALL" || item.repositoryId === Number(repositoryId)) &&
     [item.title, item.content, ...Object.values(item.scope).flat()]
       .join(" ")
       .toLowerCase()
@@ -127,7 +91,7 @@ export function MemoriesPage({
   const total = filter === "REVIEW" ? reviewItems.length : shown.length;
   const current = Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE))),
     visible = shown.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
-  useEffect(() => setPage(1), [filter, repositoryId, teamId, ownership, search]);
+  useEffect(() => setPage(1), [filter, repositoryId, search]);
   const close = () => {
     location.hash =
       (filter === "REVIEW" ? "rules/review" : filter === "CANDIDATE" ? "rules/pending" : "rules") + suffix;
@@ -216,7 +180,7 @@ export function MemoriesPage({
             {error}
           </p>
         )}
-        {!canManage(selected) || !["ACTIVE", "CANDIDATE"].includes(selected.status) ? (
+        {!["ACTIVE", "CANDIDATE"].includes(selected.status) ? (
           <Empty>这条规则不可编辑，或当前账号没有管理权限。</Empty>
         ) : (
           <form
@@ -252,7 +216,7 @@ export function MemoriesPage({
             <fieldset>
               <legend>适用范围</legend>
               <p className="muted">每行一项；留空表示不限制该维度。</p>
-              {selected.type === "exception" && <ExceptionSelector item={selected} items={items} teams={teams} />}
+              {selected.type === "exception" && <ExceptionSelector item={selected} items={items} />}
               <label>
                 路径
                 <textarea name="paths" defaultValue={(selected.scope.paths ?? []).join("\n")} />
@@ -291,7 +255,7 @@ export function MemoriesPage({
           <h2 id="rules-title" tabIndex={-1}>
             规则
           </h2>
-          <p className="muted">管理项目规则与团队共享规则，确认工程决定、适用范围和级别。</p>
+          <p className="muted">管理仓库规则，确认工程决定、适用范围和级别。</p>
         </div>
         <div className="actions">
           <button className="secondary" onClick={() => setImportMode("markdown")}>
@@ -302,26 +266,14 @@ export function MemoriesPage({
           </button>
         </div>
       </div>
-      {items.some((item) => item.teamId) && (
-        <p className="muted">生效的团队规则用于所属项目；选中仓库可查看本项目的停用与级别覆盖。</p>
-      )}
       {importMode && (
         <RuleImport
           mode={importMode}
           repositories={repositories}
-          teams={teams.filter((team) => team.canManage)}
-          initialTarget={teamId !== "ALL" ? `team:${teamId}` : repositoryId}
+          initialTarget={repositoryId}
           close={() => setImportMode(null)}
           imported={async (result, target) => {
-            if (String(target).startsWith("team:")) {
-              setTeamId(String(target).slice(5));
-              setOwnership("team");
-              setRepositoryId("ALL");
-            } else {
-              setRepositoryId(String(target));
-              setTeamId("ALL");
-              setOwnership("project");
-            }
+            setRepositoryId(String(target));
             setFilter("ACTIVE");
             setNotice(`已导入并生效 ${result.imported.length} 条，跳过 ${result.skipped.length} 条重复规则。`);
             await reload();
@@ -349,39 +301,6 @@ export function MemoriesPage({
           />
         </label>
         <label>
-          归属
-          <Select
-            value={ownership}
-            onChange={(value) => {
-              setOwnership(value);
-              setTeamId("ALL");
-            }}
-          >
-            <option value="ALL">项目与团队</option>
-            <option value="project">项目规则</option>
-            <option value="team">团队规则</option>
-          </Select>
-        </label>
-        {ownership !== "project" && (
-          <label>
-            团队
-            <Select
-              value={teamId}
-              onChange={(value) => {
-                setTeamId(value);
-                if (value !== "ALL") setOwnership("team");
-              }}
-            >
-              <option value="ALL">所有团队</option>
-              {teams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))}
-            </Select>
-          </label>
-        )}
-        <label>
           仓库
           <Select value={repositoryId} onChange={(value) => setRepositoryId(value)}>
             <option value="ALL">所有仓库</option>
@@ -393,11 +312,6 @@ export function MemoriesPage({
           </Select>
         </label>
       </div>
-      {overrideError && (
-        <p className="alert" role="alert">
-          项目覆盖加载失败：{overrideError}
-        </p>
-      )}
       <nav className="rule-tabs" aria-label="规则状态">
         {[
           ["ALL", "全部"],
@@ -451,7 +365,6 @@ export function MemoriesPage({
               {reviewItems.length ? (
                 <RuleReviewRows
                   items={reviewItems.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)}
-                  teams={teams}
                   repositories={repositories}
                   suffix={suffix}
                   refresh={refreshReview}
@@ -476,41 +389,24 @@ export function MemoriesPage({
                 <a className="rule-open" href={`#rules/${item.id}${suffix}`}>
                   <h3>{item.title}</h3>
                 </a>
-                <span
-                  className={`rule-level level-${overrideFor(item.id)?.level ?? item.level}`}
-                  title={
-                    overrideFor(item.id)?.action === "level" ? `团队级别：${ruleLevelLabels[item.level]}` : undefined
-                  }
-                >
-                  {overrideFor(item.id)?.action === "level"
-                    ? `本项目级别：${overrideFor(item.id)!.level}`
-                    : ruleLevelLabels[item.level]}
-                </span>
+                <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
                 <Status
-                  value={overrideFor(item.id)?.action === "disable" ? "DEPRECATED" : item.status}
-                  label={
-                    overrideFor(item.id)?.action === "disable"
-                      ? "本项目已停用"
-                      : item.status === "CANDIDATE" && item.activeVersion
-                        ? "待确认更新"
-                        : undefined
-                  }
+                  value={item.status}
+                  label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
                 />
               </div>
               <ScopeChips scope={item.scope} limit={3} />
               <div className="rule-meta">
                 <span>
-                  {item.teamId
-                    ? `团队：${teams.find((team) => team.id === item.teamId)?.name}`
-                    : `项目：${repositories.find((repo) => repo.id === item.repositoryId)?.fullName}`}{" "}
-                  · {memorySourceLabel(item.source)}
+                  仓库：{repositories.find((repo) => repo.id === item.repositoryId)?.fullName} ·{" "}
+                  {memorySourceLabel(item.source)}
                   {/* 从没生效过的待确认规则不会交给审查，不显示引用次数。 */}
                   {(item.status !== "CANDIDATE" || item.activeVersion) &&
                     ` · 引用 ${numberText(item.usage.cited)} 次 · 修复 ${numberText(item.usage.fixed)} · 疑似已修复 ${numberText(item.usage.inferredFixed)} · 撤回 ${numberText(item.usage.withdrawn)}`}
                 </span>
                 <span>更新于 {dateText(item.updatedAt)}</span>
               </div>
-              {filter === "CANDIDATE" && canManage(item) && (
+              {filter === "CANDIDATE" && (
                 <div className="pending-rule">
                   <p>{shortText(item.content, 180)}</p>
                   {item.activeVersion && <small>当前生效版本继续用于审查。</small>}
@@ -547,11 +443,7 @@ export function MemoriesPage({
           key={selected.id}
           item={selected}
           repository={repositories.find((repo) => repo.id === selected.repositoryId)}
-          teams={teams}
-          canManage={canManage(selected)}
-          reload={reload}
           suffix={suffix}
-          repositoryContext={repositories.find((repo) => repo.id === Number(repositoryId))}
           rules={items}
           candidates={items.filter(
             (item) => sameOwner(item, selected) && item.status === "CANDIDATE" && item.id !== selected.id,
@@ -566,13 +458,11 @@ export function MemoriesPage({
   );
 }
 
-function ExceptionSelector({ item, items, teams }: { item: Memory; items: Memory[]; teams: Team[] }) {
+function ExceptionSelector({ item, items }: { item: Memory; items: Memory[] }) {
   const [value, setValue] = useState(item.exceptionTo ?? "");
   const rules = items.filter(
     (rule) =>
-      ((rule.repositoryId === item.repositoryId && rule.teamId === item.teamId) ||
-        (item.repositoryId !== null &&
-          teams.some((team) => team.id === rule.teamId && team.repositoryIds.includes(item.repositoryId!)))) &&
+      rule.repositoryId === item.repositoryId &&
       rule.id !== item.id &&
       (rule.status === "ACTIVE" || Boolean(rule.activeVersion)),
   );

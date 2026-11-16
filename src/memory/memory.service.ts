@@ -4,15 +4,7 @@ import { languageOf, normalizeLanguage } from "../config/languages.js";
 import type { Database } from "../persistence/database.js";
 import { transaction } from "../persistence/transaction.js";
 import { loadMemoryContext, type ContextInput } from "./context.js";
-import {
-  MemoryPromotionError,
-  ownerColumn,
-  ownerId,
-  memoryOwner,
-  type MemoryOwner,
-  type MemoryRecord,
-  type MemoryWithUsage,
-} from "./types.js";
+import type { MemoryOwner, MemoryRecord, MemoryWithUsage } from "./types.js";
 
 export interface Actor {
   id: number;
@@ -22,7 +14,6 @@ export type CandidatePatch = Partial<
   Pick<MemoryRecord, "type" | "title" | "content" | "rationale" | "scope" | "uncertainties" | "level">
 > & { exceptionTo?: string | null };
 
-// 人类确认与仓库隔离的理由见 .agents/decisions/team-memory.md。
 export class MemoryService {
   constructor(private database: Database) {}
 
@@ -30,11 +21,11 @@ export class MemoryService {
     const result = await this.database.pool.query(
       `WITH current AS (
          SELECT DISTINCT ON (id) *,max(version) FILTER (WHERE status='ACTIVE') OVER (PARTITION BY id) active_version
-         FROM memories WHERE ${ownerColumn(owner)}=$1 ${activeOnly ? "AND status='ACTIVE'" : ""} ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC
+         FROM memories WHERE repository_id=$1 ${activeOnly ? "AND status='ACTIVE'" : ""} ORDER BY id,(status IN ('ACTIVE','CANDIDATE')) DESC,version DESC
        ), provided AS (
          SELECT u.memory_id,count(*)::int provided FROM review_memory_usage u
          JOIN jobs j ON j.id=u.job_id AND j.job_type='PR_REVIEW'
-         WHERE u.memory_id IN (SELECT id FROM current) AND ($2::bigint IS NULL OR u.repository_id=$2) GROUP BY u.memory_id
+         WHERE u.memory_id IN (SELECT id FROM current) AND u.repository_id=$1 GROUP BY u.memory_id
        ), cited AS (
          SELECT f.memory_id,count(*)::int cited,
            count(*) FILTER (WHERE f.status='FIXED')::int fixed,
@@ -44,7 +35,7 @@ export class MemoryService {
            count(*) FILTER (WHERE f.status IN ('OPEN','STILL_VALID','NEEDS_CLARIFICATION'))::int open,
            max(f.created_at) last_cited_at
          FROM review_findings f JOIN jobs j ON j.id=f.job_id AND j.job_type='PR_REVIEW'
-         WHERE f.memory_id IN (SELECT id FROM current) AND ($2::bigint IS NULL OR f.repository_id=$2)
+         WHERE f.memory_id IN (SELECT id FROM current) AND f.repository_id=$1
            AND f.binding_status<>'pending' AND NOT (f.presentation ? 'repeatOf')
          GROUP BY f.memory_id
        )
@@ -53,7 +44,7 @@ export class MemoryService {
          COALESCE(c.exception,0) exception,COALESCE(c.open,0) open,c.last_cited_at
        FROM current m LEFT JOIN provided p ON p.memory_id=m.id LEFT JOIN cited c ON c.memory_id=m.id
        ORDER BY m.id`,
-      [ownerId(owner), typeof owner === "number" ? owner : null],
+      [owner],
     );
     return result.rows
       .map((row) => ({
@@ -74,8 +65,8 @@ export class MemoryService {
 
   async get(owner: MemoryOwner, id: string) {
     const result = await this.database.pool.query(
-      `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1`,
-      [ownerId(owner), id],
+      `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1`,
+      [owner, id],
     );
     return result.rows[0] ? toMemory(result.rows[0]) : undefined;
   }
@@ -85,8 +76,8 @@ export class MemoryService {
     try {
       return await transaction(client, async () => {
         const currentResult = await client.query(
-          `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
-          [ownerId(owner), id],
+          `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
+          [owner, id],
         );
         if (!currentResult.rows[0]) throw new Error("Memory 不存在或不属于当前归属");
         const current = toMemory(currentResult.rows[0]);
@@ -97,9 +88,9 @@ export class MemoryService {
         };
         if (current.status === "CANDIDATE") {
           await client.query(
-            `UPDATE memories SET type=$3,title=$4,content=$5,rationale=$6,scope=$7,uncertainties=$8,exception_to=$10,level=$11,updated_at=now() WHERE ${ownerColumn(owner)}=$1 AND id=$2 AND version=$9`,
+            `UPDATE memories SET type=$3,title=$4,content=$5,rationale=$6,scope=$7,uncertainties=$8,exception_to=$10,level=$11,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$9`,
             [
-              ownerId(owner),
+              owner,
               id,
               after.type,
               after.title,
@@ -115,16 +106,16 @@ export class MemoryService {
         } else if (current.status === "ACTIVE") {
           const version = Number(
             (
-              await client.query(
-                `SELECT max(version)+1 version FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2`,
-                [ownerId(owner), id],
-              )
+              await client.query(`SELECT max(version)+1 version FROM memories WHERE repository_id=$1 AND id=$2`, [
+                owner,
+                id,
+              ])
             ).rows[0].version,
           );
           await client.query(
-            `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,expires_at,supersedes,team_id,level) SELECT id,$3::integer,repository_id,installation_id,$4,$5,$6,$7,$8,source,evidence,confidence,$9,'CANDIDATE',source_fingerprint||':v'||$3::text,$11,expires_at,supersedes,team_id,$12 FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 AND version=$10`,
+            `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,evidence,confidence,uncertainties,status,source_fingerprint,exception_to,expires_at,supersedes,level) SELECT id,$3::integer,repository_id,installation_id,$4,$5,$6,$7,$8,source,evidence,confidence,$9,'CANDIDATE',source_fingerprint||':v'||$3::text,$11,expires_at,supersedes,$12 FROM memories WHERE repository_id=$1 AND id=$2 AND version=$10`,
             [
-              ownerId(owner),
+              owner,
               id,
               version,
               after.type,
@@ -154,21 +145,17 @@ export class MemoryService {
     try {
       return await transaction(client, async () => {
         const result = await client.query(
-          `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
-          [ownerId(owner), id],
+          `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
+          [owner, id],
         );
         if (!result.rows[0]) throw new Error("Memory 不存在或不属于当前归属");
         const before = toMemory(result.rows[0]);
         const expected = action === "deprecate" ? "ACTIVE" : "CANDIDATE";
         if (before.status !== expected) throw new Error(`只有 ${expected} 可以 ${action}`);
-        if (action === "approve" && before.source.kind === "promotion" && before.version === 1) {
-          const original = await promotionOriginal(client, before);
-          return supersedeMemories(client, original, before, actor);
-        }
         if (action === "approve" && before.supersedes && before.supersedes !== before.id) {
           const oldRow = await client.query(
-            `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 AND status='ACTIVE' ORDER BY version DESC LIMIT 1 FOR UPDATE`,
-            [ownerId(owner), before.supersedes],
+            `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 AND status='ACTIVE' ORDER BY version DESC LIMIT 1 FOR UPDATE`,
+            [owner, before.supersedes],
           );
           if (oldRow.rows[0]) return supersedeMemories(client, toMemory(oldRow.rows[0]), before, actor);
         }
@@ -176,12 +163,12 @@ export class MemoryService {
         const status = action === "approve" ? "ACTIVE" : action === "reject" ? "REJECTED" : "DEPRECATED";
         if (action === "approve")
           await client.query(
-            `UPDATE memories SET status='SUPERSEDED',superseded_by=$3,updated_at=now() WHERE ${ownerColumn(owner)}=$1 AND id=$2 AND version<$4 AND status='ACTIVE'`,
-            [ownerId(owner), id, id, before.version],
+            `UPDATE memories SET status='SUPERSEDED',superseded_by=$3,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version<$4 AND status='ACTIVE'`,
+            [owner, id, id, before.version],
           );
         const updated = await client.query(
-          `UPDATE memories SET status=$4,approved_by=CASE WHEN $4='ACTIVE' THEN $3 ELSE approved_by END,approved_at=CASE WHEN $4='ACTIVE' THEN now() ELSE approved_at END,updated_at=now() WHERE ${ownerColumn(owner)}=$1 AND id=$2 AND version=$5 RETURNING *`,
-          [ownerId(owner), id, actor.id, status, before.version],
+          `UPDATE memories SET status=$4,approved_by=CASE WHEN $4='ACTIVE' THEN $3 ELSE approved_by END,approved_at=CASE WHEN $4='ACTIVE' THEN now() ELSE approved_at END,updated_at=now() WHERE repository_id=$1 AND id=$2 AND version=$5 RETURNING *`,
+          [owner, id, actor.id, status, before.version],
         );
         const after = toMemory(updated.rows[0]);
         await audit(client, before, after, actor, action);
@@ -197,12 +184,12 @@ export class MemoryService {
     try {
       return await transaction(client, async () => {
         const oldRow = await client.query(
-          `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
-          [ownerId(owner), oldId],
+          `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
+          [owner, oldId],
         );
         const candidateRow = await client.query(
-          `SELECT * FROM memories WHERE ${ownerColumn(owner)}=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
-          [ownerId(owner), candidateId],
+          `SELECT * FROM memories WHERE repository_id=$1 AND id=$2 ORDER BY (status IN ('ACTIVE','CANDIDATE')) DESC,version DESC LIMIT 1 FOR UPDATE`,
+          [owner, candidateId],
         );
         const old = oldRow.rows[0] ? toMemory(oldRow.rows[0]) : undefined;
         const candidate = candidateRow.rows[0] ? toMemory(candidateRow.rows[0]) : undefined;
@@ -338,20 +325,6 @@ async function supersedeMemories(
   if (candidate.type === "exception" && candidate.exceptionTo === old.id)
     throw new Error("例外必须保留原规则，不能用例外替代原规则");
   await validateException(client, candidate);
-  if (candidate.source.kind === "promotion" && candidate.version === 1 && old.id !== candidate.source.memoryId) {
-    const original = await promotionOriginal(client, candidate);
-    await client.query(
-      "UPDATE memories SET status='SUPERSEDED',superseded_by=$2,updated_at=now() WHERE id=$1 AND version=$3",
-      [original.id, candidate.id, original.version],
-    );
-    await audit(
-      client,
-      original,
-      { ...original, status: "SUPERSEDED", supersededBy: candidate.id },
-      actor,
-      "supersede-old",
-    );
-  }
   await client.query(
     "UPDATE memories SET status='SUPERSEDED',superseded_by=$2,updated_at=now() WHERE id=$1 AND version=$3",
     [old.id, candidate.id, old.version],
@@ -370,31 +343,14 @@ async function supersedeMemories(
   return after;
 }
 
-async function promotionOriginal(client: import("pg").PoolClient, candidate: MemoryRecord) {
-  const source = candidate.source as import("./types.js").PromotionSource;
-  const membership = await client.query(
-    "SELECT 1 FROM team_repositories WHERE team_id=$1 AND repository_id=$2 FOR SHARE",
-    [candidate.teamId, source.repositoryId],
-  );
-  if (!membership.rowCount) throw new MemoryPromotionError("来源仓库已不属于该团队，请忽略提升候选");
-  const result = await client.query(
-    "SELECT * FROM memories WHERE repository_id=$1 AND id=$2 AND version=$3 AND status='ACTIVE' FOR UPDATE",
-    [source.repositoryId, source.memoryId, source.version],
-  );
-  if (!result.rowCount) throw new MemoryPromotionError("提升的项目规则版本已不再生效，请重新提升");
-  return toMemory(result.rows[0]);
-}
-
 async function validateException(client: import("pg").PoolClient, memory: MemoryRecord) {
   if (memory.type !== "exception") return;
   if (!memory.exceptionTo || !Object.values(memory.scope).some((value) => value?.length))
     throw new Error("例外必须关联原规则并限定 Scope");
-  const original = await client.query(
-    `SELECT 1 FROM memories m WHERE id=$1 AND status='ACTIVE' AND
-      ((${ownerColumn(memoryOwner(memory))}=$2) OR
-       ($3::bigint IS NOT NULL AND m.team_id IN (SELECT team_id FROM team_repositories WHERE repository_id=$3)))`,
-    [memory.exceptionTo, ownerId(memoryOwner(memory)), memory.repositoryId],
-  );
+  const original = await client.query(`SELECT 1 FROM memories m WHERE id=$1 AND status='ACTIVE' AND repository_id=$2`, [
+    memory.exceptionTo,
+    memory.repositoryId,
+  ]);
   if (!original.rowCount) throw new Error("例外关联的 ACTIVE 原规则不存在");
 }
 
@@ -416,9 +372,8 @@ export function toMemory(row: Record<string, any>): MemoryRecord {
     activeVersion: row.active_version ? Number(row.active_version) : undefined,
     id: String(row.id),
     version: Number(row.version),
-    repositoryId: row.repository_id === null ? null : Number(row.repository_id),
-    installationId: row.installation_id === null ? null : Number(row.installation_id),
-    teamId: row.team_id ?? undefined,
+    repositoryId: Number(row.repository_id),
+    installationId: Number(row.installation_id),
     level: row.level,
     type: row.type,
     title: row.title,

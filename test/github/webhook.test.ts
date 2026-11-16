@@ -686,7 +686,6 @@ test("模型只可引用实际提供的项目或团队 Memory，ID 和版本必�
       ),
     /未召回/,
   );
-  validateMemoryReferences(result, [{ ...memory, repositoryId: null, teamId: "team" }]);
   assert.throws(() => validateMemoryReferences(result, [{ ...memory, version: 2 }]), /未召回/);
 });
 

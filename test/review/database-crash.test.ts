@@ -579,7 +579,7 @@ test("Reply 核对暂时失败保留 pending，尝试耗尽才 uncertain，期�
   }
 });
 
-test("上下文：团队规则进入 Review、引用与 usage；覆盖停用和移出团队均拒绝引用", { skip: !fixture.url }, async (t) => {
+test("上下文：仓库规则进入 Review、引用与 usage；停用后拒绝引用", { skip: !fixture.url }, async (t) => {
   const s = await setup(t);
   await s.database.accept(s.input, { event: "pull_request", action: "opened" });
   const team = await seedTeamRule(s.database, s.input.repositoryId);
@@ -595,25 +595,17 @@ test("上下文：团队规则进入 Review、引用与 usage；覆盖停用和�
   });
   const memories = new MemoryService(s.database);
   const logs = t.mock.method(console, "info", () => undefined);
-  for (const [index, phase] of ["member", "level", "disable", "left"].entries()) {
-    if (phase === "level")
-      await s.database.pool.query(
-        "INSERT INTO rule_overrides(repository_id,memory_id,team_id,action,level,reason,actor) VALUES($1,$2,$3,'level','info','本项目仅作参考','test')",
-        [s.input.repositoryId, team.id, team.teamId],
-      );
+  for (const [index, phase] of ["active", "level", "disable"].entries()) {
+    if (phase === "level") await s.database.pool.query("UPDATE memories SET level='info' WHERE id=$1", [team.id]);
     if (phase === "disable")
-      await s.database.pool.query("UPDATE rule_overrides SET action='disable',level=NULL WHERE repository_id=$1", [
-        s.input.repositoryId,
-      ]);
-    if (phase === "left")
-      await s.database.pool.query("DELETE FROM team_repositories WHERE repository_id=$1", [s.input.repositoryId]);
+      await s.database.pool.query("UPDATE memories SET status='DEPRECATED' WHERE id=$1", [team.id]);
     if (index)
       await s.database.accept(
         { ...s.input, deliveryId: randomUUID(), prNumber: 2 + index },
         { event: "pull_request", action: "opened" },
       );
     const job = await s.claim();
-    const expected = phase === "member" || phase === "level";
+    const expected = phase === "active" || phase === "level";
     const reference: Finding = { ...s.finding, category: "team_rule", memory: { id: team.id, version: 1, source: {} } };
     await createReviewProcessor(s.config, s.github, s.database, memories, async (input) => {
       assert.deepEqual(
@@ -653,12 +645,12 @@ test("上下文：团队规则进入 Review、引用与 usage；覆盖停用和�
   }
   assert.equal(
     logs.mock.calls.filter((call) => JSON.parse(call.arguments[0]).event === "review_findings_dropped").length,
-    2,
+    1,
   );
 });
 
-test("上下文：Reply 带回团队原规则；项目停用或移出团队后不带回", { skip: !fixture.url }, async (t) => {
-  for (const phase of ["member", "disable", "left"])
+test("上下文：Reply 带回本仓库原规则；停用或其他仓库的规则不带回", { skip: !fixture.url }, async (t) => {
+  for (const phase of ["active", "disable", "foreign"])
     await t.test(phase, async (t) => {
       const s = await setup(t);
       const { job, result } = await s.reply();
@@ -668,19 +660,19 @@ test("上下文：Reply 带回团队原规则；项目停用或移出团队后�
         team.id,
       ]);
       if (phase === "disable")
-        await s.database.pool.query(
-          "INSERT INTO rule_overrides(repository_id,memory_id,team_id,action,reason,actor) VALUES($1,$2,$3,'disable','本项目不用','test')",
-          [job.repositoryId, team.id, team.teamId],
-        );
-      if (phase === "left")
-        await s.database.pool.query("DELETE FROM team_repositories WHERE repository_id=$1", [job.repositoryId]);
+        await s.database.pool.query("UPDATE memories SET status='DEPRECATED' WHERE id=$1", [team.id]);
+      if (phase === "foreign")
+        await s.database.pool.query("UPDATE memories SET repository_id=$2 WHERE id=$1", [
+          team.id,
+          job.repositoryId + 100_000,
+        ]);
       await createReplyProcessor(
         s.config,
         s.database,
         new MemoryService(s.database),
         s.github,
         async (_config, _root, prompt, binding) => {
-          const expected = phase === "member";
+          const expected = phase === "active";
           assert.deepEqual(
             binding.memories.map((rule) => rule.id),
             expected ? [team.id] : [],
@@ -697,7 +689,7 @@ test("上下文：Reply 带回团队原规则；项目停用或移出团队后�
     });
 });
 
-test("上下文：提取器明确团队归属，保存团队例外与冲突，丢弃替代团队规则", { skip: !fixture.url }, async (t) => {
+test("上下文：提取器只看本仓库规则，保存例外、冲突和替代关系", { skip: !fixture.url }, async (t) => {
   const s = await setup(t);
   s.state.open = false;
   await s.database.accept(s.input, {
@@ -713,8 +705,7 @@ test("上下文：提取器明确团队归属，保存团队例外与冲突，�
   await createDecisionProcessor(s.config, s.database, service, s.github, async (input) => {
     const rules = (input.prompt as any).existingRules;
     assert.equal(rules[0].id, team.id);
-    assert.equal(rules[0].teamId, team.teamId);
-    assert.equal(rules[0].repositoryId, null);
+    assert.equal(rules[0].repositoryId, job.repositoryId);
     const proposal: DecisionProposal = {
       type: "exception",
       title: "项目例外",
@@ -742,8 +733,8 @@ test("上下文：提取器明确团队归属，保存团队例外与冲突，�
         {
           ...proposal,
           type: "engineering_rule",
-          title: "禁止替代",
-          content: "不应替代团队规则",
+          title: "新的替代",
+          content: "本仓库新的规则",
           relation: { supersedes: team.id },
         },
       ]),
@@ -752,8 +743,8 @@ test("上下文：提取器明确团队归属，保存团队例外与冲突，�
       usage: emptyUsage(),
     };
   })(job);
-  const candidates = await service.list(job.repositoryId);
-  assert.equal(candidates.length, 2);
+  const candidates = (await service.list(job.repositoryId)).filter((rule) => rule.status === "CANDIDATE");
+  assert.equal(candidates.length, 3);
   const exception = candidates.find((rule) => rule.type === "exception")!;
   assert.equal(exception.exceptionTo, team.id);
   await service.transition(job.repositoryId, exception.id, "approve", { id: 1, login: "maintainer" });
@@ -765,7 +756,8 @@ test("上下文：提取器明确团队归属，保存团队例外与冲突，�
   const event = logs.mock.calls
     .map((call) => JSON.parse(call.arguments[0]))
     .find((event) => event.event === "decisions_extracted");
-  assert.deepEqual(event.discardedReasons, { unknown_rule: 1 });
+  assert.deepEqual(event.discardedReasons, {});
+  assert.equal(candidates.find((rule) => rule.title === "新的替代")?.supersedes, team.id);
   await s.database.finishJob(job);
 });
 

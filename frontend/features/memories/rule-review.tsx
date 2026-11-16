@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { RuleReviewItem, RuleReviewReason } from "../../../src/memory/types.js";
 import { api, messageOf } from "../../api/client.js";
 import { dateText, numberText } from "../../format.js";
-import type { Team, Repository } from "../../types.js";
+import type { Repository } from "../../types.js";
 
 const labels: Record<RuleReviewReason["reason"], string> = {
   noisy: "噪声大",
@@ -25,13 +25,11 @@ function evidence(reason: RuleReviewReason) {
 }
 export function RuleReviewRows({
   items,
-  teams,
   repositories,
   suffix,
   refresh,
 }: {
   items: RuleReviewItem[];
-  teams: Team[];
   repositories: Repository[];
   suffix: string;
   refresh: () => Promise<void>;
@@ -57,11 +55,7 @@ export function RuleReviewRows({
               暂不处理
             </button>
           </div>
-          <p className="rule-meta">
-            {memory.teamId
-              ? `团队：${teams.find((team) => team.id === memory.teamId)?.name}`
-              : `项目：${repositories.find((repo) => repo.id === memory.repositoryId)?.fullName}`}
-          </p>
+          <p className="rule-meta">仓库：{repositories.find((repo) => repo.id === memory.repositoryId)?.fullName}</p>
           <ul className="rule-review-reasons">
             {reasons.map((reason) => (
               <li key={reason.reason}>

@@ -590,7 +590,6 @@ test("提取器只带相关生效规则，逐条丢弃并保存替代、例外�
             "exceptionTo",
             "supersedes",
             "repositoryId",
-            "teamId",
             "level",
           ].sort(),
         );

@@ -21,7 +21,6 @@ type Repository = {
   installation_id: string;
   full_name: string;
   revoked_at: Date | null;
-  team_ids: string[];
 };
 
 export class RuleReviewService {
@@ -51,13 +50,8 @@ export class RuleReviewService {
     const repositories = scoped.length
       ? (
           await this.database.pool.query<Repository>(
-            `SELECT r.*,ARRAY(SELECT team_id::text FROM team_repositories WHERE repository_id=r.id) team_ids
-       FROM repositories r WHERE r.id=ANY($1::bigint[]) OR r.id IN
-       (SELECT repository_id FROM team_repositories WHERE team_id=ANY($2::uuid[])) ORDER BY r.id`,
-            [
-              scoped.flatMap((memory) => (memory.repositoryId === null ? [] : [memory.repositoryId])),
-              scoped.flatMap((memory) => (memory.teamId ? [memory.teamId] : [])),
-            ],
+            "SELECT r.* FROM repositories r WHERE r.id=ANY($1::bigint[]) ORDER BY r.id",
+            [scoped.map((memory) => memory.repositoryId)],
           )
         ).rows
       : [];
@@ -104,9 +98,7 @@ export class RuleReviewService {
       if (memory.expiresAt && Date.parse(memory.expiresAt) <= now.getTime())
         reasons.push({ reason: "expired", expiresAt: memory.expiresAt });
       if (memory.scope.paths?.length && !dismissed.has(`${memory.id}:path_invalid`)) {
-        const applicable = repositories.filter((repo) =>
-          memory.teamId ? repo.team_ids.includes(memory.teamId) : Number(repo.id) === memory.repositoryId,
-        );
+        const applicable = repositories.filter((repo) => Number(repo.id) === memory.repositoryId);
         // 只有所有适用仓库都能证实没有匹配，才标记失效；截断、取树失败或零仓库都不是失效证据。
         if (
           applicable.length &&

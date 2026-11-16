@@ -39,15 +39,15 @@
 - 部署期间，一个 30 分钟的开发任务不会丢。
 - 不经过企微也能派任务（管理页、API、Issue 标签）。
 
-## 阶段 2：团队级知识模型与上下文编译器
+## 阶段 2：仓库规则模型与上下文编译器
 
 起点：`df93826`（2026-11-15）。设计见 [团队规则决策](../../.agents/decisions/team-memory.md)。
 
 | 编号 | 内容 | 状态 |
 | --- | --- | --- |
 | ARCH-2-A | 不重启就能接入新仓库（服务管理员在管理页接入）；管理页的 GitHub 权限检查加缓存 | 已完成（`23831f0`）；真实 GitHub 安装清单未验证 |
-| ARCH-2-B | 团队、团队成员、团队规则；项目覆盖（停用／调整级别，写理由）；规则级别 must／should／info；项目规则提升为团队规则 | 已完成（`b0e888a`）；团队规则要等 2-C 才进入审查 |
-| ARCH-2-C | 上下文编译器：项目规则 + 所属团队规则 − 覆盖，例外按路径生效，项目差异通过例外或停用覆盖表达；各类 Agent 共用规则入口 | 已完成（`4db020a`）；Review 这一批仍只给全文，索引按需读取留给 2-G |
+| ARCH-2-B | 用户 2026-11-15 撤销：每个仓库就是一个团队，保留规则级别 | 独立团队层已删除；验证见下方撤销证据 |
+| ARCH-2-C | 上下文编译器：本仓库 ACTIVE 规则，例外按路径生效；各类 Agent 共用规则入口 | 已完成（`4db020a`）；Review 这一批仍只给全文，索引按需读取留给 2-G |
 | ARCH-2-E | 规则复查队列：噪声大、沉睡、路径失效、到期；合并时推断"疑似已修复"（和开发者确认的修复分开统计） | 已完成（`3587c59`）；真实 GitHub 未验收 |
 | ARCH-2-F | 召回评测集（确定性）和提取评测集（真实模型，先放 6 个样例） | 评测入口完成（`648ace7`）；真实合并 PR 标注集待用户提供 |
 | ARCH-2-G | Review 先给规则索引、按需读全文；服务核对适用的 must 规则是否都检查过（改 Prompt，要用真实模型回归） | 已完成（`f3ce238`、`df8ca02`）；普通输入逐字相同，must／索引新能力真实模型各 3/3，全量验证通过 |
@@ -57,7 +57,7 @@
 
 - 规则提取评测集（至少 30 个人工标注的合并 PR）准确率 ≥ 0.7。——目前只有 6 个样例，真实标注需要用户提供。
 - 规则召回评测集在给定体量预算下覆盖率 ≥ 0.9。
-- 跨项目订阅（团队规则）和项目覆盖都能生效。
+- 本仓库规则隔离生效，跨仓库复制导入保留；原跨项目继承与覆盖验收已撤销。
 - 噪声大的规则会被自动标出。
 
 评测的运行方法、评分口径和适用限制见 [评测说明](../../eval/README.md)。
@@ -193,7 +193,7 @@
 - 审查修复前开销估算：普通 commit/ref/PR 每步约增加 6 次短 SQL；快照多遍历工作区并编码压缩一次，峰值内存随改动量增长，未做生产压测。硬崩溃最多丢失最近约 5 分钟未保存改动（保存故障另记日志），耗时保守计到租约截止；正常 stop 等待最终快照。新 issue 核对最近 100 个，评论完整分页。未运行真实 GitHub/模型、真实 Webhook、跨物理机器或 OS kill 演练；未修改进程角色拆分相关文件。
 - 收尾检查：全量后 `npm run format` 检查 201 个文件，无需修改；`npm run check:docs` 36 个 Markdown 文件、306 个本地链接与锚点通过；`npm audit --audit-level=high` 为 0 vulnerabilities；`git diff --check` 通过。
 
-**ARCH-2-B**（2026-11-15，基于 `e4bc57c`，分支 `arch/p2-b-teams`，提交 `b0e888a`，合并 `c126221`）
+**ARCH-2-B（历史实现，用户已撤销独立团队层）**（2026-11-15，基于 `e4bc57c`，分支 `arch/p2-b-teams`，提交 `b0e888a`，合并 `c126221`）
 
 - 迁移 `019_teams.sql`：`teams`、`team_members`（admin／member）、`team_repositories`；`memories` 加 `team_id`、`level`（must／should／info，默认 should），`repository_id` 与 `team_id` 恰好一个非空；`rule_overrides`（停用或改级别，理由必填，仓库移出团队时级联删除，触发器核对规则属于该团队）；导入预览可归属团队。
 - 管理：服务管理员建团队、设仓库和团队管理员；团队管理员管成员与团队规则（编辑、确认、忽略、替代、停用、Markdown 导入）。项目维护者在规则详情里对团队规则做本项目覆盖，设置和取消都要写理由并记审计。项目 ACTIVE 规则可提升为所属团队的候选，团队管理员批准时原项目规则在同一事务转为已替代。
@@ -285,7 +285,30 @@
 - 阶段验收对照：
   - 规则召回覆盖率 ≥ 0.9：合成召回集上全文 52/85（61.18%），全文＋目录 85/85；2-G 起 Review 收到目录并可按需读全文，真实模型目录变体 3/3 读到并正确引用。这是 16 个合成样例的结果，不是真实仓库数据。
   - 规则提取准确率 ≥ 0.7（至少 30 个人工标注的合并 PR）：**未验收**，目前只有 6 个合成样例（修复后精确率 100%、召回率 77.78%，未召回的 2 条是上游 502）；真实标注需要用户提供。
-  - 团队规则和项目覆盖生效：数据库用例覆盖（团队 must 规则进入 Review、停用覆盖后不再提供、移出团队后不再提供），未在真实仓库验证。
+  - 原团队规则和项目覆盖的历史验证已被后续撤销决定替代，当前验收改为仓库规则隔离、级别与现有导入。
   - 噪声大的规则自动标出：复查队列 noisy 原因（引用 ≥ 3 次且撤回 ≥ 40%），数据库用例覆盖。
 - 未做：真实部署与滚动发布、真实 GitHub 写入（开发任务续做、规则文件同步 PR、复查队列的文件树）、真实 Webhook 端到端。
+
+**撤销独立团队层，保留仓库规则能力**（2026-11-15，基于 `1a542c2`，分支 `arch/remove-teams`）
+
+- 按用户决定，每个仓库就是一个团队。删除团队、成员／仓库关系、团队归属、项目覆盖、规则提升与团队导入；规则管理、上下文、引用统计、复查队列和规则同步只处理所属仓库。保留“团队规则”产品名称及 `activeTeamMemories`、`teamRuleIndex`、`read_team_rule`、`team_rule` 标识，保留级别编辑、must 检查、索引读取、仓库接入与仓库间复制导入。
+- 按任务书原地将 `019_teams.sql` 改为 `019_rule_levels.sql`，仅保留 `memories.level`；`022_rules_sync.sql` 去掉团队与覆盖触发器，保留仓库规则及开关触发、串行、去重和恢复。依据用户已核对的未部署前提，不新增删除迁移，不操作持久业务库。
+- `rg -n "team_id|teamId|team_members|team_repositories|rule_overrides|promotion|/api/teams" src frontend migrations` 零命中。数据库用例验证新 schema 不含团队表、`team_id` 列，bootstrap 无 teams，删除的 API 沿用既有 404。
+- 定向构建与测试：`npm run build` 后，加载 `.env` 运行 memory 全集、admin 的 rule-levels/admin 数据库文件、rules-sync 全集、review 的 database-crash/agent、github/webhook、health/database-health、development/database-development，206/206 通过、0 跳过，51.57 秒。覆盖仓库权限与 CSRF、级别批准前后、跨仓库隔离、同步触发与恢复、复查、真实 Pi 转发索引工具、must 检查和各 Agent 取得的仓库规则。
+- 全量顺序执行：`npm test` 363 项，212 通过、151 跳过、0 失败，73.37 秒（普通命令未加载数据库，另有 Semgrep 缺失）；随后 `npm run test:db` 191/191 通过、0 跳过、0 失败，150.45 秒。PostgreSQL 使用独立临时 schema；GitHub 与模型使用替身，未运行真实任务队列。
+- `npm run check:docs` 36 文档／311 本地链接与锚点通过；`npm run check:format` 257 文件通过；`npm audit --audit-level=high` 为 0 vulnerabilities。收尾仅清理详情文案空白、重复片段和测试未用导入，重新构建及规则级别数据库测试通过。
+- Prompt 核对：Review 导出文本 SHA-256 改前改后均为 `239043580721c03151a27009bd46e5378b2770a09ef99f4f2c4b6cfc12ff12d5`；Reply、Health、开发与开发修订模板哈希相同，开发插值展开后也相同，相关模块与插值依赖逐字比对通过。仅 Decision Extractor 的归属说明改为所有关系只能指向本仓库规则；其 Prompt 哈希由 `45c126f73bf44c11ff149955ad11aa63e19fbc49471784cc3a2493265966b0b2` 变为 `4346b2cb93250f37102030e4e31207f7a685f09887982cab0c96d014fa96bba6`。
+- 召回评测改前改后各运行默认适配器及 `--adapter=./eval/recall/context-adapter.mjs`：16 个合成样例，默认全文／provided 均 52/85（61.18%）；编译器全文 52/85，全文＋索引 85/85（100%）。结果一致，编译器 16 个 case 的全部结果及汇总 JSON 逐项相同。默认基线与编译器基线曾共用默认输出路径，默认基线只保留当轮终端统计；改后两份与编译器基线已分别归档。
+- 提取评测改前改后各执行 `node --env-file=.env eval/evaluate-extraction.mjs --runs=3`，6 个相同合成样例／固定 SHA 各跑 3 次，角色 decision_extractor，tuzi / gpt-6.1-sol，thinking high。改前 18/18 成功，420.92 秒，实际 74,601 tokens，未回报预留 0；改后 17/18 成功，659.53 秒，实际 62,654 tokens，未回报预留 88,949。两轮 TP=9、FP=0、FN=0，精确率／召回率均 100%。改后 `04-unresolved-discussion` 第 2 次上游请求失败（进程退出 1），该 case 预期无候选，因此没有增加 FN；另 `05-rule-exception` 第 1 次成功运行中有未回报预留。未将这些未知消耗记零，也未将改后评测记为全通过；不是 30 个真实合并 PR 的阶段验收。
+- 页面：真实管理 handler＋临时 PostgreSQL schema＋替身登录/GitHub，用 ego-browser 确认无团队导航／归属筛选／覆盖／提升；实际完成 must→info 编辑并批准、仓库筛选、其他仓库复制 1 条、Markdown 导入 2 条。截图显示 4 条规则均属目标仓库、无横向溢出；截图及快照在忽略的 `work/arch-remove-teams/`。临时服务、浏览器空间及 schema 已回收。
+- 开销：规则读取仍为 1 次 SQL，去掉团队关系子查询与覆盖连接；bootstrap 和列表去掉团队及团队规则查询，仓库筛选不再发覆盖请求。没有新增依赖或模型调用；未测生产延迟、内存或包体积变化。新增的拒绝路径：无，原有仓库权限、CSRF、级别与例外校验继续生效。
+- 限制：无真实 Webhook、GitHub 发布／Review／reply URL，无真实业务 delivery／Job／finding；数据库日志中的 ID 是测试数据，模型评测仅为本地固定快照。未部署、未 push，不把阶段 2 的真实提取数据集或其他阶段人工验收标为完成。完整报告 `/tmp/arch-remove-teams-report.md`，日志、Prompt 哈希及评测 JSON 在忽略的 `work/arch-remove-teams/`。
+
+**界面任务集成后复验**（2026-11-15）
+
+- 按用户补充要求，将删除团队提交 rebase 到 `feat/integration` 的 `974dd33`。唯一冲突是规则页归属／团队筛选区块，删除该区块并保留新 Select；共享组件、简化后的状态展示、规则级别中文标签与样式均保留。`rg -n "<select" frontend` 零命中，原多团队关键词检索仍零命中。
+- Rebase 后重新顺序运行 `npm test`：363 项，212 通过、151 跳过、0 失败，48.67 秒；`npm run test:db`：191/191，0 失败、0 跳过，124.76 秒。此前另一个任务出现挂起的“停止放回时保存代码快照”本轮 1.55 秒通过，没有修改该用例，也无需单独重跑。
+- Prompt 哈希重新核对相同；默认召回和编译器召回各重跑一次，两个适配器的全部 case 与汇总均与 rebase 前逐项相同。提取器、模型输入路径与评测样例未因 rebase 改变，保留前述真实模型对比及上游失败记录，未重复消耗模型。
+- ego-browser 在新 Select 上重新完成键盘仓库筛选、级别 FormData 提交并批准、跨仓库复制 1 条和 Markdown 导入 2 条；弹窗目标仅列仓库，页面无原生 select、无横向溢出。已查看 `work/arch-remove-teams/ui-rebased.png`，页面快照同目录；临时服务、浏览器空间及 schema 已回收。
+- 最终 `npm run format` 无修改，`npm run check:format` 259 文件通过，`npm run check:docs` 36 文档／311 链接与锚点通过，`npm audit --audit-level=high` 0 vulnerabilities，`git diff --check` 通过。
 

@@ -17,31 +17,17 @@ import { loadDevelopmentConfig } from "../../src/development/config.js";
 const fixture = useTestDatabase();
 const DAY = 86_400_000;
 async function seed(database: Database, start: number) {
-  const teamId = randomUUID();
-  await database.pool.query("INSERT INTO teams(id,name,created_by) VALUES($1,$2,1)", [teamId, teamId]);
   for (const id of [start, start + 1, start + 2])
     await database.pool.query("INSERT INTO repositories(id,installation_id,full_name) VALUES($1,1,$2)", [
       id,
       `owner/r${id}`,
     ]);
-  await database.pool.query("INSERT INTO team_repositories(team_id,repository_id) VALUES($1,$2),($1,$3)", [
-    teamId,
-    start,
-    start + 1,
-  ]);
-  const rule = async (owner: number | string, paths: string[] = [], status = "ACTIVE"): Promise<string> => {
+  const rule = async (repositoryId: number, paths: string[] = [], status = "ACTIVE"): Promise<string> => {
     const id = randomUUID();
     await database.pool.query(
-      `INSERT INTO memories(id,version,repository_id,installation_id,team_id,type,title,content,rationale,scope,source,confidence,status,source_fingerprint,approved_at)
-       VALUES($1::uuid,1,$2,$3,$4,'engineering_rule',$1::text,'rule','reason',$5,'{"pullRequestNumber":1,"commentIds":[1],"commitSha":"merged"}',1,$6,$1::text,'2026-01-01')`,
-      [
-        id,
-        typeof owner === "number" ? owner : null,
-        typeof owner === "number" ? 1 : null,
-        typeof owner === "string" ? owner : null,
-        { paths },
-        status,
-      ],
+      `INSERT INTO memories(id,version,repository_id,installation_id,type,title,content,rationale,scope,source,confidence,status,source_fingerprint,approved_at)
+       VALUES($1::uuid,1,$2,1,'engineering_rule',$1::text,'rule','reason',$3,'{"pullRequestNumber":1,"commentIds":[1],"commitSha":"merged"}',1,$4,$1::text,'2026-01-01')`,
+      [id, repositoryId, { paths }, status],
     );
     return id;
   };
@@ -101,10 +87,10 @@ async function seed(database: Database, start: number) {
     );
     return id;
   };
-  return { teamId, rule, review, finding };
+  return { rule, review, finding };
 }
 
-test("复查：噪声、90 天忽略、沉睡、到期和生效版本；团队统计跨仓库", { skip: !fixture.url }, async () => {
+test("复查：噪声、90 天忽略、沉睡、到期和生效版本；统计仅限本仓库", { skip: !fixture.url }, async () => {
   const database = new Database(fixture.url!);
   try {
     const s = await seed(database, 91001);
@@ -112,7 +98,7 @@ test("复查：噪声、90 天忽略、沉睡、到期和生效版本；团队�
     const service = new RuleReviewService(database, {} as any, new Set(), () => now);
     const memories = new MemoryService(database);
     const project = await s.rule(91001),
-      team = await s.rule(s.teamId);
+      team = await s.rule(91001);
     const pending = await s.rule(91001, [], "CANDIDATE");
     const a = await s.review(),
       b = await s.review(91002);
@@ -129,18 +115,18 @@ test("复查：噪声、90 天忽略、沉睡、到期和生效版本；团队�
     await s.finding(a, team, "WITHDRAWN", { binding: "pending" });
     await database.saveReviewMemoryUsage(a, [{ id: team, version: 1 }]);
     await database.saveReviewMemoryUsage(b, [{ id: team, version: 1 }]);
-    assert.deepEqual((await memories.list({ teamId: s.teamId }))[0]!.usage, {
-      provided: 2,
-      cited: 4,
-      fixed: 1,
+    assert.deepEqual((await memories.list(91001)).find((rule) => rule.id === team)!.usage, {
+      provided: 1,
+      cited: 2,
+      fixed: 0,
       inferredFixed: 1,
       withdrawn: 1,
       exception: 0,
-      open: 2,
+      open: 1,
       lastCitedAt: "2026-10-20T00:00:00.000Z",
     });
     assert.equal((await memories.list(91001)).find((item) => item.id === project)!.usage.cited, 5);
-    const queue = () => service.list([91001, { teamId: s.teamId }]);
+    const queue = () => service.list([91001]);
     const initial = (await queue()).items;
     assert.deepEqual(
       initial.map((item) => item.memory.id),
@@ -199,7 +185,7 @@ test("复查：噪声、90 天忽略、沉睡、到期和生效版本；团队�
   }
 });
 
-test("路径复查：所有适用仓库、24 小时缓存、truncated 和读取失败不误判", { skip: !fixture.url }, async (t) => {
+test("路径复查：各仓库独立判断、24 小时缓存、truncated 和读取失败不误判", { skip: !fixture.url }, async (t) => {
   const database = new Database(fixture.url!);
   try {
     const s = await seed(database, 92001);
@@ -227,10 +213,10 @@ test("路径复查：所有适用仓库、24 小时缓存、truncated 和读取�
       },
     };
     const service = new RuleReviewService(database, github, new Set(["owner/r92001", "owner/r92002"]), () => now);
-    const missing = await s.rule(s.teamId, ["missing/**"]),
-      present = await s.rule(s.teamId, ["src/**"]),
+    const missing = await s.rule(92002, ["missing/**"]),
+      present = await s.rule(92002, ["src/**"]),
       local = await s.rule(92001, ["src/**"]);
-    const queue = () => service.list([92001, { teamId: s.teamId }]);
+    const queue = () => service.list([92001, 92002]);
     assert.equal(calls, 0, "未打开队列不取树");
     let result = await queue();
     assert.deepEqual(result.items.map((item) => item.memory.id).sort(), [missing, local].sort());
@@ -245,7 +231,7 @@ test("路径复查：所有适用仓库、24 小时缓存、truncated 和读取�
     assert.equal(calls, 4);
     assert.ok(
       !result.items.some((item) => [missing, present].includes(item.memory.id)),
-      "部分树无法证明团队所有仓库均无匹配",
+      "截断树无法证明该仓库没有匹配路径",
     );
     assert.deepEqual(result.uncheckedRepositories, ["owner/r92002"]);
     await queue();
@@ -330,7 +316,7 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
   }
 });
 
-test("复查 API 沿用维护者和团队管理员权限、CSRF、必填理由；继承列表显示团队汇总", { skip: !fixture.url }, async () => {
+test("复查 API 沿用仓库维护权限、CSRF、必填理由；列表和统计不跨仓库", { skip: !fixture.url }, async () => {
   const database = new Database(fixture.url!);
   const stores = { sessions: memoryStore<any>(8 * 60 * 60_000, 100), states: memoryStore<number>(60_000, 100) };
   let server: ReturnType<typeof createServer> | undefined;
@@ -338,16 +324,13 @@ test("复查 API 沿用维护者和团队管理员权限、CSRF、必填理由�
     const s = await seed(database, 94001);
     const project = await s.rule(94001),
       foreign = await s.rule(94003),
-      team = await s.rule(s.teamId);
+      team = await s.rule(94002);
     const review = await s.review(),
       other = await s.review(94002);
     for (const job of [review, other]) {
       for (let i = 0; i < 3; i++) await s.finding(job, team, "WITHDRAWN");
       await database.saveReviewMemoryUsage(job, [{ id: team, version: 1 }]);
     }
-    await database.pool.query("INSERT INTO team_members(team_id,github_login,role) VALUES($1,'manager','admin')", [
-      s.teamId,
-    ]);
     const secret = "s".repeat(32);
     const config = {
       development: loadDevelopmentConfig({}),
@@ -380,11 +363,7 @@ test("复查 API 沿用维护者和团队管理员权限、CSRF、必填理由�
     );
     response = await fetch(origin + "/api/rule-review", { headers: headers("manager") });
     const teamQueue: any = await response.json();
-    assert.deepEqual(
-      teamQueue.items.map((item: any) => item.memory.id),
-      [team],
-    );
-    assert.equal(teamQueue.items[0].memory.usage.cited, 6);
+    assert.deepEqual(teamQueue.items, []);
     const post = (id: string, user: string, value: unknown, csrf = "csrf") =>
       fetch(origin + `/api/memories/${id}/dismiss-review`, {
         method: "POST",
@@ -402,13 +381,12 @@ test("复查 API 沿用维护者和团队管理员权限、CSRF、必填理由�
     ])
       assert.equal((await post(project, "maintainer", value)).status, 422);
     assert.equal((await post(project, "maintainer", { reason: "sleeping", note: "保留观察" })).status, 200);
-    assert.equal((await post(team, "manager", { reason: "noisy", note: "先修审查方式" })).status, 200);
+    assert.equal((await post(team, "manager", { reason: "noisy", note: "先修审查方式" })).status, 403);
     const remaining: any = await (await fetch(origin + "/api/rule-review", { headers: headers("maintainer") })).json();
     assert.equal(remaining.items.length, 0);
     const bootstrap: any = await (await fetch(origin + "/api/bootstrap", { headers: headers("maintainer") })).json();
-    const inherited = bootstrap.memories.find((item: any) => item.id === team);
-    assert.equal(inherited.usage.cited, 6);
-    assert.equal(inherited.usage.provided, 2);
+    assert.ok(bootstrap.memories.every((item: any) => item.repositoryId === 94001));
+    assert.ok(!("teams" in bootstrap));
   } finally {
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     await database.close();

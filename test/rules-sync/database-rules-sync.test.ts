@@ -207,7 +207,7 @@ for (const interruption of ["before-pr", "after-pr"] as const)
     }
   });
 
-test("团队规则、停用/级别覆盖、取消覆盖、加入/移出团队、导入/替代/停用触发；关闭项目不入队", {
+test("仓库规则批准、级别更新、导入、替代、停用与删除触发；其他仓库和关闭项目不入队", {
   skip: !fixture.url,
 }, async () => {
   const { db, memories, seed, enable } = await setup(1104);
@@ -226,39 +226,18 @@ test("团队规则、停用/级别覆盖、取消覆盖、加入/移出团队、
     const clear = () => db.pool.query("UPDATE jobs SET status='succeeded' WHERE job_type='RULES_SYNC'");
     await clear();
     const team = await seedTeamRule(db, 1104);
-    await db.pool.query("INSERT INTO team_repositories(team_id,repository_id) VALUES($1,1105),($1,1106)", [
-      team.teamId,
-    ]);
-    assert.deepEqual(await count(), [
-      { id: 1104, n: 1 },
-      { id: 1106, n: 1 },
-    ]);
+    assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
     await clear();
-    await memories.edit({ teamId: team.teamId }, team.id, { content: "团队新正文" }, actor);
+    await seedTeamRule(db, 1105);
+    assert.deepEqual(await count(), [], "同步关闭的仓库不入队");
+    await memories.edit(1104, team.id, { content: "仓库新正文", level: "info" }, actor);
     assert.deepEqual(await count(), []);
-    await memories.transition({ teamId: team.teamId }, team.id, "approve", actor);
-    assert.deepEqual(await count(), [
-      { id: 1104, n: 1 },
-      { id: 1106, n: 1 },
-    ]);
-    await clear();
-    await db.pool.query(
-      "INSERT INTO rule_overrides(repository_id,memory_id,team_id,action,level,reason,actor) VALUES(1104,$1,$2,'level','info','本项目情况','test')",
-      [team.id, team.teamId],
-    );
+    await memories.transition(1104, team.id, "approve", actor);
     assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
+    assert.equal((await memories.context(1104, { text: "" })).full.find((rule) => rule.id === team.id)?.level, "info");
     await clear();
-    await db.pool.query("UPDATE rule_overrides SET action='disable',level=NULL WHERE repository_id=1104");
+    await memories.transition(1104, team.id, "deprecate", actor);
     assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
-    await clear();
-    await db.pool.query("DELETE FROM rule_overrides WHERE repository_id=1104");
-    assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
-    await clear();
-    await db.pool.query("DELETE FROM team_repositories WHERE repository_id=1104");
-    assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
-    await clear();
-    await memories.transition({ teamId: team.teamId }, team.id, "deprecate", actor);
-    assert.deepEqual(await count(), [{ id: 1106, n: 1 }]);
     await clear();
     const rule = await seed("要被替代的规则");
     await memories.transition(1104, rule, "approve", actor);
@@ -285,20 +264,21 @@ test("团队规则、停用/级别覆盖、取消覆盖、加入/移出团队、
     );
     assert.deepEqual(await count(), [{ id: 1104, n: 1 }]);
     await clear();
-    const teamPreview = await imports.preview({ teamId: team.teamId }, actor, {
+    const other = repository((await db.pool.query("SELECT * FROM repositories WHERE id=1106")).rows[0]);
+    const otherPreview = await imports.preview(other, actor, {
       kind: "markdown",
       documentName: "rules.md",
       markdown: RULE_IMPORT_EXAMPLE,
     });
-    await imports.confirm(
-      { teamId: team.teamId },
+    const imported = await imports.confirm(
+      other,
       actor,
-      teamPreview.id,
-      teamPreview.rules.map((rule) => rule.key),
+      otherPreview.id,
+      otherPreview.rules.map((rule) => rule.key),
     );
     assert.deepEqual(await count(), [{ id: 1106, n: 1 }]);
     await clear();
-    await db.pool.query("DELETE FROM teams WHERE id=$1", [team.teamId]);
+    await db.pool.query("DELETE FROM memories WHERE id=ANY($1::uuid[])", [imported.imported]);
     assert.deepEqual(await count(), [{ id: 1106, n: 1 }]);
   } finally {
     await db.pool.query("UPDATE jobs SET status='succeeded' WHERE job_type='RULES_SYNC'");

@@ -1,12 +1,11 @@
 import { Select } from "../../components/common/select.js";
 import { memorySourceLabel, ruleLevelLabels } from "../../../src/memory/types.js";
-import { TeamRuleActions } from "./team-rule-actions.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
-import type { Memory, Team, Repository as Repo } from "../../types.js";
+import type { Memory, Repository as Repo } from "../../types.js";
 
 // limit：列表里只显示前几项，其余收成“+N”，完整内容在规则详情里看。
 export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: number }) {
@@ -38,11 +37,7 @@ export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: n
 
 export function RulePanel({
   item,
-  teams,
-  canManage,
-  reload,
   suffix,
-  repositoryContext,
   repository,
   rules,
   candidates,
@@ -52,11 +47,7 @@ export function RulePanel({
   error,
 }: {
   item: Memory;
-  teams: Team[];
-  canManage: boolean;
-  reload: () => Promise<void>;
   suffix: string;
-  repositoryContext?: Repo;
   repository?: Repo;
   rules: Memory[];
   candidates: Memory[];
@@ -88,16 +79,14 @@ export function RulePanel({
     <>
       <Modal drawer titleId="rule-detail-title" onClose={close}>
         <div className="drawer-head">
-          <span className="eyebrow">{item.teamId ? "团队规则" : "项目规则"}</span>
+          <span className="eyebrow">团队规则</span>
           <button className="icon-button" aria-label="关闭规则详情" onClick={close}>
             ×
           </button>
         </div>
         <div className="drawer-body">
           <h2 id="rule-detail-title">{item.title}</h2>
-          <p className="muted rule-owner">
-            {item.teamId ? teams.find((team) => team.id === item.teamId)?.name : repository?.fullName}
-          </p>
+          <p className="muted rule-owner">{repository?.fullName}</p>
           <div className="rule-status-line" role="status">
             <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
             <Status
@@ -117,9 +106,7 @@ export function RulePanel({
             <p className="pending-note">
               {item.activeVersion
                 ? `当前 v${item.activeVersion} 继续用于审查；确认后才采用这次更新。`
-                : item.teamId
-                  ? "待确认的团队共享规则。"
-                  : "待确认的项目约定，确认后用于后续审查。"}
+                : "待确认的仓库约定，确认后用于后续审查。"}
               {item.activeVersion && (
                 <>
                   {" "}
@@ -161,7 +148,6 @@ export function RulePanel({
                   </dl>
                 )}
               </section>
-              <TeamRuleActions item={item} teams={teams} repository={repositoryContext} reload={reload} />
               {/* 从没生效过的待确认规则不会交给审查，不显示使用情况。 */}
               {(item.status !== "CANDIDATE" || item.activeVersion) && (
                 <section className="rule-section">
@@ -186,8 +172,7 @@ export function RulePanel({
                     ))}
                   </dl>
                   <p className="muted">
-                    统计范围：数据保留期内已完成的审查{item.teamId ? "，汇总团队所有仓库" : ""}
-                    。疑似已修复表示合并时附近代码有改动，由服务推断，尚未经过回复确认。
+                    统计范围：数据保留期内已完成的审查。疑似已修复表示合并时附近代码有改动，由服务推断，尚未经过回复确认。
                   </p>
                 </section>
               )}
@@ -199,11 +184,7 @@ export function RulePanel({
                   {item.source.kind ? (
                     <>
                       {memorySourceLabel(item.source)}
-                      {item.source.kind !== "promotion" && (
-                        <>
-                          <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
-                        </>
-                      )}
+                      <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
                     </>
                   ) : (
                     <>
@@ -349,7 +330,7 @@ export function RulePanel({
           )}
         </div>
         <footer className="drawer-footer">
-          {item.status === "CANDIDATE" && canManage ? (
+          {item.status === "CANDIDATE" ? (
             <>
               <button className="secondary" disabled={busy} onClick={() => void action(item, "reject")}>
                 忽略
@@ -362,13 +343,7 @@ export function RulePanel({
               </button>
             </>
           ) : (
-            <span className="muted">
-              {item.status === "ACTIVE"
-                ? item.teamId
-                  ? "用于团队内各仓库的后续 PR 审查"
-                  : "用于后续 PR 审查"
-                : "保留来源与历史"}
-            </span>
+            <span className="muted">{item.status === "ACTIVE" ? "用于后续 PR 审查" : "保留来源与历史"}</span>
           )}
           <details className="more-menu">
             <summary aria-label="更多规则操作">···</summary>
@@ -379,10 +354,10 @@ export function RulePanel({
                 menu.querySelector("summary")?.focus();
               }}
             >
-              {item.status === "ACTIVE" && canManage && <a href={`#rules/${item.id}/edit${suffix}`}>编辑规则</a>}
+              {item.status === "ACTIVE" && <a href={`#rules/${item.id}/edit${suffix}`}>编辑规则</a>}
               <button onClick={() => setTab("history")}>查看历史</button>
               <button onClick={() => setTab("technical")}>查看技术信息</button>
-              {item.status === "ACTIVE" && canManage && (
+              {item.status === "ACTIVE" && (
                 <>
                   {candidates.length > 0 && <button onClick={() => setConfirm("supersede")}>用待确认规则替代</button>}
                   <button className="danger" onClick={() => setConfirm("deprecate")}>

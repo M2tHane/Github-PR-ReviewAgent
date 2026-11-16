@@ -30,7 +30,6 @@ BEGIN
 END;
 $$;
 CREATE FUNCTION rules_sync_memory_changed() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE item record;
 BEGIN
   IF TG_OP='INSERT' THEN
     IF NEW.status<>'ACTIVE' THEN RETURN NULL; END IF;
@@ -38,26 +37,12 @@ BEGIN
     IF OLD.status<>'ACTIVE' THEN RETURN NULL; END IF;
   ELSIF OLD.status<>'ACTIVE' AND NEW.status<>'ACTIVE' THEN RETURN NULL;
   END IF;
-  FOR item IN
-    SELECT id FROM repositories WHERE id=COALESCE(NEW.repository_id,OLD.repository_id)
-    UNION SELECT repository_id FROM team_repositories WHERE team_id=COALESCE(NEW.team_id,OLD.team_id)
-    ORDER BY id
-  LOOP PERFORM enqueue_rules_sync(item.id); END LOOP;
+  PERFORM enqueue_rules_sync(COALESCE(NEW.repository_id,OLD.repository_id));
   RETURN NULL;
 END;
 $$;
 CREATE TRIGGER rules_sync_memories AFTER INSERT OR UPDATE OR DELETE ON memories
   FOR EACH ROW EXECUTE FUNCTION rules_sync_memory_changed();
-CREATE FUNCTION rules_sync_repository_changed() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  PERFORM enqueue_rules_sync(COALESCE(NEW.repository_id,OLD.repository_id));
-  RETURN NULL;
-END;
-$$;
-CREATE TRIGGER rules_sync_overrides AFTER INSERT OR UPDATE OR DELETE ON rule_overrides
-  FOR EACH ROW EXECUTE FUNCTION rules_sync_repository_changed();
-CREATE TRIGGER rules_sync_membership AFTER INSERT OR DELETE ON team_repositories
-  FOR EACH ROW EXECUTE FUNCTION rules_sync_repository_changed();
 CREATE FUNCTION rules_sync_enabled_changed() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.rules_sync_enabled AND NEW.enabled AND

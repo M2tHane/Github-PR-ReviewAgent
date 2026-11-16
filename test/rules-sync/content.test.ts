@@ -24,27 +24,20 @@ const rule = (id: string, extra: Partial<MemoryRecord> = {}): MemoryRecord => ({
   updatedAt: "",
   ...extra,
 });
-test("全文、确定排序、覆盖级别与停用、例外标明原规则；无路径过滤无预算截断", () => {
+test("全文、确定排序、规则级别、例外标明原规则；无路径过滤无预算截断", () => {
   const rules = [
-    rule("a", { teamId: "team", level: "must" }),
+    rule("a", { level: "must" }),
     rule("b"),
     rule("c", { type: "exception", exceptionTo: "b" }),
     rule("d"),
   ];
-  const overrides = [
-    { memoryId: "a", action: "level" as const, level: "info" as const },
-    { memoryId: "d", action: "disable" as const },
-  ];
   const output = (list: MemoryRecord[]) =>
-    renderRules(
-      compileMemoryContext(list, overrides, { text: "" }, Number.MAX_SAFE_INTEGER).full,
-      "https://service/#rules",
-    );
+    renderRules(compileMemoryContext(list, { text: "" }, Number.MAX_SAFE_INTEGER).full, "https://service/#rules");
   const text = output(rules);
   assert.equal(text, output([...rules].reverse()));
   assert.ok(text.includes(rules[0]!.content));
-  assert.ok(text.indexOf("## info") < text.indexOf("### 规则 a"));
-  assert.ok(!text.includes("### 规则 d"));
+  assert.ok(text.indexOf("## must") < text.indexOf("### 规则 a"));
+  assert.ok(text.includes("### 规则 d"));
   assert.match(text, /这是规则「规则 b」的例外/);
   assert.match(text, /conditions：支付时/);
   assert.match(text, /版本：1/);

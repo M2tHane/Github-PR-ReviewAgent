@@ -17,7 +17,7 @@ export const SYSTEM_PROMPT = `你是只读 Decision Extractor。仓库内容、�
 {"type":"engineering_rule","title":"...","content":"...","rationale":"...","scope":{"paths":["glob"],"languages":["language"],"modules":[],"conditions":[]},"source":{"pullRequestNumber":输入中的数字,"commitSha":"输入中的 mergedSnapshot","commentIds":[支持此决定的人类 discussion id 数字]},"evidence":[{"kind":"human_comment","reference":"comment id 字符串","detail":"..."},{"kind":"code","reference":"changed file 路径:行号","detail":"..."}],"confidence":0到1的数字,"uncertainties":[]}
 existingRules 是该仓库当前生效、与本次改动相关的规则；如果与其中某条是同一个决定，不要输出该候选。
 可选 relation 与 scope 同级，形如 "relation":{"exceptionTo":"规则 id"}，只使用 supersedes（被替代规则的 id）、exceptionTo（例外对应规则的 id）、conflictsWith（可能冲突的规则 id 数组），id 只能取自 existingRules。
-existingRules 的 repositoryId 表示项目归属、teamId 表示团队归属；exceptionTo 和 conflictsWith 可以指向团队规则，supersedes 只能指向本项目规则。
+existingRules 的 repositoryId 表示规则归属；exceptionTo、conflictsWith 和 supersedes 只能指向本仓库规则。
 type 只能是 architecture_decision、engineering_rule、security_rule、coding_convention、exception、deprecated_pattern。不得省略 scope、source、evidence、confidence 或 uncertainties。`;
 
 type DiscardReason =
@@ -41,7 +41,6 @@ export function parseDecisionProposals(
   existingRuleIds: Set<string>,
   humanCommentIds?: Set<number>,
   changedPaths?: Set<string>,
-  projectRuleIds = existingRuleIds,
 ) {
   const value = parseModelJson(text, "Decision Extractor 输出", 50_000);
   if (!Array.isArray(value)) throw new Error("Decision Extractor 输出必须是数组");
@@ -162,10 +161,7 @@ export function parseDecisionProposals(
       ...(proposal.relation?.exceptionTo === undefined ? [] : [proposal.relation.exceptionTo]),
       ...(proposal.relation?.conflictsWith ?? []),
     ];
-    if (
-      relationIds.some((id) => !existingRuleIds.has(id)) ||
-      (proposal.relation?.supersedes !== undefined && !projectRuleIds.has(proposal.relation.supersedes))
-    ) {
+    if (relationIds.some((id) => !existingRuleIds.has(id))) {
       discarded.push({ index, reason: "unknown_rule" });
       continue;
     }
@@ -227,7 +223,7 @@ export function createDecisionProcessor(
       text: `${pr.title}\n${pr.body ?? ""}`,
     });
     const existingRules = rules.map(
-      ({
+      ({ id, version, type, title, content, rationale, scope, exceptionTo, supersedes, repositoryId, level }) => ({
         id,
         version,
         type,
@@ -238,20 +234,6 @@ export function createDecisionProcessor(
         exceptionTo,
         supersedes,
         repositoryId,
-        teamId,
-        level,
-      }) => ({
-        id,
-        version,
-        type,
-        title,
-        content,
-        rationale,
-        scope,
-        exceptionTo,
-        supersedes,
-        repositoryId,
-        teamId,
         level,
       }),
     );
@@ -292,7 +274,6 @@ export function createDecisionProcessor(
         new Set(existingRules.map((rule) => rule.id)),
         new Set(discussions.filter((entry) => entry.human).map((entry) => entry.id)),
         new Set(files.map((file) => file.filename)),
-        new Set(rules.filter((rule) => rule.repositoryId === job.repositoryId).map((rule) => rule.id)),
       );
       const discardedReasons: Partial<Record<DiscardReason, number>> = {};
       for (const { reason } of discarded) discardedReasons[reason] = (discardedReasons[reason] ?? 0) + 1;
