@@ -58,16 +58,38 @@ export function SessionTimeline({ sessions }: { sessions: AgentSessionRow[] }) {
 }
 
 function SessionItem({ session }: { session: AgentSessionRow }) {
+  const [open, setOpen] = useState(false),
+    [current, setCurrent] = useState<AgentSessionRow>(session);
+  return (
+    <details className="agent-session" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        执行过程 · {roleLabels[current.role] ?? current.role}
+        {current.attempt > 1 ? ` · 第 ${current.attempt} 次` : ""} · <Status value={current.status} /> ·{" "}
+        {durationText(current.duration_ms)} · {numberText(current.steps)} 步
+      </summary>
+      {open && <SessionSteps session={session} onUpdate={setCurrent} />}
+    </details>
+  );
+}
+
+export const sessionRoleLabel = (role: string) => roleLabels[role] ?? role;
+
+// 一次 Pi 会话的步骤：挂载时才加载（会话内容可能有几 MB）；还在进行时定时刷新，并把最新摘要交给调用方。
+export function SessionSteps({
+  session,
+  onUpdate,
+}: {
+  session: AgentSessionRow;
+  onUpdate?: (value: AgentSessionRow) => void;
+}) {
   const [detail, setDetail] = useState<AgentSessionDetail>(),
-    [open, setOpen] = useState(false),
     [loading, setLoading] = useState(false),
     [error, setError] = useState("");
-  // 展开后才加载步骤（会话内容可能有几 MB）；还在进行时定时刷新，摘要也跟着更新。
   const current = detail ?? session;
   const running = current.status === "running";
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在展开、刷新时机变化时重新读取。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在刷新时机变化时重新读取。
   useEffect(() => {
-    if (!open || (detail && !running)) return;
+    if (detail && !running) return;
     let stopped = false;
     const load = () => {
       setLoading(!detail);
@@ -76,6 +98,7 @@ function SessionItem({ session }: { session: AgentSessionRow }) {
           (value) => {
             if (stopped) return;
             setDetail(value);
+            onUpdate?.(value);
             setError("");
           },
           (caught) => !stopped && setError(messageOf(caught)),
@@ -88,14 +111,9 @@ function SessionItem({ session }: { session: AgentSessionRow }) {
       stopped = true;
       clearInterval(timer);
     };
-  }, [open, running, session.id]);
+  }, [running, session.id]);
   return (
-    <details className="agent-session" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>
-        执行过程 · {roleLabels[current.role] ?? current.role}
-        {current.attempt > 1 ? ` · 第 ${current.attempt} 次` : ""} · <Status value={current.status} /> ·{" "}
-        {durationText(current.duration_ms)} · {numberText(current.steps)} 步
-      </summary>
+    <>
       <p className="session-actions">
         <a href={`/api/agent-sessions/${session.id}/raw`} download>
           下载原始记录（JSONL）
@@ -133,7 +151,7 @@ function SessionItem({ session }: { session: AgentSessionRow }) {
         ) : (
           <p className="muted">没有记录到步骤。</p>
         ))}
-    </details>
+    </>
   );
 }
 

@@ -351,3 +351,18 @@ ego-browser TaskSpace 3；使用独立 `ux_preview_*` schema 和 OAuth 替身，
 | 本地预览（临时 schema、替身登录与 GitHub）用 Playwright 截图 | 1600／1024 × 浅／深色共 156 张，加载中无页面报错；截图在忽略的 `work/ui-review/linear-after/`，改前在 `work/ui-review/linear-before/`。 |
 
 演示数据另加 60 个仓库（含超长名、已暂停）、260 条生效规则、无标题无 prompt 的开发任务、缺 `findings`／带覆盖与限制的审查结果，以及无任何数据的账号。未连接真实 GitHub、未调用模型，delivery／Job／Review URL、usage 不适用；未做手机布局、跨浏览器和读屏验收。
+
+### 2026-11-15：管理页 Linear 式整理第二轮
+
+在 `ui/linear-polish-2` 实现，基准 `93f4c9d`。仓库接入从服务设置移到「仓库」页的「接入仓库」抽屉（仅服务管理员可见，复用原接口；没有仓库时空状态写明两步）；侧栏「设置」改为分组标题，`#settings` 改写到 `#settings/service`，删除设置目录页。PR 审查列表与概览第一列为“仓库 #编号”（编号加粗、永远完整）；运行记录默认收起，第二行是由前端对照表翻译的原因（`frontend/error-reason.ts`，新增单元测试），展开后是各次尝试小表和收起的原始错误；审查讨论按仓库再按 PR 归组，每条一行（状态、标题、最新回复、位置、时间），新增状态筛选（只作用于已加载的讨论，接口无状态参数，未改后端）；审查详情去掉右侧属性栏，标题上方“仓库 #编号↗”，下方元信息，必须规则在正文列出违反与未确认项。README 与 `docs/github-integration.md` 的接入入口同步更新。
+
+| 实际命令／操作 | 结果 |
+| --- | --- |
+| `npm run build && node --test dist/test/frontend/error-reason.test.js dist/test/frontend/client.test.js` | 6 项通过、0 失败。 |
+| `PLAYWRIGHT_CHANNEL=chrome node --test test/frontend/select.browser.mjs` | 6 项通过、0 失败。 |
+| `npm test`，随后 `npm run test:db` | 普通测试 364 项：213 通过、151 跳过（数据库用例）、0 失败；数据库专项 191 项全部通过、0 跳过。 |
+| `npm run check:docs`、`npm run format`、`npm run check:format` | 通过。 |
+| kill-ai-slop 扫描 | 19 个命中，均为保留项（状态圆点、代码与路径等宽字体、链接下划线、几何 SVG 状态图标）。 |
+| 本地预览（临时 schema、替身登录与 GitHub）Playwright 截图 | 改后 1600／1024 × 浅／深色共 100 张，无页面报错，在忽略的 `work/ui-review/linear2-after/`；改前在 `linear2-before/`。 |
+
+演示数据新增：6 条各不相同的讨论与回复（含超长登录名、无空格长标题与长回复）、6 种运行错误（529、429、超时、额度、GitHub 404、未知错误）及多次尝试的执行过程、没有仓库的普通用户和服务管理员账号。未连接真实 GitHub、未调用模型；未做手机布局、跨浏览器和读屏验收。

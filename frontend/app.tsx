@@ -13,13 +13,13 @@ import { OverviewPage } from "./pages/overview-page.js";
 import { ReviewsPage } from "./pages/reviews-page.js";
 import { RepositoryPage } from "./pages/repository-page.js";
 import { RepositorySettingsPage, type RepositoryTab } from "./pages/repository-settings-page.js";
-import { SettingsPage } from "./pages/settings-page.js";
 import { ServiceSettingsPage } from "./pages/service-settings-page.js";
 import type { BootstrapResponse, Memory, Repository as Repo, SessionResponse } from "./types.js";
 
-// 审查策略已并入各仓库的设置页，旧链接落到仓库列表。
+// 审查策略已并入各仓库的设置页，旧链接落到仓库列表；设置不再有目录页，落到服务设置。
 function currentRoute() {
   if (location.hash === "#settings/policy") history.replaceState(null, "", "#repositories");
+  if (location.hash === "#settings") history.replaceState(null, "", "#settings/service");
   return location.hash.slice(1) || "overview";
 }
 
@@ -65,8 +65,7 @@ function App() {
   const rules = route.startsWith("rules") || route === "memories",
     health = route.startsWith("health") || route.startsWith("settings/health"),
     runs = route === "settings/runs" || route === "jobs",
-    discussions = route === "settings/discussions" || route === "discussions",
-    settings = route.startsWith("settings") || health || runs || discussions;
+    discussions = route === "settings/discussions" || route === "discussions";
   // 审查列表的筛选和页码跟在路由后面：reviews?repo=1&page=2。
   const [path, search = ""] = route.split("?");
   const review = route.match(/^reviews\/([0-9a-f-]{36})$/i),
@@ -88,9 +87,7 @@ function App() {
               ? "discussions"
               : route === "settings/service"
                 ? "service"
-                : settings
-                  ? "settings"
-                  : "overview";
+                : "overview";
   const pendingRules = memories.filter((item) => item.status === "CANDIDATE").length;
   const updateRepository = (value: Repo) =>
     setRepos((items) => items.map((item) => (item.id === value.id ? value : item)));
@@ -160,19 +157,17 @@ function App() {
               </Empty>
             )
           ) : route === "repositories" ? (
-            <RepositoryPage items={repos} />
+            <RepositoryPage items={repos} onRepositoriesChange={load} />
           ) : runs ? (
             <JobsPage />
           ) : health ? (
             <HealthPanel repositories={repos} />
           ) : discussions ? (
             <DiscussionPage repositories={repos} />
-          ) : route === "settings" ? (
-            <SettingsPage />
           ) : route === "settings/service" ? (
-            <ServiceSettingsPage onRepositoriesChange={load} />
+            <ServiceSettingsPage />
           ) : review ? (
-            <ReviewDetails id={review[1]!} />
+            <ReviewDetails id={review[1]!} memories={memories} />
           ) : path === "reviews" ? (
             <ReviewsPage repositories={repos} search={search} />
           ) : (

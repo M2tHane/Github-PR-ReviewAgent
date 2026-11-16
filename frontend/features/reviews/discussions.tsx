@@ -4,105 +4,138 @@ import { api, messageOf } from "../../api/client.js";
 import { Empty, ListSkeleton } from "../../components/common/empty-state.js";
 import { External } from "../../components/common/icons.js";
 import { Status, statusLabels } from "../../components/common/status-badge.js";
+import { dateText, relativeTime } from "../../format.js";
 import { shortText } from "../../../src/review/presentation.js";
 import type { Repository as Repo } from "../../types.js";
 
+const findingStatuses = ["OPEN", "STILL_VALID", "NEEDS_CLARIFICATION", "EXCEPTION_PENDING", "FIXED", "WITHDRAWN"];
+const whereText = (item: any) => (item.path ? `${item.path}${item.line ? `:${item.line}` : ""}` : "整体变更");
+const discussionTime = (item: any) => item.updated_at ?? item.created_at;
+
+// 每条讨论一行：状态｜问题标题｜最新回复（谁：说了什么）｜文件位置｜时间。点这一行展开复核依据。
 export function Discussions({ items }: { items: any[] }) {
   if (!items.length) return <Empty>暂无讨论记录。</Empty>;
   return (
     <div className="list discussion-list">
-      {items.map((item) => {
-        const link = item.github_reply_url
-          ? { href: item.github_reply_url, label: "查看回复" }
-          : item.github_comment_id
-            ? {
-                href: `https://github.com/${item.repository}/pull/${item.pr_number}#discussion_r${item.github_comment_id}`,
-                label: "查看原讨论",
-              }
-            : null;
-        return (
-          <article className="discussion" key={item.id + "-" + (item.source_comment_id ?? "root")}>
-            <div className="discussion-head">
-              <h3 className="row-title">{item.presentation?.display?.title ?? shortText(item.description, 80)}</h3>
-              <span className="row-meta discussion-where">
-                {item.path ? `${item.path}${item.line ? ":" + item.line : ""}` : "整体变更"}
-              </span>
-              <span className="col-status">
-                <Status value={item.status} />
-              </span>
-            </div>
-            {item.human_reply_body && (
-              <blockquote>
-                <strong>{item.human_actor_login ?? "维护者"}：</strong>
-                {item.human_reply_body}
-              </blockquote>
+      {items.map((item) => (
+        <DiscussionRow item={item} key={item.id + "-" + (item.source_comment_id ?? "root")} />
+      ))}
+    </div>
+  );
+}
+
+function DiscussionRow({ item }: { item: any }) {
+  const title = item.presentation?.display?.title ?? shortText(item.description, 80);
+  const actor = item.human_actor_login ?? "维护者";
+  const link = item.github_reply_url
+    ? { href: item.github_reply_url, label: "在 GitHub 查看回复" }
+    : item.github_comment_id
+      ? {
+          href: `https://github.com/${item.repository}/pull/${item.pr_number}#discussion_r${item.github_comment_id}`,
+          label: "在 GitHub 查看原讨论",
+        }
+      : null;
+  return (
+    <details className="discussion-row">
+      <summary className="list-row">
+        <span className="col-status discussion-status">
+          <Status value={item.status} />
+        </span>
+        <span className="row-title discussion-title" title={title}>
+          {title}
+        </span>
+        <span
+          className="row-meta discussion-reply"
+          title={item.human_reply_body ? `${actor}：${item.human_reply_body}` : undefined}
+        >
+          {item.human_reply_body ? (
+            <>
+              <span className="discussion-actor">{actor}：</span>
+              {item.human_reply_body}
+            </>
+          ) : (
+            <span className="discussion-none">还没有回复</span>
+          )}
+        </span>
+        <code className="row-meta discussion-where" title={whereText(item)}>
+          {whereText(item)}
+        </code>
+        <time className="row-meta col-time" dateTime={discussionTime(item)} title={dateText(discussionTime(item))}>
+          {relativeTime(discussionTime(item))}
+        </time>
+      </summary>
+      <div className="discussion-body">
+        {item.human_reply_body && (
+          <blockquote>
+            <strong>{actor}：</strong>
+            {item.human_reply_body}
+          </blockquote>
+        )}
+        {item.reply_result && (
+          <p>
+            <strong>{statusLabels[item.reply_result.suggestedFindingStatus] ?? "复核结果"}</strong> ·{" "}
+            {item.reply_result.summary}
+          </p>
+        )}
+        <h4 className="run-subtitle">复核依据</h4>
+        <p>{item.evidence}</p>
+        {item.reply_result && (
+          <>
+            {item.reply_result.evidence?.length > 0 && (
+              <ul>
+                {item.reply_result.evidence.map((entry: any, i: number) => (
+                  <li key={i}>
+                    {entry.path && (
+                      <code>
+                        {entry.path}
+                        {entry.line ? ":" + entry.line : ""}
+                      </code>
+                    )}{" "}
+                    {entry.detail}
+                  </li>
+                ))}
+              </ul>
             )}
-            {item.reply_result && (
-              <p>
-                <strong>{statusLabels[item.reply_result.suggestedFindingStatus] ?? "复核结果"}</strong> ·{" "}
-                {item.reply_result.summary}
+            {item.reply_result.clarificationQuestion && <p>待补充：{item.reply_result.clarificationQuestion}</p>}
+            {item.decision_clue && (
+              <p className="pending-note">
+                可能形成团队约定：{item.decision_clue.summary}。仍需合并后提取并由维护者确认。
               </p>
             )}
-            <div className="discussion-foot">
-              <details>
-                <summary>复核依据与详情</summary>
-                <p>{item.evidence}</p>
-                {item.reply_result && (
-                  <>
-                    <ul>
-                      {item.reply_result.evidence.map((entry: any, i: number) => (
-                        <li key={i}>
-                          {entry.path && (
-                            <code>
-                              {entry.path}
-                              {entry.line ? ":" + entry.line : ""}
-                            </code>
-                          )}{" "}
-                          {entry.detail}
-                        </li>
-                      ))}
-                    </ul>
-                    {item.reply_result.clarificationQuestion && (
-                      <p>待补充：{item.reply_result.clarificationQuestion}</p>
-                    )}
-                    {item.decision_clue && (
-                      <p className="pending-note">
-                        可能形成团队约定：{item.decision_clue.summary}。仍需合并后提取并由维护者确认。
-                      </p>
-                    )}
-                    <ul>
-                      {item.reply_result.limitations?.map((text: string, i: number) => (
-                        <li key={i}>{text}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                {item.reply_publish_status && (
-                  <p>
-                    回复发布：
-                    <Status value={item.reply_publish_status} />
-                  </p>
-                )}
-                <small>
-                  Finding {item.id} · 分析提交 {item.analysis_head_sha ?? item.head_sha}
-                </small>
-              </details>
-              {link && (
-                <a className="discussion-link" href={link.href} target="_blank" rel="noreferrer">
-                  {link.label}
-                  <External />
-                </a>
-              )}
-            </div>
-          </article>
-        );
-      })}
-    </div>
+            {item.reply_result.limitations?.length > 0 && (
+              <ul>
+                {item.reply_result.limitations.map((text: string, i: number) => (
+                  <li key={i}>{text}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+        {item.reply_publish_status && (
+          <p>
+            回复发布：
+            <Status value={item.reply_publish_status} />
+          </p>
+        )}
+        <p className="discussion-foot">
+          <small className="muted">
+            Finding {item.id} · 分析提交 {item.analysis_head_sha ?? item.head_sha}
+          </small>
+          {link && (
+            <a className="discussion-link" href={link.href} target="_blank" rel="noreferrer">
+              {link.label}
+              <External />
+            </a>
+          )}
+        </p>
+      </div>
+    </details>
   );
 }
 
 const GROUP_PREVIEW = 5;
 type DiscussionGroup = { key: string; repository: string; prNumber: number; title?: string; items: any[] };
+type RepositoryGroup = { repository: string; count: number; pulls: DiscussionGroup[] };
 // 已加载的讨论按 PR 归组，组的顺序沿用列表顺序（最近有动静的 PR 在前）。
 export function groupByPullRequest(items: any[]): DiscussionGroup[] {
   const groups = new Map<string, DiscussionGroup>();
@@ -120,16 +153,25 @@ export function groupByPullRequest(items: any[]): DiscussionGroup[] {
   }
   return [...groups.values()];
 }
+// 再按仓库归组，仓库顺序同样沿用最近动静。
+function groupByRepository(items: any[]): RepositoryGroup[] {
+  const groups = new Map<string, RepositoryGroup>();
+  for (const pull of groupByPullRequest(items)) {
+    const group = groups.get(pull.repository) ?? { repository: pull.repository, count: 0, pulls: [] };
+    group.pulls.push(pull);
+    group.count += pull.items.length;
+    groups.set(pull.repository, group);
+  }
+  return [...groups.values()];
+}
 function PullRequestDiscussions({ group }: { group: DiscussionGroup }) {
   const [expanded, setExpanded] = useState(false);
   const hidden = group.items.length - GROUP_PREVIEW;
   return (
     <section className="discussion-group">
       <div className="discussion-group-head">
-        <h3 title={group.title || undefined}>{group.title || `PR #${group.prNumber}`}</h3>
-        <span className="row-meta discussion-group-meta" title={group.repository}>
-          {group.repository} · #{group.prNumber}
-        </span>
+        <strong className="pr-ref-number discussion-pr">#{group.prNumber}</strong>
+        <h4 title={group.title || undefined}>{group.title || "（没有标题）"}</h4>
         <span className="group-count">{group.items.length} 条</span>
         <a href={`#reviews/${group.items[0].job_id}`}>查看审查</a>
       </div>
@@ -229,13 +271,16 @@ export function DiscussionPaging({ page }: { page: ReturnType<typeof useDiscussi
   );
 }
 export function DiscussionPage({ repositories }: { repositories: Repo[] }) {
-  const [repositoryId, setRepositoryId] = useState("");
+  const [repositoryId, setRepositoryId] = useState(""),
+    [status, setStatus] = useState("");
   const page = useDiscussions(undefined, repositoryId);
+  // 状态筛选作用于已加载的讨论（接口按时间分页，没有状态参数）。
+  const shown = status ? page.items.filter((item) => item.status === status) : page.items;
   return (
     <section>
       <div className="page-head">
         <h2>审查讨论</h2>
-        <p className="muted">原问题、维护者回复与最新复核结论。</p>
+        <p className="muted">原问题、维护者回复与最新复核结论，按仓库和 PR 归组。</p>
       </div>
       <div className="toolbar">
         <Select
@@ -252,17 +297,46 @@ export function DiscussionPage({ repositories }: { repositories: Repo[] }) {
             </option>
           ))}
         </Select>
+        <Select compact prefix="状态：" aria-label="筛选状态" value={status} onChange={(value) => setStatus(value)}>
+          <option value="">全部状态</option>
+          {findingStatuses.map((value) => (
+            <option key={value} value={value}>
+              {statusLabels[value]}
+            </option>
+          ))}
+        </Select>
+        {status && page.nextCursor && <span className="toolbar-note">只筛选已加载的讨论，加载更多可能找到更多。</span>}
       </div>
-      {page.items.length > 0 ? (
+      {shown.length > 0 ? (
         <div className="discussion-groups">
-          {groupByPullRequest(page.items).map((group) => (
-            <PullRequestDiscussions group={group} key={group.key} />
+          {groupByRepository(shown).map((group) => (
+            <section className="discussion-repo" key={group.repository} aria-label={group.repository}>
+              <h3 className="discussion-repo-head">
+                <span className="discussion-repo-name" title={group.repository}>
+                  {group.repository}
+                </span>
+                <span className="group-count">{group.count} 条</span>
+              </h3>
+              {group.pulls.map((pull) => (
+                <PullRequestDiscussions group={pull} key={pull.key} />
+              ))}
+            </section>
           ))}
         </div>
-      ) : !page.loading ? (
-        <Discussions items={[]} />
-      ) : (
+      ) : page.loading ? (
         <ListSkeleton />
+      ) : status && page.items.length ? (
+        <Empty
+          action={
+            <button type="button" className="compact" onClick={() => setStatus("")}>
+              清除状态筛选
+            </button>
+          }
+        >
+          已加载的讨论里没有“{statusLabels[status]}”的。
+        </Empty>
+      ) : (
+        <Discussions items={[]} />
       )}
       <DiscussionPaging page={page} />
     </section>

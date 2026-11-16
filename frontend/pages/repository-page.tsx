@@ -1,23 +1,62 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../api/client.js";
 import { Empty } from "../components/common/empty-state.js";
 import { ChevronRight, Search } from "../components/common/icons.js";
 import { Status } from "../components/common/status-badge.js";
+import { RepositoryOnboarding } from "../features/repositories/repository-onboarding.js";
 import { scheduleLabels } from "../features/repositories/repository-settings.js";
 import { numberText } from "../format.js";
-import type { Repository } from "../types.js";
+import type { Repository, ServiceSettingsResponse } from "../types.js";
 
 // 仓库列表一行一个仓库，设置都在各仓库自己的页面里。仓库多时可按名称筛选。
-export function RepositoryPage({ items }: { items: Repository[] }) {
-  const [search, setSearch] = useState("");
+// 服务管理员（服务设置可编辑的人）右上角多一个"接入仓库"，在抽屉里接入 GitHub App 已安装的仓库。
+export function RepositoryPage({
+  items,
+  onRepositoriesChange,
+}: {
+  items: Repository[];
+  onRepositoriesChange: () => Promise<void>;
+}) {
+  const [search, setSearch] = useState(""),
+    [canOnboard, setCanOnboard] = useState(false),
+    [onboarding, setOnboarding] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<ServiceSettingsResponse>("/api/service-settings", { signal: controller.signal })
+      .then((value) => setCanOnboard(value.canEdit))
+      .catch(() => setCanOnboard(false));
+    return () => controller.abort();
+  }, []);
   const shown = items.filter((repo) => repo.fullName.toLowerCase().includes(search.trim().toLowerCase()));
   return (
     <section>
       <div className="page-head">
-        <h2>仓库</h2>
-        <p className="muted">管理接入的仓库：启停、审查范围、定时健康检查和群内开发都按仓库设置。</p>
+        <div>
+          <h2>仓库</h2>
+          <p className="muted">管理接入的仓库：启停、审查范围、定时健康检查和群内开发都按仓库设置。</p>
+        </div>
+        {canOnboard && items.length > 0 && (
+          <button type="button" onClick={() => setOnboarding(true)}>
+            接入仓库
+          </button>
+        )}
       </div>
+      {onboarding && <RepositoryOnboarding onChange={onRepositoriesChange} onClose={() => setOnboarding(false)} />}
       {!items.length ? (
-        <Empty action={<a href="#settings/service">去服务设置接入仓库</a>}>当前账号没有可管理的已接入仓库。</Empty>
+        <div className="empty empty-steps">
+          <p>还没有可管理的仓库。接入一个仓库分两步：</p>
+          <ol>
+            <li>在 GitHub 上给仓库安装 Pi Review App；</li>
+            <li>{canOnboard ? "点下面的“接入仓库”，打开要用的仓库。" : "请服务管理员在本页“接入仓库”里打开它。"}</li>
+          </ol>
+          {canOnboard && (
+            <div className="empty-action">
+              <button type="button" className="primary" onClick={() => setOnboarding(true)}>
+                接入仓库
+              </button>
+            </div>
+          )}
+        </div>
       ) : (
         <>
           {items.length > 8 && (

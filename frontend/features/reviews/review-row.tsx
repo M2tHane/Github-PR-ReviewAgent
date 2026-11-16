@@ -63,18 +63,19 @@ export function SeverityLegend() {
   );
 }
 
-// 一次 PR 审查的单行：状态图形｜标题｜仓库 #编号（SHA）｜计数列｜时间。showSha 用于完整列表。
+// 一次 PR 审查的单行：仓库 #编号｜标题｜（SHA）｜计数列｜时间。编号加粗且永远完整，仓库名过长时截断。
+// showSha 只用于 PR 审查页的完整列表。
 export function ReviewRow({ job, showSha = false }: { job: Job; showSha?: boolean }) {
+  const title = job.payload?.title;
   return (
     <a className="list-row review-row" href={`#reviews/${job.id}`}>
-      <Status value={job.status} icon />
-      <span className="row-title" title={job.payload?.title || undefined}>
-        {job.payload?.title || `PR #${job.pr_number}`}
+      <span className="pr-ref col-pr-ref" title={`${job.repository} #${job.pr_number}`}>
+        <span className="pr-ref-repo">{job.repository}</span>
+        <strong className="pr-ref-number">#{job.pr_number}</strong>
       </span>
-      <span className="row-meta review-repo" title={job.repository}>
-        {job.repository}
+      <span className={`row-title${title ? "" : " row-title-empty"}`} title={title || undefined}>
+        {title || "（没有标题）"}
       </span>
-      <span className="row-meta col-pr">#{job.pr_number}</span>
       {showSha && <code className="row-meta col-sha">{job.target_sha.slice(0, 7)}</code>}
       <ReviewOutcome job={job} />
       <time className="row-meta col-time" dateTime={job.created_at} title={dateText(job.created_at)}>

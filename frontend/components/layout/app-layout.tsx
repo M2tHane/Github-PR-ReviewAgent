@@ -1,16 +1,7 @@
 import type React from "react";
 import { ThemeSwitch } from "../common/theme-switch.js";
 
-export type Section =
-  | "overview"
-  | "reviews"
-  | "rules"
-  | "repositories"
-  | "settings"
-  | "service"
-  | "health"
-  | "runs"
-  | "discussions";
+export type Section = "overview" | "reviews" | "rules" | "repositories" | "service" | "health" | "runs" | "discussions";
 
 const primary: Array<[key: Section, label: string, href: string]> = [
   ["overview", "概览", "#overview"],
@@ -25,7 +16,7 @@ const settings: Array<[key: Section, label: string, href: string]> = [
   ["discussions", "审查讨论", "#settings/discussions"],
 ];
 
-// 左侧栏导航：主要页面和设置子页平铺，当前位置用底色标出；规则旁显示待确认数。
+// 左侧栏导航：主要页面平铺，设置子页归在不可点击的“设置”分组下，当前位置用底色标出；规则旁显示待确认数。
 export function AppLayout({
   section,
   pendingRules,
@@ -78,14 +69,13 @@ export function AppLayout({
         </a>
         <nav className="nav" aria-label="主导航">
           {primary.map(item)}
-          <a
-            className={`nav-group${section === "settings" ? " active" : ""}`}
-            aria-current={section === "settings" ? "page" : undefined}
-            href="#settings"
-          >
+          {/* 设置只是分组标题，不是页面。 */}
+          <div className="nav-group" id="nav-settings">
             设置
-          </a>
-          {settings.map(item)}
+          </div>
+          <div role="group" aria-labelledby="nav-settings" className="nav-sub">
+            {settings.map(item)}
+          </div>
         </nav>
         <div className="sidebar-foot">
           <ThemeSwitch />
