@@ -12,124 +12,260 @@ const findingStatuses = ["OPEN", "STILL_VALID", "NEEDS_CLARIFICATION", "EXCEPTIO
 const whereText = (item: any) => (item.path ? `${item.path}${item.line ? `:${item.line}` : ""}` : "整体变更");
 const discussionTime = (item: any) => item.updated_at ?? item.created_at;
 
-// 每条讨论一行：状态｜问题标题｜最新回复（谁：说了什么）｜文件位置｜时间。点这一行展开复核依据。
+const conclusionLabels: Record<string, string> = {
+  FIXED: "已修复",
+  MISJUDGMENT: "判断有误，撤回",
+  VALID_EXCEPTION: "认可为例外",
+  STILL_VALID: "仍需处理",
+  NEEDS_CLARIFICATION: "需要补充说明",
+};
+const conclusionStatus: Record<string, string> = {
+  FIXED: "FIXED",
+  MISJUDGMENT: "WITHDRAWN",
+  VALID_EXCEPTION: "EXCEPTION_PENDING",
+  STILL_VALID: "STILL_VALID",
+  NEEDS_CLARIFICATION: "NEEDS_CLARIFICATION",
+};
+const publishLabels: Record<string, string> = {
+  pending: "回复还没发到 GitHub",
+  uncertain: "回复发布结果待核对",
+  failed: "回复发布失败",
+};
+const clueLabels: Record<string, string> = {
+  possible_exception: "可能形成例外",
+  possible_rule_change: "可能形成规则",
+  implementation_rationale: "可能形成实现说明",
+};
+
+// 一条讨论 = 一个问题（finding）加上它收到的各轮回复；接口按回复各返回一行，这里合并。
+export type DiscussionThread = { key: string; finding: any; replies: any[] };
+export function toThreads(items: any[]): DiscussionThread[] {
+  const threads = new Map<string, DiscussionThread>();
+  for (const item of items) {
+    const thread: DiscussionThread = threads.get(item.id) ?? { key: item.id, finding: item, replies: [] };
+    if (item.source_comment_id && !thread.replies.some((reply) => reply.source_comment_id === item.source_comment_id))
+      thread.replies.push(item);
+    threads.set(item.id, thread);
+  }
+  // GitHub 评论 ID 随时间递增，按它排出先后（接口没有逐条回复的时间）。
+  for (const thread of threads.values())
+    thread.replies.sort((a, b) => (BigInt(a.source_comment_id) < BigInt(b.source_comment_id) ? -1 : 1));
+  return [...threads.values()];
+}
+
+// 每条讨论一行：状态｜问题标题｜最新回复（谁：说了什么）｜文件位置｜时间。点开是按先后排的对话。
 export function Discussions({ items }: { items: any[] }) {
-  if (!items.length) return <Empty>暂无讨论记录。</Empty>;
+  return <DiscussionList threads={toThreads(items)} />;
+}
+function DiscussionList({ threads }: { threads: DiscussionThread[] }) {
+  if (!threads.length) return <Empty>暂无讨论记录。</Empty>;
   return (
     <div className="list discussion-list">
-      {items.map((item) => (
-        <DiscussionRow item={item} key={item.id + "-" + (item.source_comment_id ?? "root")} />
+      {threads.map((thread) => (
+        <DiscussionRow thread={thread} key={thread.key} />
       ))}
     </div>
   );
 }
 
-function DiscussionRow({ item }: { item: any }) {
-  const title = item.presentation?.display?.title ?? shortText(item.description, 80);
-  const actor = item.human_actor_login ?? "维护者";
-  const link = item.github_reply_url
-    ? { href: item.github_reply_url, label: "在 GitHub 查看回复" }
-    : item.github_comment_id
-      ? {
-          href: `https://github.com/${item.repository}/pull/${item.pr_number}#discussion_r${item.github_comment_id}`,
-          label: "在 GitHub 查看原讨论",
-        }
-      : null;
+const findingTitle = (item: any) => item.presentation?.display?.title ?? shortText(item.description, 80);
+const actorOf = (reply: any) => reply.human_actor_login ?? "维护者";
+
+function DiscussionRow({ thread }: { thread: DiscussionThread }) {
+  const { finding, replies } = thread;
+  const title = findingTitle(finding);
+  const latest = replies.at(-1);
   return (
     <details className="discussion-row">
       <summary className="list-row">
         <span className="col-status discussion-status">
-          <Status value={item.status} />
+          <Status value={finding.status} />
         </span>
         <span className="row-title discussion-title" title={title}>
           {title}
         </span>
         <span
           className="row-meta discussion-reply"
-          title={item.human_reply_body ? `${actor}：${item.human_reply_body}` : undefined}
+          title={latest?.human_reply_body ? `${actorOf(latest)}：${latest.human_reply_body}` : undefined}
         >
-          {item.human_reply_body ? (
+          {latest?.human_reply_body ? (
             <>
-              <span className="discussion-actor">{actor}：</span>
-              {item.human_reply_body}
+              <span className="discussion-actor">{actorOf(latest)}：</span>
+              {latest.human_reply_body}
             </>
           ) : (
             <span className="discussion-none">还没有回复</span>
           )}
         </span>
-        <code className="row-meta discussion-where" title={whereText(item)}>
-          {whereText(item)}
+        <span className="row-meta discussion-rounds">{replies.length > 1 ? `${replies.length} 轮` : ""}</span>
+        <code className="row-meta discussion-where" title={whereText(finding)}>
+          {whereText(finding)}
         </code>
-        <time className="row-meta col-time" dateTime={discussionTime(item)} title={dateText(discussionTime(item))}>
-          {relativeTime(discussionTime(item))}
+        <time
+          className="row-meta col-time"
+          dateTime={discussionTime(finding)}
+          title={dateText(discussionTime(finding))}
+        >
+          {relativeTime(discussionTime(finding))}
         </time>
       </summary>
-      <div className="discussion-body">
-        {item.human_reply_body && (
-          <blockquote>
-            <strong>{actor}：</strong>
-            {item.human_reply_body}
-          </blockquote>
+      <ThreadBody thread={thread} />
+    </details>
+  );
+}
+
+// 展开后是一条对话时间线：原问题 → 维护者回复 → 服务复核 →（下一轮）……依据默认收起。
+function ThreadBody({ thread }: { thread: DiscussionThread }) {
+  const { finding, replies } = thread;
+  const reason = finding.presentation?.display?.reason || shortText(finding.evidence ?? finding.description ?? "", 140);
+  const threadUrl = finding.github_comment_id
+    ? `https://github.com/${finding.repository}/pull/${finding.pr_number}#discussion_r${finding.github_comment_id}`
+    : null;
+  const shas = [...new Set(replies.map((reply) => reply.analysis_head_sha).filter(Boolean))];
+  return (
+    <div className="thread">
+      <div className="thread-top">
+        <span className="thread-top-label">{replies.length ? `讨论经过 · ${replies.length} 轮回复` : "讨论经过"}</span>
+        {threadUrl && (
+          <a className="button compact thread-github" href={threadUrl} target="_blank" rel="noreferrer">
+            在 GitHub 查看讨论
+            <External />
+          </a>
         )}
-        {item.reply_result && (
-          <p>
-            <strong>{statusLabels[item.reply_result.suggestedFindingStatus] ?? "复核结果"}</strong> ·{" "}
-            {item.reply_result.summary}
+      </div>
+      <ol className="thread-steps">
+        <li className="thread-step thread-finding">
+          <p className="thread-who">审查意见</p>
+          <p className="thread-title">{findingTitle(finding)}</p>
+          <p className="thread-text">{reason}</p>
+          <p className="thread-meta">
+            <code>{whereText(finding)}</code> · {dateText(finding.created_at)}
           </p>
+        </li>
+        {replies.map((reply, index) => (
+          <ReplyRound key={reply.source_comment_id} reply={reply} round={replies.length > 1 ? index + 1 : 0} />
+        ))}
+        {!replies.length && (
+          <li className="thread-step thread-waiting">
+            <p className="thread-text muted">还没有人回复这条意见。</p>
+          </li>
         )}
-        <h4 className="run-subtitle">复核依据</h4>
-        <p>{item.evidence}</p>
-        {item.reply_result && (
-          <>
-            {item.reply_result.evidence?.length > 0 && (
-              <ul>
-                {item.reply_result.evidence.map((entry: any, i: number) => (
-                  <li key={i}>
-                    {entry.path && (
-                      <code>
-                        {entry.path}
-                        {entry.line ? ":" + entry.line : ""}
-                      </code>
-                    )}{" "}
-                    {entry.detail}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {item.reply_result.clarificationQuestion && <p>待补充：{item.reply_result.clarificationQuestion}</p>}
-            {item.decision_clue && (
-              <p className="pending-note">
-                可能形成团队约定：{item.decision_clue.summary}。仍需合并后提取并由维护者确认。
-              </p>
-            )}
-            {item.reply_result.limitations?.length > 0 && (
-              <ul>
-                {item.reply_result.limitations.map((text: string, i: number) => (
-                  <li key={i}>{text}</li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-        {item.reply_publish_status && (
-          <p>
-            回复发布：
-            <Status value={item.reply_publish_status} />
-          </p>
-        )}
-        <p className="discussion-foot">
-          <small className="muted">
-            Finding {item.id} · 分析提交 {item.analysis_head_sha ?? item.head_sha}
-          </small>
-          {link && (
-            <a className="discussion-link" href={link.href} target="_blank" rel="noreferrer">
-              {link.label}
+      </ol>
+      <details className="thread-tech">
+        <summary>技术信息</summary>
+        <p>
+          Finding <code>{finding.id}</code>
+          {shas.length > 0 ? (
+            <>
+              {" "}
+              · 分析提交 <code>{shas.map((sha) => String(sha).slice(0, 10)).join("、")}</code>
+            </>
+          ) : (
+            <>
+              {" "}
+              · 审查提交 <code>{String(finding.head_sha ?? "").slice(0, 10)}</code>
+            </>
+          )}
+        </p>
+      </details>
+    </div>
+  );
+}
+
+function ReplyRound({ reply, round }: { reply: any; round: number }) {
+  const result = reply.reply_result;
+  const conclusion = result?.conclusion ?? result?.suggestedFindingStatus;
+  const hasEvidence = Boolean(
+    result && (result.evidence?.length || result.limitations?.length || result.clarificationQuestion),
+  );
+  return (
+    <>
+      <li className="thread-step thread-human">
+        <p className="thread-who">
+          {actorOf(reply)}
+          {round > 0 && <span className="thread-round">第 {round} 轮</span>}
+          {reply.human_reply_url && (
+            <a className="thread-link" href={reply.human_reply_url} target="_blank" rel="noreferrer">
+              原评论
               <External />
             </a>
           )}
         </p>
-      </div>
-    </details>
+        <p className="thread-text thread-quote">{reply.human_reply_body || "（回复内容未保存）"}</p>
+      </li>
+      <li className="thread-step thread-service">
+        <p className="thread-who">
+          服务复核
+          {reply.reply_publish_status && reply.reply_publish_status !== "published" && (
+            <span className="thread-round">
+              <Status
+                value={reply.reply_publish_status}
+                label={publishLabels[reply.reply_publish_status] ?? reply.reply_publish_status}
+                plain
+              />
+            </span>
+          )}
+          {reply.github_reply_url && (
+            <a className="thread-link" href={reply.github_reply_url} target="_blank" rel="noreferrer">
+              服务的回复
+              <External />
+            </a>
+          )}
+        </p>
+        {result ? (
+          <>
+            <p className="thread-text">
+              <span className="thread-verdict">
+                <Status
+                  value={conclusionStatus[conclusion] ?? conclusion}
+                  label={conclusionLabels[conclusion] ?? statusLabels[conclusion] ?? conclusion}
+                />
+              </span>
+              {result.summary}
+            </p>
+            {reply.decision_clue && (
+              <p className="thread-clue">
+                {clueLabels[reply.decision_clue.type] ?? "可能形成规则"}：{reply.decision_clue.summary}
+                （合并后提取，仍需维护者确认）
+              </p>
+            )}
+            {hasEvidence && (
+              <details className="thread-evidence">
+                <summary>查看复核依据</summary>
+                {result.clarificationQuestion && <p>待补充：{result.clarificationQuestion}</p>}
+                {result.evidence?.length > 0 && (
+                  <ul>
+                    {result.evidence.map((entry: any, i: number) => (
+                      <li key={i}>
+                        {entry.path && (
+                          <code>
+                            {entry.path}
+                            {entry.line ? ":" + entry.line : ""}
+                          </code>
+                        )}{" "}
+                        {entry.detail}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {result.limitations?.length > 0 && (
+                  <>
+                    <p className="thread-sub">限制</p>
+                    <ul>
+                      {result.limitations.map((text: string, i: number) => (
+                        <li key={i}>{text}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </details>
+            )}
+          </>
+        ) : (
+          <p className="thread-text muted">复核还没完成。</p>
+        )}
+      </li>
+    </>
   );
 }
 
@@ -159,23 +295,24 @@ function groupByRepository(items: any[]): RepositoryGroup[] {
   for (const pull of groupByPullRequest(items)) {
     const group = groups.get(pull.repository) ?? { repository: pull.repository, count: 0, pulls: [] };
     group.pulls.push(pull);
-    group.count += pull.items.length;
+    group.count += toThreads(pull.items).length;
     groups.set(pull.repository, group);
   }
   return [...groups.values()];
 }
 function PullRequestDiscussions({ group }: { group: DiscussionGroup }) {
   const [expanded, setExpanded] = useState(false);
-  const hidden = group.items.length - GROUP_PREVIEW;
+  const threads = toThreads(group.items);
+  const hidden = threads.length - GROUP_PREVIEW;
   return (
     <section className="discussion-group">
       <div className="discussion-group-head">
         <strong className="pr-ref-number discussion-pr">#{group.prNumber}</strong>
         <h4 title={group.title || undefined}>{group.title || "（没有标题）"}</h4>
-        <span className="group-count">{group.items.length} 条</span>
+        <span className="group-count">{threads.length} 条</span>
         <a href={`#reviews/${group.items[0].job_id}`}>查看审查</a>
       </div>
-      <Discussions items={expanded || hidden <= 0 ? group.items : group.items.slice(0, GROUP_PREVIEW)} />
+      <DiscussionList threads={expanded || hidden <= 0 ? threads : threads.slice(0, GROUP_PREVIEW)} />
       {hidden > 0 && (
         <button className="compact discussion-more" onClick={() => setExpanded(!expanded)}>
           {expanded ? "收起" : `显示其余 ${hidden} 条`}

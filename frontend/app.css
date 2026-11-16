@@ -1562,28 +1562,173 @@ details > summary::marker {
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: var(--text-xs);
 }
-.discussion-body {
-  padding: var(--space-2) var(--space-3) var(--space-4) calc(104px + var(--space-6));
+.discussion-rounds {
+  width: 36px;
+  text-align: right;
+}
+/* 展开后的对话时间线：左侧一条细线串起各步，每步一个小圆点；GitHub 链接在右上。 */
+.thread {
+  padding: var(--space-3) var(--space-4) var(--space-3) calc(104px + var(--space-6));
+  border-top: 1px solid var(--line);
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-.discussion-body > * {
-  margin: 0 0 var(--space-2);
-}
-.discussion-body blockquote {
+.thread-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 720px;
   margin-bottom: var(--space-3);
 }
-.discussion-foot {
+.thread-top-label {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.thread-github {
+  flex: none;
+  gap: 4px;
+}
+.thread-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 720px;
+}
+.thread-step {
+  position: relative;
+  padding: 0 0 var(--space-4) 20px;
+}
+.thread-step::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: -7px;
+  left: 3px;
+  width: 1px;
+  background: var(--line);
+}
+.thread-step:last-child {
+  padding-bottom: var(--space-1);
+}
+.thread-step:last-child::before {
+  display: none;
+}
+.thread-step::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--line-strong, var(--subtle));
+  border-radius: 50%;
+  background: var(--surface);
+}
+.thread-human::after {
+  border-color: var(--text);
+  background: var(--text);
+}
+.thread-service::after {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.thread-step > p {
+  margin: 0;
+}
+.thread-step > p + p,
+.thread-step > p + details {
+  margin-top: var(--space-1);
+}
+.thread-who {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-1) var(--space-4);
-  margin-top: var(--space-3);
+  align-items: center;
+  gap: 2px var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 16px;
 }
-.discussion-link {
+.thread-human .thread-who {
+  color: var(--text);
+}
+.thread-round {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--subtle);
+  font-weight: 400;
+}
+.thread-link {
   display: inline-flex;
   align-items: center;
   gap: 2px;
+  font-weight: 400;
+}
+.thread-title {
+  font-weight: 500;
+}
+.thread-text {
+  color: var(--text);
+  line-height: 22px;
+}
+.thread-quote {
+  white-space: pre-wrap;
+}
+.thread-meta {
+  color: var(--subtle);
+  font-size: var(--text-xs);
+}
+.thread-meta code {
+  font-size: var(--text-xs);
+}
+.thread-verdict {
+  margin-right: var(--space-2);
+}
+.thread-verdict .status {
+  font-weight: 500;
+}
+.thread-clue {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.thread-evidence > summary,
+.thread-tech > summary {
+  width: fit-content;
+  font-size: var(--text-xs);
+}
+.thread-evidence > summary {
+  color: var(--accent-text);
+}
+.thread-evidence[open] {
+  padding-bottom: var(--space-1);
+}
+.thread-evidence ul {
+  margin: var(--space-2) 0 0;
+}
+.thread-evidence li + li {
+  margin-top: var(--space-1);
+}
+.thread-evidence code,
+.thread-tech code {
+  font-size: var(--text-xs);
+}
+.thread-sub {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.thread-tech {
+  margin-top: var(--space-2);
+  color: var(--subtle);
+  font-size: var(--text-xs);
+}
+.thread-tech > summary {
+  color: var(--subtle);
+}
+.thread-tech p {
+  margin: var(--space-1) 0 0;
 }
 .discussion-groups {
   display: grid;

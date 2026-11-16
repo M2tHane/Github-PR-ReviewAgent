@@ -301,7 +301,16 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
                 </button>
               )}
             </aside>
-            <div className="health-detail" aria-busy={loadingDetail}>
+            {/* 三栏都先有一行小标题，盒子从标题下方开始，上沿才能对齐。 */}
+            <div className="health-detail" aria-busy={loadingDetail} aria-labelledby="health-detail-title">
+              <h3 className="list-group-head" id="health-detail-title">
+                报告
+                {detail && (
+                  <code className="group-count" title={detail.job.target_sha}>
+                    {String(detail.job.target_sha).slice(0, 10)}
+                  </code>
+                )}
+              </h3>
               {loadingDetail ? (
                 <ListSkeleton rows={4} label="正在加载任务详情…" />
               ) : detail ? (
