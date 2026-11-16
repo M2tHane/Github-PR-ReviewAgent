@@ -9,6 +9,10 @@ import type { DevelopmentSettings, DevelopmentSource } from "../../../src/develo
 import type { AgentSessionRow } from "../../../src/admin/dto.js";
 import type { AgentUsage } from "../../../src/review/agent.js";
 import { NotificationMembers } from "./notification-members.js";
+import { Feedback } from "./repository-settings.js";
+import { Empty } from "../../components/common/empty-state.js";
+import { Check, External } from "../../components/common/icons.js";
+import { PropertyList } from "../../components/common/property-list.js";
 
 type Task = {
   id: string;
@@ -156,67 +160,84 @@ type Development = ReturnType<typeof useDevelopment>;
 export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Repository }) {
   const { settings, error, notice, busy, update, save } = dev;
   const [linking, setLinking] = useState(false);
+  const id = (name: string) => `dev-${repo.id}-${name}`;
   return (
-    <div className="card repo-form">
-      {error && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="feedback" role="status">
-          {notice}
-        </p>
-      )}
+    <div className="dev-settings">
       {!settings ? (
-        !error && <p role="status">加载中…</p>
+        error ? (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        ) : (
+          <p className="muted" role="status">
+            加载中…
+          </p>
+        )
       ) : (
-        <>
-          <form onSubmit={save} className="development-form">
-            <fieldset disabled={busy}>
-              <legend>目标分支与群绑定</legend>
-              <label>
-                群 ID（可选）
+        <form onSubmit={save} className="settings-form development-form">
+          <fieldset className="form-section" disabled={busy}>
+            <legend>目标分支与群绑定</legend>
+            <div className="setting-row">
+              <div className="setting-label">
+                <label htmlFor={id("chat")}>群 ID（可选）</label>
+                <p className="muted">绑定企微群后，群消息任务和 PR 审查通知发送到该群。</p>
+              </div>
+              <div className="setting-control">
                 <input
+                  id={id("chat")}
                   value={settings.chatId}
                   onChange={(e) => update({ chatId: e.target.value.trim() })}
                   placeholder="在群内 @ 智能机器人获取群 ID"
                 />
-              </label>
-              <label>
-                PR 目标分支
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label">
+                <label htmlFor={id("branch")}>PR 目标分支</label>
+                <p className="muted">
+                  AI 从目标分支创建开发分支并提 PR，不自动合并。只用管理页或 issue 标签派任务时，群 ID 和成员可以留空。
+                </p>
+              </div>
+              <div className="setting-control">
                 <input
+                  id={id("branch")}
                   required
                   value={settings.targetBranch}
                   onChange={(e) => update({ targetBranch: e.target.value.trim() })}
                   placeholder="例如 dev 或 main"
                 />
-              </label>
-              <p className="muted">
-                AI 从目标分支创建开发分支并提 PR，不自动合并。只用管理页或 issue 标签派任务时，群 ID
-                和成员可以留空。绑定企微群后，群消息任务和 PR 审查通知发送到该群。
-              </p>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={settings.enabled}
-                  onChange={(e) => update({ enabled: e.target.checked })}
-                />
-                启用开发任务
-              </label>
-            </fieldset>
-            <fieldset disabled={busy}>
-              <legend>成员身份</legend>
-              <p className="muted">
-                仅用于企微群内派任务，按企业微信成员 ID 识别。绑定群时至少保留一名管理员；不绑群时可留空。
-              </p>
-              {settings.members.map((member, index) => (
-                <div className="development-member" key={member.key}>
-                  <label>
-                    成员 ID
+              </div>
+            </div>
+            <div className="setting-row">
+              <div className="setting-label">
+                <label htmlFor={id("enabled")}>启用开发任务</label>
+              </div>
+              <div className="setting-control">
+                <label className="check">
+                  <input
+                    id={id("enabled")}
+                    type="checkbox"
+                    checked={settings.enabled}
+                    onChange={(e) => update({ enabled: e.target.checked })}
+                  />
+                  {settings.enabled ? "已启用" : "未启用"}
+                </label>
+              </div>
+            </div>
+          </fieldset>
+          <fieldset className="form-section" disabled={busy}>
+            <legend>成员身份</legend>
+            <p className="muted">
+              仅用于企微群内派任务，按企业微信成员 ID 识别。绑定群时至少保留一名管理员；不绑群时可留空。
+            </p>
+            {settings.members.length > 0 && (
+              <div className="list member-list">
+                {settings.members.map((member, index) => (
+                  <div className="member-row" key={member.key}>
                     <input
                       required
                       aria-label={`成员 ${index + 1} ID`}
+                      placeholder="成员 ID"
                       value={member.userid}
                       onChange={(e) =>
                         update({
@@ -226,9 +247,6 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
                         })
                       }
                     />
-                  </label>
-                  <label>
-                    身份
                     <Select
                       aria-label={`成员 ${index + 1} 身份`}
                       value={member.role}
@@ -243,19 +261,21 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
                       <option value="developer">开发</option>
                       <option value="admin">管理员</option>
                     </Select>
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => update({ members: settings.members.filter((_, i) => i !== index) })}
-                  >
-                    移除成员
-                  </button>
-                </div>
-              ))}
+                    <button
+                      type="button"
+                      className="ghost compact"
+                      onClick={() => update({ members: settings.members.filter((_, i) => i !== index) })}
+                    >
+                      移除成员
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="form-inline">
               <button
                 type="button"
-                className="secondary"
+                className="compact"
                 onClick={() =>
                   update({
                     members: [
@@ -267,76 +287,86 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
               >
                 添加成员
               </button>
-              <p className="muted">
-                需求不清楚时 AI 会开 issue 讨论，只有提需求的人在 issue 里回复“开始”才会开发。按下面的关联认人：
-                <button type="button" className="text-button" onClick={() => setLinking(true)}>
-                  GitHub 账号关联
-                </button>
-              </p>
-            </fieldset>
-            <fieldset disabled={busy}>
-              <legend>文件保护规则</legend>
-              <p className="muted">
-                开发命中任意保护范围时整项拒绝。管理员发起的任务可修改这些文件，原规则继续有效。此设置由拥有仓库维护权限的管理页用户维护。
-              </p>
-              {settings.protections.map((rule, index) => (
-                <div className="card development-rule" key={rule.key}>
-                  <label>
-                    规则名称
-                    <input
-                      required
-                      value={rule.name}
-                      onChange={(e) =>
-                        update({
-                          protections: settings.protections.map((r, i) =>
-                            i === index ? { ...r, name: e.target.value } : r,
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    保护范围（每行一个）
-                    <textarea
-                      required
-                      value={rule.paths.join("\n")}
-                      placeholder={"src/billing/\nconfig/production.json"}
-                      onChange={(e) =>
-                        update({
-                          protections: settings.protections.map((r, i) =>
-                            i === index ? { ...r, paths: e.target.value.split("\n") } : r,
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                  <small>填写精确文件或以 / 结尾的目录；目录/** 也可，** 表示整个仓库。</small>
-                  <label>
-                    规则说明
-                    <textarea
-                      required
-                      value={rule.reason}
-                      onChange={(e) =>
-                        update({
-                          protections: settings.protections.map((r, i) =>
-                            i === index ? { ...r, reason: e.target.value } : r,
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => update({ protections: settings.protections.filter((_, i) => i !== index) })}
-                  >
-                    移除规则
-                  </button>
-                </div>
-              ))}
+            </div>
+            <p className="muted">
+              需求不清楚时 AI 会开 issue 讨论，只有提需求的人在 issue 里回复“开始”才会开发。按下面的关联认人：
+              <button type="button" className="link-button" onClick={() => setLinking(true)}>
+                GitHub 账号关联
+              </button>
+            </p>
+          </fieldset>
+          <fieldset className="form-section" disabled={busy}>
+            <legend>文件保护规则</legend>
+            <p className="muted">
+              开发命中任意保护范围时整项拒绝。管理员发起的任务可修改这些文件，原规则继续有效。此设置由拥有仓库维护权限的管理页用户维护。
+            </p>
+            {settings.protections.length > 0 && (
+              <div className="list protection-list">
+                {settings.protections.map((rule, index) => (
+                  <div className="protection-row" key={rule.key}>
+                    <div className="protection-main">
+                      <label>
+                        规则名称
+                        <input
+                          required
+                          value={rule.name}
+                          onChange={(e) =>
+                            update({
+                              protections: settings.protections.map((r, i) =>
+                                i === index ? { ...r, name: e.target.value } : r,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        规则说明
+                        <textarea
+                          required
+                          value={rule.reason}
+                          onChange={(e) =>
+                            update({
+                              protections: settings.protections.map((r, i) =>
+                                i === index ? { ...r, reason: e.target.value } : r,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="protection-paths">
+                      <label>
+                        保护范围（每行一个）
+                        <textarea
+                          required
+                          value={rule.paths.join("\n")}
+                          placeholder={"src/billing/\nconfig/production.json"}
+                          onChange={(e) =>
+                            update({
+                              protections: settings.protections.map((r, i) =>
+                                i === index ? { ...r, paths: e.target.value.split("\n") } : r,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <small className="muted">填写精确文件或以 / 结尾的目录；目录/** 也可，** 表示整个仓库。</small>
+                      <button
+                        type="button"
+                        className="ghost compact"
+                        onClick={() => update({ protections: settings.protections.filter((_, i) => i !== index) })}
+                      >
+                        移除规则
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="form-inline">
               <button
                 type="button"
-                className="secondary"
+                className="compact"
                 onClick={() =>
                   update({
                     protections: [
@@ -348,17 +378,29 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
               >
                 添加保护规则
               </button>
-            </fieldset>
-            <button disabled={busy} type="submit">
+            </div>
+          </fieldset>
+          <div className="form-foot">
+            <button className="primary" disabled={busy} type="submit">
               {busy ? "保存中…" : "保存开发设置"}
             </button>
-          </form>
-        </>
+            <Feedback error={error} notice={notice} />
+          </div>
+        </form>
       )}
       {linking && <NotificationMembers repo={repo} onClose={() => setLinking(false)} />}
     </div>
   );
 }
+
+const notificationLabels: Record<string, string> = {
+  pending: "待发送",
+  sending: "发送中",
+  sent: "已发送",
+  failed: "失败",
+  uncertain: "结果待核对",
+  skipped: "不发送",
+};
 
 export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Repository }) {
   const { tasks, error, busy, refresh, enabled, settings } = dev;
@@ -389,119 +431,140 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
           {error}
         </p>
       )}
-      <form onSubmit={submit} className="card repo-form development-task">
-        <h3>新建开发任务</h3>
+      <form onSubmit={submit} className="panel task-form">
+        <label htmlFor={`task-prompt-${repo.id}`} className="task-form-title">
+          新建开发任务
+        </label>
         <p className="muted">
           描述希望实现的效果，AI 会创建开发分支并提 PR。结果显示在下方，需要确认时会开 issue 讨论。
+          {!enabled && (settings ? "请先在开发设置中保存目标分支并启用开发任务。" : "正在读取开发设置…")}
         </p>
-        {!enabled && (
-          <p className="muted">{settings ? "请先在开发设置中保存目标分支并启用开发任务。" : "正在读取开发设置…"}</p>
-        )}
-        <label>
-          开发描述
-          <textarea
-            required
-            maxLength={12000}
-            rows={5}
-            value={prompt}
-            disabled={!enabled || submitting}
-            onChange={(event) => {
-              setPrompt(event.target.value);
-              setSubmitted(false);
-            }}
-            placeholder="例如：为订单列表增加按日期筛选，并验证空结果的展示。"
-          />
-        </label>
-        <p className="muted">{numberText(prompt.length)} / 12,000 字</p>
-        {submitError && (
-          <p className="alert" role="alert">
-            {submitError}
-          </p>
-        )}
-        {submitted && (
-          <p className="feedback" role="status">
-            开发任务已加入队列，可在下方查看进度。
-          </p>
-        )}
-        <button type="submit" disabled={!enabled || submitting || !prompt.trim()}>
-          {submitting ? "提交中…" : "提交开发任务"}
-        </button>
+        <textarea
+          id={`task-prompt-${repo.id}`}
+          required
+          maxLength={12000}
+          rows={4}
+          value={prompt}
+          disabled={!enabled || submitting}
+          onChange={(event) => {
+            setPrompt(event.target.value);
+            setSubmitted(false);
+          }}
+          placeholder="例如：为订单列表增加按日期筛选，并验证空结果的展示。"
+        />
+        <div className="form-foot">
+          <button type="submit" className="primary" disabled={!enabled || submitting || !prompt.trim()}>
+            {submitting ? "提交中…" : "提交开发任务"}
+          </button>
+          {submitError && (
+            <p className="alert inline-alert" role="alert">
+              {submitError}
+            </p>
+          )}
+          {submitted && (
+            <p className="feedback" role="status">
+              <Check />
+              开发任务已加入队列，可在下方查看进度。
+            </p>
+          )}
+          <span className="form-foot-end muted tabular">{numberText(prompt.length)} / 12,000 字</span>
+        </div>
       </form>
-      <div className="subhead">
-        <h3>最近的开发任务</h3>
-        <button type="button" className="secondary" disabled={busy} onClick={refresh}>
+      <div className="section-title">
+        <h3>最近的开发任务 {tasks.length > 0 && <span className="group-count">{tasks.length}</span>}</h3>
+        <button type="button" className="ghost compact" disabled={busy} onClick={refresh}>
           刷新
         </button>
       </div>
-      {tasks.length >= 50 && <p className="muted">只显示最近 50 条。</p>}
-      {!tasks.length && <p className="muted">还没有任务。可在上方提交需求，或为 GitHub issue 添加 pi-dev 标签。</p>}
+      {tasks.length >= 50 && <p className="muted tab-note">只显示最近 50 条。</p>}
+      {!tasks.length && <Empty>还没有任务。可在上方提交需求，或为 GitHub issue 添加 pi-dev 标签。</Empty>}
       {tasks.length > 0 && (
-        <div className="development-task-list">
-          {tasks.map((task) => (
-            <article className="development-task-row" key={task.id}>
-              <div className="development-task-heading">
-                <h4 title={task.title || task.prompt_summary}>{task.title || task.prompt_summary}</h4>
-                <Status value={task.status} label={statuses[task.status]} />
-              </div>
-              <p className="muted">
-                {kindLabels[task.kind ?? "develop"]}
-                {sourceLabels[task.source]} · {task.requester_login ?? task.requester} · {dateText(task.created_at)}
-              </p>
-              {task.issue_number && (
-                <a
-                  href={`https://github.com/${repo.fullName}/issues/${task.issue_number}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  issue #{task.issue_number}
-                </a>
-              )}
-              {task.result && <p>{task.result}</p>}
-              {task.pr_number && (
-                <a href={`https://github.com/${repo.fullName}/pull/${task.pr_number}`} target="_blank" rel="noreferrer">
-                  PR #{task.pr_number} {task.title}
-                </a>
-              )}
-              <p className="muted">目标分支：{task.target_branch}</p>
-              {usageTotal({ usage: task.usage }) !== undefined && (
-                <p className="muted usage-text">
-                  用量：{numberText(usageTotal({ usage: task.usage }))} tokens · {usageText({ usage: task.usage })}
-                </p>
-              )}
-              <SessionTimeline sessions={task.agent_sessions ?? []} />
-              {task.status === "uncertain" && (
-                <p>
-                  请核对分支：<code>{task.branch}</code>。不会自动重复创建 PR。
-                </p>
-              )}
-              <small>
-                群通知：
-                {
-                  (
-                    {
-                      pending: "待发送",
-                      sending: "发送中",
-                      sent: "已发送",
-                      failed: "失败",
-                      uncertain: "结果待核对",
-                      skipped: "不发送",
-                    } as Record<string, string>
-                  )[task.notification_status]
-                }
-              </small>
-              {task.notification_error && (
-                <p className="muted">
-                  {task.notification_error === "reply_window_expired"
-                    ? "原消息已超过 24 小时回复期限，请在这里查看任务结果。"
-                    : task.notification_error === "reply_context_missing"
-                      ? "此任务没有保存原消息回复标识，请在这里查看结果。"
-                      : task.notification_error === "repository_or_binding_changed"
-                        ? "仓库或群绑定已变化，已停止发送旧通知。"
-                        : "群回复未确认成功，请先检查群消息；不会自动重复发送。"}
-                </p>
-              )}
-            </article>
-          ))}
+        <div className="list task-list">
+          {tasks.map((task) => {
+            const title = task.title || task.prompt_summary;
+            return (
+              <details
+                className="task-row"
+                key={task.id}
+                // 失败和发布待核对的任务需要人看，默认展开。
+                open={task.status === "failed" || task.status === "uncertain"}
+              >
+                <summary className="list-row">
+                  <Status value={task.status} label={statuses[task.status]} icon />
+                  <span className={`row-title${title ? "" : " muted"}`} title={title || undefined}>
+                    {title || "未命名任务"}
+                  </span>
+                  <span className="row-meta col-source" title={task.requester_login ?? task.requester ?? undefined}>
+                    {kindLabels[task.kind ?? "develop"]}
+                    {sourceLabels[task.source]} · {task.requester_login ?? task.requester}
+                  </span>
+                  <span className="row-meta col-ref">
+                    {task.pr_number ? `PR #${task.pr_number}` : task.issue_number ? `issue #${task.issue_number}` : ""}
+                  </span>
+                  <span className="col-status">
+                    <Status value={task.status} label={statuses[task.status]} plain />
+                  </span>
+                  <time className="row-meta col-date" dateTime={task.created_at}>
+                    {dateText(task.created_at)}
+                  </time>
+                </summary>
+                <div className="task-body">
+                  {task.result && <p className="task-result">{task.result}</p>}
+                  <PropertyList
+                    items={[
+                      task.pr_number && [
+                        "PR",
+                        <a
+                          href={`https://github.com/${repo.fullName}/pull/${task.pr_number}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          PR #{task.pr_number} {task.title}
+                          <External />
+                        </a>,
+                      ],
+                      task.issue_number && [
+                        "issue",
+                        <a
+                          href={`https://github.com/${repo.fullName}/issues/${task.issue_number}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          issue #{task.issue_number}
+                          <External />
+                        </a>,
+                      ],
+                      ["目标分支", <code>{task.target_branch}</code>],
+                      usageTotal({ usage: task.usage }) !== undefined && [
+                        "用量",
+                        <span className="usage-text">
+                          {numberText(usageTotal({ usage: task.usage }))} tokens · {usageText({ usage: task.usage })}
+                        </span>,
+                      ],
+                      ["群通知", notificationLabels[task.notification_status] ?? task.notification_status],
+                    ]}
+                  />
+                  {task.status === "uncertain" && (
+                    <p>
+                      请核对分支：<code>{task.branch}</code>。不会自动重复创建 PR。
+                    </p>
+                  )}
+                  {task.notification_error && (
+                    <p className="muted">
+                      {task.notification_error === "reply_window_expired"
+                        ? "原消息已超过 24 小时回复期限，请在这里查看任务结果。"
+                        : task.notification_error === "reply_context_missing"
+                          ? "此任务没有保存原消息回复标识，请在这里查看结果。"
+                          : task.notification_error === "repository_or_binding_changed"
+                            ? "仓库或群绑定已变化，已停止发送旧通知。"
+                            : "群回复未确认成功，请先检查群消息；不会自动重复发送。"}
+                    </p>
+                  )}
+                  <SessionTimeline sessions={task.agent_sessions ?? []} />
+                </div>
+              </details>
+            );
+          })}
         </div>
       )}
     </>

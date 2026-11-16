@@ -4,6 +4,8 @@ import { api, messageOf } from "../api/client.js";
 import { dateText } from "../format.js";
 import type { ServiceSettingsResponse, SettingDefinition, SettingValue } from "../types.js";
 import { RepositoryOnboarding } from "../features/repositories/repository-onboarding.js";
+import { Feedback } from "../features/repositories/repository-settings.js";
+import { Empty } from "../components/common/empty-state.js";
 
 // 页面上的输入都是字符串；数值按定义的单位换算，保存时只提交改过的项。
 function display(definition: SettingDefinition, value: SettingValue | undefined) {
@@ -113,15 +115,13 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
 
   return (
     <section className="service-settings">
-      <div className="section-head">
-        <div>
-          <h2>服务设置</h2>
-          <p className="muted">对所有仓库生效。没改过的项用 .env 或代码里的默认值；密钥和地址只能在 .env 修改。</p>
-        </div>
+      <div className="page-head">
+        <h2>服务设置</h2>
+        <p className="muted">对所有仓库生效。没改过的项用 .env 或代码里的默认值；密钥和地址只能在 .env 修改。</p>
       </div>
       {data.canEdit && <RepositoryOnboarding onChange={onRepositoriesChange} />}
       {!data.canEdit && (
-        <p className="feedback" role="status">
+        <p className="pending-note" role="status">
           {data.adminsConfigured
             ? "你可以查看这些设置；只有 .env 里 SERVICE_ADMINS 列出的用户可以修改。"
             : "还没有指定可以修改的人：在 .env 设置 SERVICE_ADMINS=GitHub 用户名（多个用逗号分隔），重启服务后生效。"}
@@ -134,7 +134,7 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
         }}
       >
         {groups.map((group) => (
-          <fieldset className="card service-settings-group" key={group} disabled={!data.canEdit || busy}>
+          <fieldset className="form-section service-settings-group" key={group} disabled={!data.canEdit || busy}>
             <legend>{group}</legend>
             {states
               .filter((item) => item.definition.group === group)
@@ -148,18 +148,21 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
                     setInputs((items) => ({ ...items, [state.key]: value }));
                   };
                 return (
-                  <div className="service-setting" key={state.key}>
-                    <div className="service-setting-label">
+                  <div className="setting-row service-setting" key={state.key}>
+                    <div className="setting-label service-setting-label">
                       <label htmlFor={id}>{definition.label}</label>
                       {definition.help && <p className="muted">{definition.help}</p>}
-                      <p className="service-setting-source">
-                        {state.updatedBy
-                          ? `${state.updatedBy} 修改于 ${dateText(state.updatedAt)} · 默认 ${display(definition, state.defaultValue)}`
-                          : "使用默认值"}
-                        {pendingReset && " · 保存后恢复默认"}
-                      </p>
+                      {/* 没改过的项不再逐行写"使用默认值"，只标出改过的项。 */}
+                      {(state.updatedBy || pendingReset) && (
+                        <p className="service-setting-source">
+                          {state.updatedBy
+                            ? `${state.updatedBy} 修改于 ${dateText(state.updatedAt)} · 默认 ${display(definition, state.defaultValue)}`
+                            : ""}
+                          {pendingReset && `${state.updatedBy ? " · " : ""}保存后恢复默认`}
+                        </p>
+                      )}
                     </div>
-                    <div className="service-setting-input">
+                    <div className="setting-control service-setting-input">
                       {definition.kind === "boolean" ? (
                         <label className="check">
                           <input
@@ -209,7 +212,7 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
                       {state.updatedBy && !pendingReset && data.canEdit && (
                         <button
                           type="button"
-                          className="text-button"
+                          className="link-button"
                           onClick={() => setReset((items) => [...items, state.key])}
                         >
                           恢复默认
@@ -221,28 +224,26 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
               })}
           </fieldset>
         ))}
-        {error && (
+        {!data.canEdit && error && (
           <p className="alert" role="alert">
             {error}
           </p>
         )}
-        {notice && (
-          <p className="feedback" role="status">
-            {notice}
-          </p>
-        )}
         {data.canEdit && (
-          <div className="service-settings-foot">
-            <button type="submit" disabled={busy || (!changed.length && !reset.length)}>
+          <div className={`form-foot service-settings-foot${changed.length || reset.length ? " is-dirty" : ""}`}>
+            <button type="submit" className="primary" disabled={busy || (!changed.length && !reset.length)}>
               {busy ? "保存中…" : "保存修改"}
             </button>
             <small className="muted">
               {changed.length || reset.length ? `${changed.length + reset.length} 项待保存` : "没有改动"}
             </small>
+            <Feedback error={error} notice={notice} />
           </div>
         )}
       </form>
-      <h3 className="service-settings-audit-title">最近修改</h3>
+      <div className="section-title service-settings-audit-title">
+        <h3>最近修改</h3>
+      </div>
       {data.audits.length ? (
         <div className="table-wrap">
           <table className="service-settings-audits" aria-label="服务设置修改记录">
@@ -274,7 +275,7 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
           </table>
         </div>
       ) : (
-        <p className="muted">还没有人修改过。</p>
+        <Empty>还没有人修改过。</Empty>
       )}
     </section>
   );

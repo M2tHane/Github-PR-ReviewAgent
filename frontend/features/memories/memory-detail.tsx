@@ -3,6 +3,9 @@ import { memorySourceLabel, ruleLevelLabels } from "../../../src/memory/types.js
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
+import { Close, External } from "../../components/common/icons.js";
+import { Menu, type MenuItem } from "../../components/common/menu.js";
+import { PropertyList } from "../../components/common/property-list.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
 import type { Memory, Repository as Repo } from "../../types.js";
@@ -75,298 +78,297 @@ export function RulePanel({
       });
     return () => controller.abort();
   }, [tab, item.id, item.version, item.updatedAt]);
+  const confidence =
+    item.confidence === null
+      ? "人工确认导入"
+      : item.confidence >= 0.8
+        ? "高可信"
+        : item.confidence >= 0.5
+          ? "有待核实"
+          : "证据较弱";
+  const menuItems: MenuItem[] =
+    item.status === "ACTIVE"
+      ? [
+          { label: "编辑规则", href: `#rules/${item.id}/edit${suffix}` },
+          ...(candidates.length > 0 ? [{ label: "用待确认规则替代", onSelect: () => setConfirm("supersede") }] : []),
+          { label: "停用规则", danger: true, onSelect: () => setConfirm("deprecate") },
+        ]
+      : [];
+  const used = item.status !== "CANDIDATE" || Boolean(item.activeVersion);
   return (
     <>
-      <Modal drawer titleId="rule-detail-title" onClose={close}>
+      <Modal drawer wide titleId="rule-detail-title" onClose={close}>
         <div className="drawer-head">
-          <span className="eyebrow">团队规则</span>
-          <button className="icon-button" aria-label="关闭规则详情" onClick={close}>
-            ×
+          <h2 id="rule-detail-title">{item.title}</h2>
+          <button className="ghost icon-only" aria-label="关闭规则详情" onClick={close}>
+            <Close />
           </button>
         </div>
-        <div className="drawer-body">
-          <h2 id="rule-detail-title">{item.title}</h2>
-          <p className="muted rule-owner">{repository?.fullName}</p>
-          <div className="rule-status-line" role="status">
-            <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
-            <Status
-              value={item.status}
-              label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
-            />
-            <small>
-              v{item.version} · 更新于 {dateText(item.updatedAt)}
-            </small>
-          </div>
-          {error && (
-            <p className="alert" role="alert">
-              {error}
-            </p>
-          )}
-          {item.status === "CANDIDATE" && (
-            <p className="pending-note">
-              {item.activeVersion
-                ? `当前 v${item.activeVersion} 继续用于审查；确认后才采用这次更新。`
-                : "待确认的仓库约定，确认后用于后续审查。"}
-              {item.activeVersion && (
-                <>
-                  {" "}
-                  <button className="text-button" onClick={() => setTab("history")}>
-                    查看变更
-                  </button>
-                </>
-              )}
-            </p>
-          )}
-          {tab !== "rule" && (
-            <button className="text-button back-link" onClick={() => setTab("rule")}>
-              ← 返回规则
-            </button>
-          )}
-          {tab === "rule" && (
-            <>
-              <section className="rule-section">
-                <h3>规则</h3>
-                <p className="rule-content">{item.content}</p>
-              </section>
-              <section className="rule-section">
-                <h3>适用范围</h3>
-                <ScopeChips scope={item.scope} />
-                {(item.exceptionTo || item.supersedes) && (
-                  <dl>
-                    {item.exceptionTo && (
-                      <>
-                        <dt>例外于</dt>
-                        <dd>{rules.find((rule) => rule.id === item.exceptionTo)?.title ?? item.exceptionTo}</dd>
-                      </>
-                    )}
-                    {item.supersedes && (
-                      <>
-                        <dt>替代</dt>
-                        <dd>{rules.find((rule) => rule.id === item.supersedes)?.title ?? item.supersedes}</dd>
-                      </>
-                    )}
-                  </dl>
+        <div className="drawer-body drawer-split">
+          <div className="drawer-main">
+            {error && (
+              <p className="alert" role="alert">
+                {error}
+              </p>
+            )}
+            {item.status === "CANDIDATE" && (
+              <p className="pending-note">
+                {item.activeVersion
+                  ? `当前 v${item.activeVersion} 继续用于审查；确认后才采用这次更新。`
+                  : "待确认的仓库约定，确认后用于后续审查。"}
+                {item.activeVersion && (
+                  <>
+                    {" "}
+                    <button className="link-button" onClick={() => setTab("history")}>
+                      查看变更
+                    </button>
+                  </>
                 )}
-              </section>
-              {/* 从没生效过的待确认规则不会交给审查，不显示使用情况。 */}
-              {(item.status !== "CANDIDATE" || item.activeVersion) && (
+              </p>
+            )}
+            <div className="tabs" role="group" aria-label="规则详情视图">
+              {(
+                [
+                  ["rule", "规则"],
+                  ["sources", "依据"],
+                  ["history", "历史"],
+                  ["technical", "技术信息"],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  className={tab === key ? "active" : ""}
+                  aria-pressed={tab === key}
+                  onClick={() => setTab(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {tab === "rule" && (
+              <>
                 <section className="rule-section">
-                  <h3>使用情况</h3>
-                  <dl className="rule-usage">
-                    {(
-                      [
-                        ["提供给审查", `${numberText(item.usage.provided)} 次`],
-                        ["被意见引用", `${numberText(item.usage.cited)} 次`],
-                        ["已修复", numberText(item.usage.fixed)],
-                        ["疑似已修复", numberText(item.usage.inferredFixed)],
-                        ["已撤回", numberText(item.usage.withdrawn)],
-                        ["记为例外", numberText(item.usage.exception)],
-                        ["仍未结", numberText(item.usage.open)],
-                        ["最近引用", item.usage.lastCitedAt ? dateText(item.usage.lastCitedAt) : "暂无引用"],
-                      ] as const
-                    ).map(([label, value]) => (
-                      <div key={label}>
-                        <dt>{label}</dt>
-                        <dd>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <p className="muted">
-                    统计范围：数据保留期内已完成的审查。疑似已修复表示合并时附近代码有改动，由服务推断，尚未经过回复确认。
-                  </p>
+                  <h3>规则</h3>
+                  <p className="rule-content">{item.content}</p>
                 </section>
-              )}
+                <section className="rule-section">
+                  <h3>适用范围</h3>
+                  <ScopeChips scope={item.scope} />
+                  {(item.exceptionTo || item.supersedes) && (
+                    <dl className="rule-relations">
+                      {item.exceptionTo && (
+                        <>
+                          <dt>例外于</dt>
+                          <dd>{rules.find((rule) => rule.id === item.exceptionTo)?.title ?? item.exceptionTo}</dd>
+                        </>
+                      )}
+                      {item.supersedes && (
+                        <>
+                          <dt>替代</dt>
+                          <dd>{rules.find((rule) => rule.id === item.supersedes)?.title ?? item.supersedes}</dd>
+                        </>
+                      )}
+                    </dl>
+                  )}
+                </section>
+              </>
+            )}
+            {tab === "sources" && (
               <section className="rule-section">
-                <h3>规则来源</h3>
-                <p>
-                  {repository?.fullName}
-                  <br />
-                  {item.source.kind ? (
-                    <>
-                      {memorySourceLabel(item.source)}
-                      <br />由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
-                    </>
-                  ) : (
-                    <>
-                      <a href={pr} target="_blank" rel="noreferrer">
-                        PR #{item.source.pullRequestNumber} ↗
-                      </a>{" "}
-                      · {item.source.commentIds.length} 条讨论
-                    </>
-                  )}
-                </p>
-                <button className="text-button" onClick={() => setTab("sources")}>
-                  查看依据 →
-                </button>
-              </section>
-              <div className="rule-secondary">
-                <span className="muted">
-                  {item.confidence === null
-                    ? "人工确认导入"
-                    : item.confidence >= 0.8
-                      ? "高可信"
-                      : item.confidence >= 0.5
-                        ? "有待核实"
-                        : "证据较弱"}
-                </span>
-                <button className="text-button" onClick={() => setTab("sources")}>
-                  为什么？
-                </button>
-                <button className="text-button" onClick={() => setTab("history")}>
-                  查看历史 →
-                </button>
-              </div>
-            </>
-          )}
-          {tab === "sources" && (
-            <section className="rule-section">
-              <h3>这条规则为什么存在</h3>
-              <p className="rule-content">{item.rationale}</p>
-              {item.source.kind ? (
-                <p>
-                  {memorySourceLabel(item.source)}
-                  {item.source.memoryId && (
-                    <>
-                      {" "}
-                      · 原规则编号 <code>{item.source.memoryId}</code>
-                    </>
-                  )}
-                </p>
-              ) : (
-                <a href={pr} target="_blank" rel="noreferrer">
-                  查看 PR #{item.source.pullRequestNumber} 的原始讨论 ↗
-                </a>
-              )}
-              <ul className="evidence-list">
-                {item.evidence.map((entry, i) => (
-                  <li key={i}>
-                    <strong>
-                      {entry.kind === "human_comment" ? "讨论依据" : entry.kind === "code" ? "代码依据" : "相关依据"}
-                    </strong>
-                    <p>{entry.detail}</p>
-                    {/^https:\/\//.test(entry.reference) ? (
-                      <a href={entry.reference} target="_blank" rel="noreferrer">
-                        查看来源 ↗
-                      </a>
-                    ) : (
-                      <small>{entry.reference}</small>
+                <h3>这条规则为什么存在</h3>
+                <p className="rule-content">{item.rationale}</p>
+                {item.source.kind ? (
+                  <p>
+                    {memorySourceLabel(item.source)}
+                    {item.source.memoryId && (
+                      <>
+                        {" "}
+                        · 原规则编号 <code>{item.source.memoryId}</code>
+                      </>
                     )}
-                  </li>
-                ))}
-              </ul>
-              <details>
-                <summary>可信度与不确定因素</summary>
-                <p>
-                  {item.confidence === null
-                    ? "由维护者人工确认导入，未生成模型置信分数。"
-                    : `模型自评 ${Math.round(item.confidence * 100)}%，不代表校准后的正确率。`}
-                </p>
-                {item.uncertainties.length ? (
-                  <ul>
-                    {item.uncertainties.map((text, i) => (
-                      <li key={i}>{text}</li>
-                    ))}
-                  </ul>
+                  </p>
                 ) : (
-                  <p>未记录额外不确定因素。</p>
+                  <a href={pr} target="_blank" rel="noreferrer">
+                    查看 PR #{item.source.pullRequestNumber} 的原始讨论
+                    <External />
+                  </a>
                 )}
-              </details>
-            </section>
-          )}
-          {tab === "history" && (
-            <section className="rule-section">
-              <h3>版本与变更</h3>
-              {historyError ? (
-                <p className="alert" role="alert">
-                  {historyError}
-                </p>
-              ) : versions === null ? (
-                <p role="status">正在加载历史…</p>
-              ) : (
-                <ol className="version-list">
-                  {versions.map((version) => (
-                    <li key={version.version}>
-                      <div>
-                        <strong>
-                          v{version.version}
-                          {version.version === item.version ? " · 当前展示" : ""}
-                        </strong>
-                        <Status value={version.status} />
-                      </div>
-                      <small>{dateText(version.updated_at)}</small>
-                      <h4>{version.title}</h4>
-                      <p className="rule-content">{version.content}</p>
-                      <ScopeChips scope={version.scope} />
-                      <details>
-                        <summary>修改依据</summary>
-                        <p>{version.rationale}</p>
-                      </details>
+                <ul className="evidence-list">
+                  {item.evidence.map((entry, i) => (
+                    <li key={i}>
+                      <strong>
+                        {entry.kind === "human_comment" ? "讨论依据" : entry.kind === "code" ? "代码依据" : "相关依据"}
+                      </strong>
+                      <p>{entry.detail}</p>
+                      {/^https:\/\//.test(entry.reference) ? (
+                        <a href={entry.reference} target="_blank" rel="noreferrer">
+                          查看来源
+                          <External />
+                        </a>
+                      ) : (
+                        <small>{entry.reference}</small>
+                      )}
                     </li>
                   ))}
-                </ol>
-              )}
-            </section>
-          )}
-          {tab === "technical" && (
-            <section className="rule-section">
-              <h3>技术信息</h3>
-              <dl>
-                <dt>Rule ID</dt>
-                <dd>
-                  <code>{item.id}</code>
-                </dd>
-                <dt>Version</dt>
-                <dd>{item.version}</dd>
-                <dt>Source commit</dt>
-                <dd>
-                  <code>{item.source.commitSha ?? "不适用（导入来源）"}</code>
-                </dd>
-              </dl>
-              <details>
-                <summary>原始范围与来源</summary>
-                <pre>{JSON.stringify({ scope: item.scope, source: item.source }, null, 2)}</pre>
-              </details>
-            </section>
-          )}
+                </ul>
+                <details>
+                  <summary>可信度与不确定因素</summary>
+                  <p>
+                    {item.confidence === null
+                      ? "由维护者人工确认导入，未生成模型置信分数。"
+                      : `模型自评 ${Math.round(item.confidence * 100)}%，不代表校准后的正确率。`}
+                  </p>
+                  {item.uncertainties.length ? (
+                    <ul>
+                      {item.uncertainties.map((text, i) => (
+                        <li key={i}>{text}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>未记录额外不确定因素。</p>
+                  )}
+                </details>
+              </section>
+            )}
+            {tab === "history" && (
+              <section className="rule-section">
+                <h3>版本与变更</h3>
+                {historyError ? (
+                  <p className="alert" role="alert">
+                    {historyError}
+                  </p>
+                ) : versions === null ? (
+                  <p role="status">正在加载历史…</p>
+                ) : (
+                  <ol className="version-list">
+                    {versions.map((version) => (
+                      <li key={version.version}>
+                        <div>
+                          <strong>
+                            v{version.version}
+                            {version.version === item.version ? " · 当前展示" : ""}
+                          </strong>
+                          <Status value={version.status} />
+                        </div>
+                        <small>{dateText(version.updated_at)}</small>
+                        <h4>{version.title}</h4>
+                        <p className="rule-content">{version.content}</p>
+                        <ScopeChips scope={version.scope} />
+                        <details>
+                          <summary>修改依据</summary>
+                          <p>{version.rationale}</p>
+                        </details>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </section>
+            )}
+            {tab === "technical" && (
+              <section className="rule-section">
+                <h3>技术信息</h3>
+                <dl>
+                  <dt>Rule ID</dt>
+                  <dd>
+                    <code>{item.id}</code>
+                  </dd>
+                  <dt>Version</dt>
+                  <dd>{item.version}</dd>
+                  <dt>Source commit</dt>
+                  <dd>
+                    <code>{item.source.commitSha ?? "不适用（导入来源）"}</code>
+                  </dd>
+                </dl>
+                <details>
+                  <summary>原始范围与来源</summary>
+                  <pre>{JSON.stringify({ scope: item.scope, source: item.source }, null, 2)}</pre>
+                </details>
+              </section>
+            )}
+          </div>
+          <aside className="drawer-side">
+            <PropertyList
+              label="规则属性"
+              items={[
+                [
+                  "状态",
+                  <Status
+                    value={item.status}
+                    label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
+                  />,
+                ],
+                ["级别", <span className={`level-${item.level}`}>{ruleLevelLabels[item.level]}</span>],
+                ["仓库", <span className="property-wrap">{repository?.fullName ?? "—"}</span>],
+                ["版本", `v${item.version}`],
+                ["更新于", dateText(item.updatedAt)],
+                [
+                  "来源",
+                  item.source.kind ? (
+                    <span className="property-wrap">
+                      {memorySourceLabel(item.source)}
+                      <br />
+                      <span className="muted">
+                        由 {item.source.importedByLogin} 于 {dateText(item.source.importedAt)} 确认导入
+                      </span>
+                    </span>
+                  ) : (
+                    <span>
+                      <a href={pr} target="_blank" rel="noreferrer">
+                        PR #{item.source.pullRequestNumber}
+                        <External />
+                      </a>{" "}
+                      <span className="muted">· {item.source.commentIds.length} 条讨论</span>
+                    </span>
+                  ),
+                ],
+                ["可信度", confidence],
+              ]}
+            />
+            {/* 从没生效过的待确认规则不会交给审查，不显示使用情况。 */}
+            {used && (
+              <>
+                <h3 className="side-title">使用情况</h3>
+                <PropertyList
+                  label="使用情况"
+                  items={[
+                    ["提供给审查", `${numberText(item.usage.provided)} 次`],
+                    ["被意见引用", `${numberText(item.usage.cited)} 次`],
+                    ["已修复", numberText(item.usage.fixed)],
+                    ["疑似已修复", numberText(item.usage.inferredFixed)],
+                    ["已撤回", numberText(item.usage.withdrawn)],
+                    ["记为例外", numberText(item.usage.exception)],
+                    ["仍未结", numberText(item.usage.open)],
+                    ["最近引用", item.usage.lastCitedAt ? dateText(item.usage.lastCitedAt) : "暂无引用"],
+                  ]}
+                />
+                <p className="muted side-note">
+                  统计范围：数据保留期内已完成的审查。疑似已修复表示合并时附近代码有改动，由服务推断，尚未经过回复确认。
+                </p>
+              </>
+            )}
+          </aside>
         </div>
         <footer className="drawer-footer">
           {item.status === "CANDIDATE" ? (
             <>
-              <button className="secondary" disabled={busy} onClick={() => void action(item, "reject")}>
+              <button disabled={busy} onClick={() => void action(item, "reject")}>
                 忽略
               </button>
-              <a className="button secondary" href={`#rules/${item.id}/edit${suffix}`}>
+              <a className="button" href={`#rules/${item.id}/edit${suffix}`}>
                 编辑
               </a>
-              <button disabled={busy} onClick={() => void action(item, "approve")}>
+              <button className="primary" disabled={busy} onClick={() => void action(item, "approve")}>
                 {busy ? "处理中…" : item.activeVersion ? "确认更新规则" : "确认规则生效"}
               </button>
             </>
           ) : (
             <span className="muted">{item.status === "ACTIVE" ? "用于后续 PR 审查" : "保留来源与历史"}</span>
           )}
-          <details className="more-menu">
-            <summary aria-label="更多规则操作">···</summary>
-            <div
-              onClick={(event) => {
-                const menu = event.currentTarget.parentElement!;
-                menu.removeAttribute("open");
-                menu.querySelector("summary")?.focus();
-              }}
-            >
-              {item.status === "ACTIVE" && <a href={`#rules/${item.id}/edit${suffix}`}>编辑规则</a>}
-              <button onClick={() => setTab("history")}>查看历史</button>
-              <button onClick={() => setTab("technical")}>查看技术信息</button>
-              {item.status === "ACTIVE" && (
-                <>
-                  {candidates.length > 0 && <button onClick={() => setConfirm("supersede")}>用待确认规则替代</button>}
-                  <button className="danger" onClick={() => setConfirm("deprecate")}>
-                    停用规则
-                  </button>
-                </>
-              )}
-            </div>
-          </details>
+          {menuItems.length > 0 && (
+            <span className="footer-end">
+              <Menu label="更多规则操作" items={menuItems} />
+            </span>
+          )}
         </footer>
       </Modal>
       {confirm && (
@@ -409,11 +411,11 @@ export function RulePanel({
             </p>
           )}
           <div className="dialog-actions">
-            <button className="secondary" autoFocus disabled={busy} onClick={() => setConfirm(null)}>
+            <button autoFocus disabled={busy} onClick={() => setConfirm(null)}>
               取消
             </button>
             <button
-              className={confirm === "deprecate" ? "danger-button" : ""}
+              className={confirm === "deprecate" ? "danger-button" : "primary"}
               disabled={busy || (confirm === "supersede" && !next)}
               onClick={() =>
                 void action(item, confirm, confirm === "supersede" ? { candidateId: replacement } : {}).then((ok) => {

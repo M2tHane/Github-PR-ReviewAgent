@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, messageOf, setCsrf } from "./api/client.js";
-import { AppLayout } from "./components/layout/app-layout.js";
+import { AppLayout, type Section } from "./components/layout/app-layout.js";
 import { Empty } from "./components/common/empty-state.js";
 import { ThemeSwitch } from "./components/common/theme-switch.js";
 import { HealthPanel } from "./features/health/health-panel.js";
@@ -74,6 +74,24 @@ function App() {
   const repositoryRoute = route.match(/^repositories\/(\d+)(?:\/(health|development|tasks))?$/),
     repositories = route === "repositories" || Boolean(repositoryRoute),
     repository = repositoryRoute && repos.find((item) => item.id === Number(repositoryRoute[1]));
+  const section: Section = rules
+    ? "rules"
+    : reviews
+      ? "reviews"
+      : repositories
+        ? "repositories"
+        : health
+          ? "health"
+          : runs
+            ? "runs"
+            : discussions
+              ? "discussions"
+              : route === "settings/service"
+                ? "service"
+                : settings
+                  ? "settings"
+                  : "overview";
+  const pendingRules = memories.filter((item) => item.status === "CANDIDATE").length;
   const updateRepository = (value: Repo) =>
     setRepos((items) => items.map((item) => (item.id === value.id ? value : item)));
   if (!session)
@@ -90,8 +108,8 @@ function App() {
           ) : (
             <>
               {error && <p className="error">{error}</p>}
-              <a className="button" href="/auth/github">
-                使用 GitHub 登录 →
+              <a className="button primary" href="/auth/github">
+                使用 GitHub 登录
               </a>
             </>
           )}
@@ -100,13 +118,8 @@ function App() {
     );
   return (
     <AppLayout
-      navigation={{
-        overview: !reviews && !rules && !repositories && !settings,
-        reviews,
-        rules,
-        repositories,
-        settings,
-      }}
+      section={section}
+      pendingRules={pendingRules}
       login={session.login}
       mainRef={main}
       onLogout={() =>
@@ -121,14 +134,11 @@ function App() {
         </p>
       )}
       {initializing ? (
-        <p role="status">正在加载管理数据…</p>
+        <p className="muted" role="status">
+          正在加载管理数据…
+        </p>
       ) : (
         <>
-          {settings && route !== "settings" && (
-            <a className="back-link" href="#settings">
-              ← 设置
-            </a>
-          )}
           {rules ? (
             <MemoriesPage
               items={memories}
@@ -145,8 +155,8 @@ function App() {
                 onRepositoryUpdated={updateRepository}
               />
             ) : (
-              <Empty>
-                找不到这个仓库，或当前账号没有它的管理权限。<a href="#repositories">返回仓库列表</a>
+              <Empty action={<a href="#repositories">返回仓库列表</a>}>
+                找不到这个仓库，或当前账号没有它的管理权限。
               </Empty>
             )
           ) : route === "repositories" ? (

@@ -124,7 +124,7 @@ test("custom select: keyboard, outside click, forms, disabled, dialog, placement
     assert.equal(await unavailable.getAttribute("aria-activedescendant"), null);
     await unavailable.press("Escape");
     await page.getByRole("button", { name: "重置", exact: true }).click();
-    assert.equal(await level.innerText(), "建议\n⌄");
+    assert.equal((await level.innerText()).trim(), "建议");
   });
   await t.test("listbox works inside a modal; first Escape only closes dropdown", async () => {
     await page.getByRole("button", { name: "打开弹窗", exact: true }).click();
@@ -135,7 +135,7 @@ test("custom select: keyboard, outside click, forms, disabled, dialog, placement
     assert.equal(await page.locator("dialog").evaluate((el) => el.open), true);
     await select.click();
     await page.getByRole("option", { name: "建议", exact: true }).click();
-    assert.equal(await select.innerText(), "建议\n⌄");
+    assert.equal((await select.innerText()).trim(), "建议");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
   });
   await mkdir("work/ui-review/slop-after", { recursive: true });

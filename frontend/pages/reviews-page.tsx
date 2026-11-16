@@ -1,6 +1,7 @@
 import { Select } from "../components/common/select.js";
 import { useJobPage } from "../api/jobs.js";
 import { Pager } from "../components/common/pager.js";
+import { Empty, ListSkeleton } from "../components/common/empty-state.js";
 import { ReviewRow, SeverityLegend } from "../features/reviews/review-row.js";
 import type { Repository as Repo } from "../types.js";
 
@@ -37,36 +38,36 @@ export function ReviewsPage({ repositories, search }: { repositories: Repo[]; se
   const filtered = Boolean(repo || group);
   return (
     <section>
-      <div className="section-head">
-        <div>
-          <h2>PR 审查</h2>
-          <p className="muted">每次审查一条记录；同一个 PR 推送新提交后会有多条。</p>
-        </div>
-        <SeverityLegend />
+      <div className="page-head">
+        <h2>PR 审查</h2>
+        <p className="muted">每次审查一条记录；同一个 PR 推送新提交后会有多条。</p>
       </div>
-      <div className="list-filters">
-        <label>
-          仓库
-          <Select value={repo} onChange={(value) => go({ repo: value })}>
-            <option value="">所有仓库</option>
-            {repositories.map((item) => (
-              <option value={item.id} key={item.id}>
-                {item.fullName}
-              </option>
-            ))}
-          </Select>
-        </label>
-        <label>
-          状态
-          <Select value={group?.[0] ?? ""} onChange={(value) => go({ status: value })}>
-            <option value="">全部状态</option>
-            {STATUS_GROUPS.map(([key, label]) => (
-              <option value={key} key={key}>
-                {label}
-              </option>
-            ))}
-          </Select>
-        </label>
+      <div className="toolbar">
+        <Select compact prefix="仓库：" aria-label="仓库" value={repo} onChange={(value) => go({ repo: value })}>
+          <option value="">所有仓库</option>
+          {repositories.map((item) => (
+            <option value={item.id} key={item.id}>
+              {item.fullName}
+            </option>
+          ))}
+        </Select>
+        <Select
+          compact
+          prefix="状态："
+          aria-label="状态"
+          value={group?.[0] ?? ""}
+          onChange={(value) => go({ status: value })}
+        >
+          <option value="">全部状态</option>
+          {STATUS_GROUPS.map(([key, label]) => (
+            <option value={key} key={key}>
+              {label}
+            </option>
+          ))}
+        </Select>
+        <span className="toolbar-end">
+          <SeverityLegend />
+        </span>
       </div>
       {error && (
         <p className="alert" role="alert">
@@ -74,25 +75,27 @@ export function ReviewsPage({ repositories, search }: { repositories: Repo[]; se
         </p>
       )}
       {!data ? (
-        !error && (
-          <p className="empty-line" role="status">
-            正在加载…
-          </p>
-        )
+        !error && <ListSkeleton />
       ) : !data.items.length ? (
-        <p className="empty-line">
-          {data.total > 0 ? (
-            <>
-              这一页没有记录。<a href="#reviews">回到第一页</a>
-            </>
-          ) : filtered ? (
-            "没有符合筛选条件的审查。"
-          ) : (
-            "还没有审查记录。接入的仓库有新 PR 时会出现在这里。"
-          )}
-        </p>
+        data.total > 0 ? (
+          <Empty action={<a href="#reviews">回到第一页</a>}>这一页没有记录。</Empty>
+        ) : filtered ? (
+          <Empty
+            action={
+              <button type="button" className="compact" onClick={() => go({ repo: "", status: "" })}>
+                清除筛选
+              </button>
+            }
+          >
+            没有符合筛选条件的审查。
+          </Empty>
+        ) : (
+          <Empty action={<a href="#repositories">查看接入的仓库</a>}>
+            还没有审查记录。接入的仓库有新 PR 时会出现在这里。
+          </Empty>
+        )
       ) : (
-        <div className="review-list" aria-busy={loading}>
+        <div className="list" aria-busy={loading}>
           {data.items.map((job) => (
             <ReviewRow job={job} key={job.id} showSha />
           ))}

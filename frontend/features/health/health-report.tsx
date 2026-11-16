@@ -260,10 +260,9 @@ export function HealthReportView({
     <article className="health-report" id="health-detail">
       <header className="health-report-head">
         <div>
-          <p className="eyebrow">固定快照</p>
           <h3>{job.repository}</h3>
-          <p>
-            默认分支 {job.payload?.defaultBranch} · {dateText(report?.completedAt ?? job.created_at)}
+          <p className="muted">
+            固定快照 · 默认分支 {job.payload?.defaultBranch} · {dateText(report?.completedAt ?? job.created_at)}
           </p>
         </div>
         {!report && <Status value={job.status} label={healthStatuses[job.status]} />}
@@ -280,7 +279,7 @@ export function HealthReportView({
           </p>
           {["failed", "timeout", "cancelled"].includes(job.status) && (
             <>
-              <button className="secondary" disabled={busy || !enabled || remaining <= 0} onClick={retry}>
+              <button disabled={busy || !enabled || remaining <= 0} onClick={retry}>
                 按原快照重试
               </button>
               <small>
@@ -329,7 +328,7 @@ export function HealthReportView({
           {report.dependencyAudit && <DependencyAuditView audit={report.dependencyAudit} fileUrl={sourceUrl} />}
           {report.result.findings.length > 0 && (
             <div className="health-filter">
-              <nav className="rule-tabs" aria-label="按意见等级筛选">
+              <nav className="tabs" aria-label="按意见等级筛选">
                 {severityFilters.map(([key, label, levels]) => {
                   const count = report.result.findings.filter((finding) => levels.includes(finding.severity)).length;
                   return (
@@ -561,7 +560,7 @@ export function HealthReportView({
               <h4>历史对比</h4>
               <p className="muted">仅比较同口径的观察数量，数量下降不等于问题已修复。</p>
               {detail.previous && (
-                <button className="secondary" onClick={() => choose(detail.previous!.jobId)}>
+                <button className="compact" onClick={() => choose(detail.previous!.jobId)}>
                   查看上次报告 · {dateText(detail.previous.completedAt)}
                 </button>
               )}

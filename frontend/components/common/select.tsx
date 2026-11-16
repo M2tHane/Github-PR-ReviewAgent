@@ -1,6 +1,7 @@
 import { Children, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { Check, ChevronDown } from "./icons.js";
 
 type Option = { value: string | number; children: ReactNode; disabled?: boolean; title?: string };
 type Props = {
@@ -14,6 +15,9 @@ type Props = {
   className?: string;
   title?: string;
   "aria-label"?: string;
+  // 工具栏里的紧凑样式：标签写进按钮（"仓库：所有仓库"），不再单独占一行。
+  compact?: boolean;
+  prefix?: string;
 };
 
 // Call sites keep their option definitions; the rendered control is a button and a listbox.
@@ -26,6 +30,8 @@ export function Select({
   id,
   disabled,
   className = "",
+  compact = false,
+  prefix,
   ...label
 }: Props) {
   const generatedId = useId(),
@@ -152,7 +158,7 @@ export function Select({
   }
 
   return (
-    <span className={`select ${className}`}>
+    <span className={`select${compact ? " select-compact" : ""} ${className}`}>
       {name && (
         <input
           ref={input}
@@ -179,10 +185,11 @@ export function Select({
         onClick={() => (open ? setOpen(false) : show())}
         onKeyDown={keyDown}
       >
-        <span className="select-value">{selected?.label}</span>
-        <span className="select-arrow" aria-hidden="true">
-          ⌄
+        <span className="select-value">
+          {prefix && <span className="select-prefix">{prefix}</span>}
+          {selected?.label}
         </span>
+        <ChevronDown className="select-arrow" />
       </button>
       {open &&
         createPortal(
@@ -210,7 +217,8 @@ export function Select({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choose(index)}
               >
-                {option.label}
+                <span className="select-option-label">{option.label}</span>
+                {current === option.value && <Check className="select-check" />}
               </div>
             ))}
           </div>,

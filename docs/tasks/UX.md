@@ -337,3 +337,17 @@ ego-browser TaskSpace 3；使用独立 `ux_preview_*` schema 和 OAuth 替身，
 新增的拒绝路径：无。下拉框只复用既有 disabled 条件，没有新增业务校验或报错。
 
 数据库复验补充：最终复验中有一次在已有的“停止放回时保存代码快照…”用例挂起，约 427 秒后终止本次测试子进程，174 通过／1 测试文件失败，日志 `work/ui-review/slop-test-db-stalled.log`。以 `node --env-file=.env --test --test-timeout=30000 --test-name-pattern='停止放回时保存代码快照' dist/test/development/database-development.test.js` 单独运行通过（约 0.52 秒）；没有修改该用例或业务逻辑。终止运行遗留的独立 schema 已清理；完整重跑结果以上表为准。此不稳定现象另列交接，未计作本次界面问题修复。
+
+### 2026-11-15：管理页 Linear 式整理
+
+在 `ui/linear-polish` 实现，基准 `70704c7625a648aaf4ae7de0e5ed0a9dce58950f`，只改 `frontend/`（另调整 `test/frontend/select.browser.mjs` 两处断言：下拉箭头改为 SVG 后按去空白文本比较）。左侧栏导航；强调色 `#5b5fc7`／深色 `#9094f0`；字号、间距、圆角、行高改为固定刻度；状态改为图形 + 文字。PR 审查、规则、仓库、运行记录、开发任务改为单行列表（运行记录与开发任务点开展开，失败和待核对默认展开）；审查详情按严重度分组并加右侧属性栏，返回时回到原列表位置；规则抽屉改为宽抽屉加属性栏，疑似已修复、撤回与来源移入属性栏；健康检查默认选最近有记录的仓库；服务设置不再逐项写“使用默认值”。顺带修复：审查详情长标题换行、报告缺 `coverage`／`limitations` 不再崩溃、从规则子页返回时页签回到“全部”、侧栏超长登录名挤出退出按钮。不新增依赖和网页字体。
+
+| 实际命令／操作 | 结果 |
+| --- | --- |
+| `PLAYWRIGHT_CHANNEL=chrome node --test test/frontend/select.browser.mjs` | 6 项通过、0 失败。 |
+| `npm test`，随后 `npm run test:db` | 普通测试 363 项：212 通过、151 跳过（数据库用例）、0 失败；数据库专项 191 项全部通过、0 跳过。 |
+| `npm run check:docs`、`npm run format`、`npm run check:format` | 通过。 |
+| `node /Users/dade/.claude/skills/kill-ai-slop/scripts/scan.mjs frontend` | 19 个命中，均为保留项：状态圆点 50% 圆角、代码／SHA／路径等宽字体、链接悬停下划线、几何 SVG 状态图标。 |
+| 本地预览（临时 schema、替身登录与 GitHub）用 Playwright 截图 | 1600／1024 × 浅／深色共 156 张，加载中无页面报错；截图在忽略的 `work/ui-review/linear-after/`，改前在 `work/ui-review/linear-before/`。 |
+
+演示数据另加 60 个仓库（含超长名、已暂停）、260 条生效规则、无标题无 prompt 的开发任务、缺 `findings`／带覆盖与限制的审查结果，以及无任何数据的账号。未连接真实 GitHub、未调用模型，delivery／Job／Review URL、usage 不适用；未做手机布局、跨浏览器和读屏验收。

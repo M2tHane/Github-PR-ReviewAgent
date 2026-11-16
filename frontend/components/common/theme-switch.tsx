@@ -26,6 +26,8 @@ export function ThemeSwitch() {
     <>
       <Select
         className="theme-switch"
+        compact
+        prefix="主题："
         aria-label="主题"
         title="切换页面主题"
         value={theme}
@@ -44,7 +46,11 @@ export function ThemeSwitch() {
         <option value="light">浅色</option>
         <option value="dark">深色</option>
       </Select>
-      {error && <span role="status">{error}</span>}
+      {error && (
+        <span className="theme-error" role="status">
+          {error}
+        </span>
+      )}
     </>
   );
 }

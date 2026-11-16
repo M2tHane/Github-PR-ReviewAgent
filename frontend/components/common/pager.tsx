@@ -28,13 +28,13 @@ export function Pager({
       </span>
       {pages > 1 && (
         <span className="pager-buttons">
-          <button className="secondary" disabled={disabled || page <= 1} onClick={() => onPage(page - 1)}>
+          <button className="compact" disabled={disabled || page <= 1} onClick={() => onPage(page - 1)}>
             上一页
           </button>
           <span className="muted">
             {numberText(page)} / {numberText(pages)}
           </span>
-          <button className="secondary" disabled={disabled || page >= pages} onClick={() => onPage(page + 1)}>
+          <button className="compact" disabled={disabled || page >= pages} onClick={() => onPage(page + 1)}>
             下一页
           </button>
         </span>

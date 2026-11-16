@@ -1,5 +1,5 @@
 import { Status } from "../../components/common/status-badge.js";
-import { dateText, relativeTime } from "../../format.js";
+import { dateText, numberText, relativeTime } from "../../format.js";
 import type { Job } from "../../types.js";
 
 // 和 GitHub 评论一致的三档：必须改 / 建议改 / 可以不改。
@@ -12,22 +12,43 @@ function severityTiers(counts: Record<string, number> | undefined) {
   ];
 }
 
+// 右侧计数列：三档各占固定宽度，数字上下对齐；0 不显示。未完成的审查在这里显示状态文字。
 export function ReviewOutcome({ job }: { job: Job }) {
-  if (!["succeeded", "partial"].includes(job.status)) return <Status value={job.status} />;
-  const tiers = severityTiers(job.new_severity_counts).filter((tier) => tier.count > 0);
+  if (!["succeeded", "partial"].includes(job.status))
+    return (
+      <span className="outcome outcome-text">
+        <Status value={job.status} plain />
+      </span>
+    );
+  const tiers = severityTiers(job.new_severity_counts);
   const repeats = Number(job.repeat_count ?? 0);
-  const partial = job.status === "partial" ? <Status value="partial" /> : null;
-  if (!tiers.length && !repeats) return partial ?? <span className="outcome-clean">没有发现问题</span>;
+  if (!tiers.some((tier) => tier.count > 0) && !repeats)
+    return (
+      <span className="outcome outcome-text">
+        {job.status === "partial" ? (
+          <Status value="partial" plain />
+        ) : (
+          <span className="outcome-clean">没有发现问题</span>
+        )}
+      </span>
+    );
   return (
     <span className="outcome">
-      {partial}
       {tiers.map((tier) => (
-        <span className={`sev sev-${tier.tone}`} key={tier.tone} title={`${tier.label} ${tier.count} 个`}>
-          {tier.count}
-          <span className="sr-only"> 个{tier.label}</span>
+        <span
+          className={`outcome-cell sev-count sev-${tier.tone}`}
+          key={tier.tone}
+          title={`${tier.label} ${tier.count} 个`}
+        >
+          {tier.count > 0 && (
+            <>
+              {numberText(tier.count)}
+              <span className="sr-only"> 个{tier.label}</span>
+            </>
+          )}
         </span>
       ))}
-      {repeats > 0 && <span className="outcome-repeat">仍未解决 {repeats}</span>}
+      <span className="outcome-cell outcome-repeat">{repeats > 0 && `仍未解决 ${numberText(repeats)}`}</span>
     </span>
   );
 }
@@ -42,22 +63,23 @@ export function SeverityLegend() {
   );
 }
 
-// 一次 PR 审查的列表行；showSha 用于同一个 PR 有多次审查的完整列表。
+// 一次 PR 审查的单行：状态图形｜标题｜仓库 #编号（SHA）｜计数列｜时间。showSha 用于完整列表。
 export function ReviewRow({ job, showSha = false }: { job: Job; showSha?: boolean }) {
   return (
-    <a className="review-row" href={`#reviews/${job.id}`}>
-      <div className="review-main">
-        <h4>{job.payload?.title || `PR #${job.pr_number}`}</h4>
-        <span className="review-meta">
-          <span className="review-repo">{job.repository}</span>
-          <span>#{job.pr_number}</span>
-          {showSha && <code>{job.target_sha.slice(0, 7)}</code>}
-          <time dateTime={job.created_at} title={dateText(job.created_at)}>
-            {relativeTime(job.created_at)}
-          </time>
-        </span>
-      </div>
+    <a className="list-row review-row" href={`#reviews/${job.id}`}>
+      <Status value={job.status} icon />
+      <span className="row-title" title={job.payload?.title || undefined}>
+        {job.payload?.title || `PR #${job.pr_number}`}
+      </span>
+      <span className="row-meta review-repo" title={job.repository}>
+        {job.repository}
+      </span>
+      <span className="row-meta col-pr">#{job.pr_number}</span>
+      {showSha && <code className="row-meta col-sha">{job.target_sha.slice(0, 7)}</code>}
       <ReviewOutcome job={job} />
+      <time className="row-meta col-time" dateTime={job.created_at} title={dateText(job.created_at)}>
+        {relativeTime(job.created_at)}
+      </time>
     </a>
   );
 }

@@ -1,3 +1,5 @@
+import { StatusGlyph, type StatusShape } from "./icons.js";
+
 export const statusLabels: Record<string, string> = {
   ACTIVE: "生效中",
   CANDIDATE: "待确认",
@@ -29,6 +31,82 @@ export const statusLabels: Record<string, string> = {
   medium: "建议改",
   low: "可以不改",
 };
-export function Status({ value, label }: { value: string; label?: string }) {
-  return <span className={`status status-${value.toLowerCase()}`}>{label ?? statusLabels[value] ?? value}</span>;
+
+// 形状表达阶段；颜色只给要人处理的状态（见 app.css 的 .status-*）。
+const shapes: Record<string, StatusShape> = {
+  queued: "queued",
+  pending: "queued",
+  running: "running",
+  publishing: "running",
+  sending: "running",
+  succeeded: "done",
+  published: "done",
+  ACTIVE: "done",
+  enabled: "done",
+  FIXED: "done",
+  sent: "done",
+  CANDIDATE: "attention",
+  partial: "attention",
+  EXCEPTION_PENDING: "attention",
+  NEEDS_CLARIFICATION: "attention",
+  OPEN: "attention",
+  discussing: "attention",
+  failed: "failed",
+  timeout: "failed",
+  interrupted: "failed",
+  uncertain: "alert",
+  STILL_VALID: "alert",
+  cancelled: "stopped",
+  superseded: "stopped",
+  REJECTED: "stopped",
+  DEPRECATED: "stopped",
+  SUPERSEDED: "stopped",
+  WITHDRAWN: "stopped",
+  paused: "stopped",
+  refused: "stopped",
+  skipped: "stopped",
+};
+const severityTones: Record<string, string> = {
+  critical: "must",
+  high: "must",
+  medium: "should",
+  low: "may",
+  unknown: "none",
+};
+
+// icon：只显示图形（列表最左一列），文字留给读屏和悬停提示；
+// plain：只显示文字（同一行左侧已经有图形时用），颜色规则不变。
+export function Status({
+  value,
+  label,
+  icon = false,
+  plain = false,
+}: {
+  value: string;
+  label?: string;
+  icon?: boolean;
+  plain?: boolean;
+}) {
+  const text = label ?? statusLabels[value] ?? value;
+  const tone = severityTones[value];
+  if (tone)
+    return icon ? (
+      <span className={`sev sev-${tone} sev-icon`} title={text}>
+        <span className="sr-only">{text}</span>
+      </span>
+    ) : (
+      <span className={`sev sev-${tone}`}>{text}</span>
+    );
+  const className = `status status-${value.toLowerCase()}`;
+  return icon ? (
+    <span className={`${className} status-icon`} title={text}>
+      <StatusGlyph shape={shapes[value] ?? "queued"} />
+      <span className="sr-only">{text}</span>
+    </span>
+  ) : (
+    <span className={className}>
+      {!plain && <StatusGlyph shape={shapes[value] ?? "queued"} />}
+      {text}
+    </span>
+  );
 }

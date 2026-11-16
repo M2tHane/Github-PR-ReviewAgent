@@ -1,9 +1,10 @@
 import { Select } from "../components/common/select.js";
 import { RuleImport } from "../features/memories/rule-import.js";
-import { memorySourceLabel, ruleLevelLabels } from "../../src/memory/types.js";
-import { useEffect, useState } from "react";
+import { ruleLevelLabels } from "../../src/memory/types.js";
+import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../api/client.js";
-import { Empty } from "../components/common/empty-state.js";
+import { Empty, ListSkeleton } from "../components/common/empty-state.js";
+import { ArrowLeft, Check, Search } from "../components/common/icons.js";
 import { Pager } from "../components/common/pager.js";
 import { Status } from "../components/common/status-badge.js";
 import { RulePanel, ScopeChips } from "../features/memories/memory-detail.js";
@@ -65,10 +66,14 @@ export function MemoriesPage({
     editing = Boolean(match?.[2]);
   const suffix = repositoryId !== "ALL" ? `?repo=${repositoryId}` : "";
   const sameOwner = (a: Memory, b: Memory) => a.repositoryId === b.repositoryId;
+  const previousPath = useRef(path);
   useEffect(() => {
     if (params.has("repo")) setRepositoryId(params.get("repo")!);
     if (path === "rules/pending") setFilter("CANDIDATE");
     if (path === "rules/review") setFilter("REVIEW");
+    // 从"待确认""需要复查"的地址回到 #rules 时回到"全部"；关闭详情回到 #rules 时保留当前页签。
+    if (path === "rules" && ["rules/pending", "rules/review"].includes(previousPath.current!)) setFilter("ALL");
+    previousPath.current = path;
     setError("");
   }, [route]);
   const matches = (item: Memory, status: string) =>
@@ -161,19 +166,18 @@ export function MemoriesPage({
   }
   if (editing && selected)
     return (
-      <section className="rule-editor">
+      <section className="rule-editor form-page">
         <a href={`#rules/${selected.id}${suffix}`} className="back-link">
-          ← 返回规则详情
+          <ArrowLeft />
+          返回规则详情
         </a>
-        <div className="section-head">
-          <div>
-            <h2>编辑规则</h2>
-            <p className="muted">
-              {selected.activeVersion || selected.status === "ACTIVE"
-                ? "保存后等待确认，当前生效规则继续使用。"
-                : "完善规则内容，来源与证据继续保留。"}
-            </p>
-          </div>
+        <div className="page-head">
+          <h2>编辑规则</h2>
+          <p className="muted">
+            {selected.activeVersion || selected.status === "ACTIVE"
+              ? "保存后等待确认，当前生效规则继续使用。"
+              : "完善规则内容，来源与证据继续保留。"}
+          </p>
         </div>
         {error && (
           <p className="alert" role="alert">
@@ -184,7 +188,7 @@ export function MemoriesPage({
           <Empty>这条规则不可编辑，或当前账号没有管理权限。</Empty>
         ) : (
           <form
-            className="card"
+            className="stack-form"
             key={`${selected.id}-${selected.version}`}
             onSubmit={(event) => {
               event.preventDefault();
@@ -213,7 +217,7 @@ export function MemoriesPage({
               修改依据
               <textarea name="rationale" required defaultValue={selected.rationale} />
             </label>
-            <fieldset>
+            <fieldset className="form-section">
               <legend>适用范围</legend>
               <p className="muted">每行一项；留空表示不限制该维度。</p>
               {selected.type === "exception" && <ExceptionSelector item={selected} items={items} />}
@@ -237,10 +241,10 @@ export function MemoriesPage({
               </label>
             </fieldset>
             <div className="dialog-actions">
-              <a className="button secondary" href={`#rules/${selected.id}${suffix}`}>
+              <a className="button" href={`#rules/${selected.id}${suffix}`}>
                 取消
               </a>
-              <button type="submit" disabled={busy}>
+              <button type="submit" className="primary" disabled={busy}>
                 {busy ? "保存中…" : "保存，等待确认"}
               </button>
             </div>
@@ -250,7 +254,7 @@ export function MemoriesPage({
     );
   return (
     <section className="rules">
-      <div className="section-head">
+      <div className="page-head">
         <div>
           <h2 id="rules-title" tabIndex={-1}>
             规则
@@ -258,12 +262,8 @@ export function MemoriesPage({
           <p className="muted">管理仓库规则，确认工程决定、适用范围和级别。</p>
         </div>
         <div className="actions">
-          <button className="secondary" onClick={() => setImportMode("markdown")}>
-            导入 Markdown
-          </button>
-          <button className="secondary" onClick={() => setImportMode("project")}>
-            从其他项目导入
-          </button>
+          <button onClick={() => setImportMode("markdown")}>导入 Markdown</button>
+          <button onClick={() => setImportMode("project")}>从其他项目导入</button>
         </div>
       </div>
       {importMode && (
@@ -290,29 +290,33 @@ export function MemoriesPage({
           {notice}
         </p>
       )}
-      <div className="rule-filters">
-        <label className="search-field">
-          查找规则
+      <div className="toolbar">
+        <span className="search-field">
+          <Search />
           <input
             type="search"
+            aria-label="查找规则"
             value={search}
             placeholder="搜索名称、内容或适用范围"
             onChange={(event) => setSearch(event.target.value)}
           />
-        </label>
-        <label>
-          仓库
-          <Select value={repositoryId} onChange={(value) => setRepositoryId(value)}>
-            <option value="ALL">所有仓库</option>
-            {repositories.map((repo) => (
-              <option value={repo.id} key={repo.id}>
-                {repo.fullName}
-              </option>
-            ))}
-          </Select>
-        </label>
+        </span>
+        <Select
+          compact
+          prefix="仓库："
+          aria-label="仓库"
+          value={repositoryId}
+          onChange={(value) => setRepositoryId(value)}
+        >
+          <option value="ALL">所有仓库</option>
+          {repositories.map((repo) => (
+            <option value={repo.id} key={repo.id}>
+              {repo.fullName}
+            </option>
+          ))}
+        </Select>
       </div>
-      <nav className="rule-tabs" aria-label="规则状态">
+      <nav className="tabs" aria-label="规则状态">
         {[
           ["ALL", "全部"],
           ["ACTIVE", "生效中"],
@@ -340,16 +344,18 @@ export function MemoriesPage({
       {match && !selected && (
         <p className="alert" role="alert">
           规则不存在或当前账号无权查看。
-          <button className="text-button" onClick={close}>
+          <button className="link-button" onClick={close}>
             返回列表
           </button>
         </p>
       )}
       {filter === "REVIEW" ? (
         <>
-          <p className="muted">按生效规则的使用情况、适用路径和到期时间提示复查，由维护者决定是否修改或停用。</p>
+          <p className="muted tab-note">
+            按生效规则的使用情况、适用路径和到期时间提示复查，由维护者决定是否修改或停用。
+          </p>
           {reviewLoading ? (
-            <p role="status">正在检查规则与默认分支文件树…</p>
+            <ListSkeleton label="正在检查规则与默认分支文件树…" />
           ) : reviewError ? (
             <p className="alert" role="alert">
               {reviewError}
@@ -376,55 +382,96 @@ export function MemoriesPage({
           )}
         </>
       ) : !shown.length ? (
-        <Empty>
-          {filter === "CANDIDATE"
-            ? "没有待确认规则。合并 PR 中的新约定会出现在这里。"
-            : "没有符合条件的规则，试试调整筛选。"}
-        </Empty>
+        filter === "CANDIDATE" ? (
+          <Empty
+            action={
+              <button className="compact" onClick={() => setFilter("ACTIVE")}>
+                查看生效中的规则
+              </button>
+            }
+          >
+            没有待确认规则。合并 PR 中的新约定会出现在这里。
+          </Empty>
+        ) : (
+          <Empty
+            action={
+              search || repositoryId !== "ALL" || filter !== "ALL" ? (
+                <button
+                  className="compact"
+                  onClick={() => {
+                    setSearch("");
+                    setRepositoryId("ALL");
+                    setFilter("ALL");
+                  }}
+                >
+                  清除筛选
+                </button>
+              ) : undefined
+            }
+          >
+            {search || repositoryId !== "ALL" || filter !== "ALL"
+              ? "没有符合条件的规则，试试调整筛选。"
+              : "还没有规则。PR 合并后会抽取待确认规则，也可以从 Markdown 导入。"}
+          </Empty>
+        )
       ) : (
-        <div className="rule-list">
-          {visible.map((item) => (
-            <article className="rule-row" key={item.id}>
-              <div className="rule-line">
-                <a className="rule-open" href={`#rules/${item.id}${suffix}`}>
-                  <h3>{item.title}</h3>
-                </a>
-                <span className={`rule-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
-                <Status
-                  value={item.status}
-                  label={item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined}
-                />
-              </div>
-              <ScopeChips scope={item.scope} limit={3} />
-              <div className="rule-meta">
-                <span>
-                  仓库：{repositories.find((repo) => repo.id === item.repositoryId)?.fullName} ·{" "}
-                  {memorySourceLabel(item.source)}
-                  {/* 从没生效过的待确认规则不会交给审查，不显示引用次数。 */}
-                  {(item.status !== "CANDIDATE" || item.activeVersion) &&
-                    ` · 引用 ${numberText(item.usage.cited)} 次 · 修复 ${numberText(item.usage.fixed)} · 疑似已修复 ${numberText(item.usage.inferredFixed)} · 撤回 ${numberText(item.usage.withdrawn)}`}
-                </span>
-                <span>更新于 {dateText(item.updatedAt)}</span>
-              </div>
-              {filter === "CANDIDATE" && (
-                <div className="pending-rule">
-                  <p>{shortText(item.content, 180)}</p>
-                  {item.activeVersion && <small>当前生效版本继续用于审查。</small>}
-                  <div className="actions">
-                    <button className="secondary" disabled={busy} onClick={() => void action(item, "reject")}>
-                      忽略
-                    </button>
-                    <a className="button secondary" href={`#rules/${item.id}/edit${suffix}`}>
-                      编辑
-                    </a>
-                    <button disabled={busy} onClick={() => void action(item, "approve")}>
-                      {item.activeVersion ? "确认更新规则" : "确认规则生效"}
-                    </button>
-                  </div>
+        <div className="list rule-list">
+          {visible.map((item) => {
+            const repository = repositories.find((repo) => repo.id === item.repositoryId)?.fullName;
+            // 从没生效过的待确认规则不会交给审查，不显示引用和修复次数。
+            const used = item.status !== "CANDIDATE" || Boolean(item.activeVersion);
+            const statusLabel = item.status === "CANDIDATE" && item.activeVersion ? "待确认更新" : undefined;
+            return (
+              <article className={`rule-row${filter === "CANDIDATE" ? " rule-row-pending" : ""}`} key={item.id}>
+                <div className="list-row">
+                  <Status value={item.status} label={statusLabel} icon />
+                  <a className="row-title rule-open" href={`#rules/${item.id}${suffix}`} title={item.title}>
+                    {item.title}
+                  </a>
+                  <span className="col-scope">
+                    <ScopeChips scope={item.scope} limit={1} />
+                  </span>
+                  <span className="row-meta col-repo" title={repository}>
+                    {repository}
+                  </span>
+                  <span className={`col-level level-${item.level}`}>{ruleLevelLabels[item.level]}</span>
+                  <span className="col-num" title="被意见引用次数">
+                    {used && `引用 ${numberText(item.usage.cited)}`}
+                  </span>
+                  <span className="col-num" title="引用后已修复次数">
+                    {used && `修复 ${numberText(item.usage.fixed)}`}
+                  </span>
+                  <time
+                    className="row-meta col-date"
+                    dateTime={item.updatedAt}
+                    title={`更新于 ${dateText(item.updatedAt)}`}
+                  >
+                    {dateText(item.updatedAt)}
+                  </time>
                 </div>
-              )}
-            </article>
-          ))}
+                {filter === "CANDIDATE" && (
+                  <div className="row-sub">
+                    <p className="row-preview" title={item.content}>
+                      {statusLabel && <span className="pending-label">{statusLabel} · </span>}
+                      {shortText(item.content, 180)}
+                    </p>
+                    <span className="row-actions">
+                      <button className="ghost compact" disabled={busy} onClick={() => void action(item, "reject")}>
+                        忽略
+                      </button>
+                      <a className="button ghost compact" href={`#rules/${item.id}/edit${suffix}`}>
+                        编辑
+                      </a>
+                      <button className="compact" disabled={busy} onClick={() => void action(item, "approve")}>
+                        <Check />
+                        {item.activeVersion ? "确认更新" : "确认生效"}
+                      </button>
+                    </span>
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       )}
       {total > 0 && !reviewLoading && (

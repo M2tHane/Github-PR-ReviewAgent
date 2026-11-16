@@ -2,6 +2,7 @@ import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
+import { Close } from "../../components/common/icons.js";
 import type { Memory, Repository } from "../../types.js";
 import { memorySourceLabel } from "../../../src/memory/types.js";
 import {
@@ -119,13 +120,12 @@ export function RuleImport({
       }}
     >
       <div className="drawer-head">
-        <span className="eyebrow">团队规则 · 导入</span>
-        <button className="icon-button" aria-label="关闭导入" disabled={busy} onClick={close}>
-          ×
+        <h2 id="import-title">{mode === "markdown" ? "从 Markdown 导入" : "从其他项目导入"}</h2>
+        <button className="ghost icon-only" aria-label="关闭导入" disabled={busy} onClick={close}>
+          <Close />
         </button>
       </div>
       <div className="drawer-body rule-import">
-        <h2 id="import-title">{mode === "markdown" ? "从 Markdown 导入" : "从其他项目导入"}</h2>
         <p className="muted">1. 选择规则与归属 → 2. 预览 → 3. 确认生效</p>
         <label>
           目标归属
@@ -163,68 +163,70 @@ export function RuleImport({
             <p>重复规则会跳过，已有规则保留原状态。同名提示只做内容比较，请人工核对语义冲突。</p>
             <div className="actions">
               <button
-                className="secondary"
+                className="compact"
                 disabled={busy}
                 onClick={() => setSelected(preview.rules.map((rule) => rule.key))}
               >
                 全选
               </button>
-              <button className="secondary" disabled={busy} onClick={() => setSelected([])}>
+              <button className="compact" disabled={busy} onClick={() => setSelected([])}>
                 清空选择
               </button>
             </div>
-            {preview.rules.map((rule) => (
-              <article className="card import-rule" key={rule.key}>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(rule.key)}
-                    disabled={busy}
-                    onChange={() => setSelected(toggle(selected, rule.key))}
-                  />
-                  <strong>{rule.title}</strong>
-                </label>
-                <small>
-                  {Object.entries(IMPORT_TYPES).find(([, type]) => type === rule.type)?.[0]} ·{" "}
-                  {memorySourceLabel(rule.source)}
-                </small>
-                <ScopeChips scope={rule.scope} />
-                {rule.duplicateId && (
-                  <p className="feedback">
-                    完全重复：与本批或目标项目中的规则相同，确认时仅保留一份，不会覆盖或重新激活已有规则。
-                  </p>
-                )}
-                {rule.sameTitleIds.length > 0 && (
-                  <p className="alert">存在同名但内容或范围不同的规则，确认后作为独立新规则生效，请核对冲突。</p>
-                )}
-                {rule.exceptionKey && (
-                  <p>
-                    例外关联：
-                    {preview.rules.find((parent) => parent.key === rule.exceptionKey)?.title ?? rule.exceptionKey}
-                    （需要同时选择原规则，或目标项目已有生效副本）
-                  </p>
-                )}
-                <details open>
-                  <summary>规则内容与制定原因</summary>
-                  <p className="rule-content">{rule.content}</p>
-                  <h4>制定原因</h4>
-                  <p className="rule-content">{rule.rationale}</p>
-                </details>
-                {rule.evidence.length > 0 && (
-                  <details>
-                    <summary>参考依据（{rule.evidence.length} 项）</summary>
-                    {rule.evidence.map((item, index) => (
-                      <p key={index} className="rule-content">
-                        {item.detail}
-                        <br />
-                        {item.reference}
-                      </p>
-                    ))}
+            <div className="list import-list">
+              {preview.rules.map((rule) => (
+                <article className="import-rule" key={rule.key}>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(rule.key)}
+                      disabled={busy}
+                      onChange={() => setSelected(toggle(selected, rule.key))}
+                    />
+                    <strong>{rule.title}</strong>
+                  </label>
+                  <small>
+                    {Object.entries(IMPORT_TYPES).find(([, type]) => type === rule.type)?.[0]} ·{" "}
+                    {memorySourceLabel(rule.source)}
+                  </small>
+                  <ScopeChips scope={rule.scope} />
+                  {rule.duplicateId && (
+                    <p className="feedback">
+                      完全重复：与本批或目标项目中的规则相同，确认时仅保留一份，不会覆盖或重新激活已有规则。
+                    </p>
+                  )}
+                  {rule.sameTitleIds.length > 0 && (
+                    <p className="alert">存在同名但内容或范围不同的规则，确认后作为独立新规则生效，请核对冲突。</p>
+                  )}
+                  {rule.exceptionKey && (
+                    <p>
+                      例外关联：
+                      {preview.rules.find((parent) => parent.key === rule.exceptionKey)?.title ?? rule.exceptionKey}
+                      （需要同时选择原规则，或目标项目已有生效副本）
+                    </p>
+                  )}
+                  <details open>
+                    <summary>规则内容与制定原因</summary>
+                    <p className="rule-content">{rule.content}</p>
+                    <h4>制定原因</h4>
+                    <p className="rule-content">{rule.rationale}</p>
                   </details>
-                )}
-                {rule.uncertainties.length > 0 && <p className="alert">待核实：{rule.uncertainties.join("；")}</p>}
-              </article>
-            ))}
+                  {rule.evidence.length > 0 && (
+                    <details>
+                      <summary>参考依据（{rule.evidence.length} 项）</summary>
+                      {rule.evidence.map((item, index) => (
+                        <p key={index} className="rule-content">
+                          {item.detail}
+                          <br />
+                          {item.reference}
+                        </p>
+                      ))}
+                    </details>
+                  )}
+                  {rule.uncertainties.length > 0 && <p className="alert">待核实：{rule.uncertainties.join("；")}</p>}
+                </article>
+              ))}
+            </div>
           </>
         ) : mode === "markdown" ? (
           <>
@@ -238,7 +240,7 @@ export function RuleImport({
               <pre className="import-example">{RULE_IMPORT_EXAMPLE}</pre>
             </details>
             <button
-              className="secondary"
+              className="compact"
               onClick={() => {
                 if (!navigator.clipboard) {
                   setError("当前浏览器不支持复制，请手动选择示例文字复制。");
@@ -315,45 +317,50 @@ export function RuleImport({
             <p className="muted">
               已选 {chosen.length} 条（最多 100 条）。路径每行一项，留空表示不限制路径；原有语言、模块和条件限制保留。
             </p>
-            {shown.map((rule) => (
-              <article className="card import-rule" key={rule.id}>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={chosen.includes(rule.id)}
-                    disabled={busy}
-                    onChange={() => setChosen(toggle(chosen, rule.id))}
-                  />
-                  <strong>{rule.title}</strong>
-                </label>
-                <ScopeChips scope={rule.scope} />
-                <details>
-                  <summary>查看规则 v{rule.version}</summary>
-                  <p className="rule-content">{rule.content}</p>
-                  <p className="rule-content">{rule.rationale}</p>
-                </details>
-                {chosen.includes(rule.id) && (
-                  <label>
-                    在目标项目的适用路径
-                    <textarea
-                      value={paths[rule.id] ?? ""}
-                      disabled={busy}
-                      onChange={(event) => setPaths({ ...paths, [rule.id]: event.target.value })}
-                    />
-                  </label>
-                )}
-              </article>
-            ))}
+            {shown.length > 0 && (
+              <div className="list import-list">
+                {shown.map((rule) => (
+                  <article className="import-rule" key={rule.id}>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={chosen.includes(rule.id)}
+                        disabled={busy}
+                        onChange={() => setChosen(toggle(chosen, rule.id))}
+                      />
+                      <strong>{rule.title}</strong>
+                    </label>
+                    <ScopeChips scope={rule.scope} />
+                    <details>
+                      <summary>查看规则 v{rule.version}</summary>
+                      <p className="rule-content">{rule.content}</p>
+                      <p className="rule-content">{rule.rationale}</p>
+                    </details>
+                    {chosen.includes(rule.id) && (
+                      <label>
+                        在目标项目的适用路径
+                        <textarea
+                          value={paths[rule.id] ?? ""}
+                          disabled={busy}
+                          onChange={(event) => setPaths({ ...paths, [rule.id]: event.target.value })}
+                        />
+                      </label>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
       <footer className="drawer-footer">
         {result ? (
-          <button onClick={close}>完成</button>
+          <button className="primary" onClick={close}>
+            完成
+          </button>
         ) : (
           <>
             <button
-              className="secondary"
               disabled={busy}
               onClick={() => {
                 if (preview) {
@@ -365,11 +372,12 @@ export function RuleImport({
               {preview ? "返回调整" : "取消"}
             </button>
             {preview ? (
-              <button disabled={busy || !selected.length} onClick={() => void confirm()}>
+              <button className="primary" disabled={busy || !selected.length} onClick={() => void confirm()}>
                 {busy ? "正在确认…" : "确认导入并生效"}
               </button>
             ) : (
               <button
+                className="primary"
                 disabled={
                   busy ||
                   loading ||

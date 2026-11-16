@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { RuleReviewItem, RuleReviewReason } from "../../../src/memory/types.js";
 import { api, messageOf } from "../../api/client.js";
 import { dateText, numberText } from "../../format.js";
+import { Status } from "../../components/common/status-badge.js";
 import type { Repository } from "../../types.js";
 
 const labels: Record<RuleReviewReason["reason"], string> = {
@@ -38,87 +39,95 @@ export function RuleReviewRows({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   return (
-    <div className="rule-list">
-      {items.map(({ memory, reasons }) => (
-        <article className="rule-row" key={memory.id}>
-          <div className="rule-line">
-            <a className="rule-open" href={`#rules/${memory.id}${suffix}`}>
-              <h3>{memory.title}</h3>
-            </a>
-            <button
-              className="secondary"
-              onClick={() => {
-                setDismiss({ id: memory.id, reason: reasons[0]!.reason });
-                setError("");
-              }}
-            >
-              暂不处理
-            </button>
-          </div>
-          <p className="rule-meta">仓库：{repositories.find((repo) => repo.id === memory.repositoryId)?.fullName}</p>
-          <ul className="rule-review-reasons">
-            {reasons.map((reason) => (
-              <li key={reason.reason}>
-                <span className="chip">{labels[reason.reason]}</span>
-                <span>{evidence(reason)}</span>
-              </li>
-            ))}
-          </ul>
-          {dismiss?.id === memory.id && (
-            <form
-              className="rule-review-dismiss"
-              onSubmit={async (event) => {
-                event.preventDefault();
-                const note = String(new FormData(event.currentTarget).get("note")).trim();
-                setBusy(true);
-                setError("");
-                try {
-                  await api(`/api/memories/${memory.id}/dismiss-review`, {
-                    method: "POST",
-                    body: JSON.stringify({ reason: dismiss.reason, note }),
-                  });
-                  await refresh();
-                  setDismiss(null);
-                } catch (cause) {
-                  setError(messageOf(cause));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <label>
-                暂不处理的原因项
-                <Select
-                  value={dismiss.reason}
-                  onChange={(value) => setDismiss({ ...dismiss, reason: value as RuleReviewReason["reason"] })}
-                >
-                  {reasons.map((reason) => (
-                    <option key={reason.reason} value={reason.reason}>
-                      {labels[reason.reason]}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              <label>
-                处理理由
-                <textarea name="note" required placeholder="说明为什么暂时保留这条规则" />
-              </label>
-              <p className="muted">保存后，这条规则的所选原因在 90 天内不再提示；其他原因仍保留。</p>
-              {error && (
-                <p className="alert" role="alert">
-                  {error}
-                </p>
-              )}
-              <div className="actions">
-                <button type="button" className="secondary" disabled={busy} onClick={() => setDismiss(null)}>
-                  取消
-                </button>
-                <button disabled={busy}>{busy ? "保存中…" : "保存理由"}</button>
-              </div>
-            </form>
-          )}
-        </article>
-      ))}
+    <div className="list rule-list">
+      {items.map(({ memory, reasons }) => {
+        const repository = repositories.find((repo) => repo.id === memory.repositoryId)?.fullName;
+        return (
+          <article className="rule-row rule-row-review" key={memory.id}>
+            <div className="list-row">
+              <Status value="CANDIDATE" label="需要复查" icon />
+              <a className="row-title rule-open" href={`#rules/${memory.id}${suffix}`} title={memory.title}>
+                {memory.title}
+              </a>
+              <span className="row-meta col-repo" title={repository}>
+                {repository}
+              </span>
+              <button
+                className="compact row-action"
+                onClick={() => {
+                  setDismiss({ id: memory.id, reason: reasons[0]!.reason });
+                  setError("");
+                }}
+              >
+                暂不处理
+              </button>
+            </div>
+            <ul className="rule-review-reasons">
+              {reasons.map((reason) => (
+                <li key={reason.reason}>
+                  <span className="chip">{labels[reason.reason]}</span>
+                  <span>{evidence(reason)}</span>
+                </li>
+              ))}
+            </ul>
+            {dismiss?.id === memory.id && (
+              <form
+                className="rule-review-dismiss"
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const note = String(new FormData(event.currentTarget).get("note")).trim();
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await api(`/api/memories/${memory.id}/dismiss-review`, {
+                      method: "POST",
+                      body: JSON.stringify({ reason: dismiss.reason, note }),
+                    });
+                    await refresh();
+                    setDismiss(null);
+                  } catch (cause) {
+                    setError(messageOf(cause));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                <label>
+                  暂不处理的原因项
+                  <Select
+                    value={dismiss.reason}
+                    onChange={(value) => setDismiss({ ...dismiss, reason: value as RuleReviewReason["reason"] })}
+                  >
+                    {reasons.map((reason) => (
+                      <option key={reason.reason} value={reason.reason}>
+                        {labels[reason.reason]}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                <label>
+                  处理理由
+                  <textarea name="note" required placeholder="说明为什么暂时保留这条规则" />
+                </label>
+                <p className="muted">保存后，这条规则的所选原因在 90 天内不再提示；其他原因仍保留。</p>
+                {error && (
+                  <p className="alert" role="alert">
+                    {error}
+                  </p>
+                )}
+                <div className="actions">
+                  <button type="button" disabled={busy} onClick={() => setDismiss(null)}>
+                    取消
+                  </button>
+                  <button className="primary" disabled={busy}>
+                    {busy ? "保存中…" : "保存理由"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
 }

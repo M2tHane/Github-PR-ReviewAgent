@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
+import { Close, External } from "../../components/common/icons.js";
 import type { Repository } from "../../types.js";
 import type { NotificationMember } from "../../../src/notifications/members.js";
 
@@ -101,19 +102,18 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
         }}
       >
         <div className="drawer-head">
-          <p className="eyebrow">项目设置</p>
+          <h2 id="notification-members-title">GitHub 账号关联</h2>
           <button
             type="button"
-            className="secondary"
+            className="ghost icon-only"
             disabled={busy}
             onClick={onClose}
             aria-label="关闭 GitHub 账号关联"
           >
-            关闭
+            <Close />
           </button>
         </div>
         <div className="drawer-body notification-members">
-          <h2 id="notification-members-title">GitHub 账号关联</h2>
           <p className="notification-repository">{repo.fullName}</p>
           <p className="muted">
             把企业微信成员 ID 和 GitHub 账号对应起来。需求 issue 里，只有提需求的人关联的 GitHub
@@ -131,18 +131,19 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
             </p>
           )}
           {!loading && !data && (
-            <button type="button" className="secondary" onClick={() => setReload((value) => value + 1)}>
+            <button type="button" onClick={() => setReload((value) => value + 1)}>
               重新加载
             </button>
           )}
           {data && !loading && (
             <>
-              <div className="subhead notification-member-toolbar">
+              <div className="section-title notification-member-toolbar">
                 <h3>
-                  成员关联 <span className="muted">{data.members.length}</span>
+                  成员关联 <span className="group-count">{data.members.length}</span>
                 </h3>
                 <button
                   type="button"
+                  className="compact"
                   onClick={() => {
                     reset();
                     setError("");
@@ -167,7 +168,8 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
                       <tr key={member.githubLogin}>
                         <td>
                           <a href={`https://github.com/${member.githubLogin}`} target="_blank" rel="noreferrer">
-                            {member.githubLogin} ↗
+                            {member.githubLogin}
+                            <External />
                           </a>
                         </td>
                         <td>{member.wecomUserId}</td>
@@ -175,7 +177,7 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
                           <div className="actions">
                             <button
                               type="button"
-                              className="text-button"
+                              className="ghost compact"
                               aria-label={`编辑 ${member.githubLogin}`}
                               onClick={() => {
                                 setEditing(member.githubLogin);
@@ -190,7 +192,7 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
                             </button>
                             <button
                               type="button"
-                              className="text-button"
+                              className="ghost compact"
                               aria-label={`删除 ${member.githubLogin}`}
                               onClick={() => {
                                 setError("");
@@ -262,12 +264,12 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
             <p className="muted">
               请确认成员已加入通知群。关联仅对当前项目生效；同一 GitHub 账号在其他项目可设置不同的企业微信 ID。
             </p>
-            <div className="actions">
-              <button type="submit" disabled={busy}>
-                {busy ? "保存中…" : "保存关联"}
-              </button>
-              <button type="button" className="secondary" disabled={busy} onClick={reset}>
+            <div className="dialog-actions">
+              <button type="button" disabled={busy} onClick={reset}>
                 取消
+              </button>
+              <button type="submit" className="primary" disabled={busy}>
+                {busy ? "保存中…" : "保存关联"}
               </button>
             </div>
           </form>
@@ -289,11 +291,11 @@ export function NotificationMembers({ repo, onClose }: { repo: Repository; onClo
               {error}
             </p>
           )}
-          <div className="actions">
-            <button type="button" className="secondary" disabled={busy} onClick={() => setRemoving(undefined)}>
+          <div className="dialog-actions">
+            <button type="button" disabled={busy} onClick={() => setRemoving(undefined)}>
               取消
             </button>
-            <button type="button" className="danger" disabled={busy} onClick={() => void remove(removing)}>
+            <button type="button" className="danger-button" disabled={busy} onClick={() => void remove(removing)}>
               {busy ? "删除中…" : "确认删除"}
             </button>
           </div>

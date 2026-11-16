@@ -1,7 +1,8 @@
 import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client.js";
-import { Empty } from "../../components/common/empty-state.js";
+import { Empty, ListSkeleton } from "../../components/common/empty-state.js";
+import { Check } from "../../components/common/icons.js";
 import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText } from "../../format.js";
 import type { Job, Repository as Repo } from "../../types.js";
@@ -36,8 +37,21 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
   const [filter, setFilter] = useState<SeverityFilter>("all");
   const repository = repositories.find((item) => String(item.id) === repositoryId);
   const active = items.find((item) => ["queued", "running"].includes(item.status));
+  // 没指定仓库时，默认选最近有健康检查记录的仓库；都没有记录再选第一个。
   useEffect(() => {
-    if (!repositoryId && !selected && repositories.length) setRepositoryId(String(repositories[0]!.id));
+    if (repositoryId || selected || !repositories.length) return;
+    const controller = new AbortController();
+    const fallback = () => setRepositoryId((current) => current || String(repositories[0]!.id));
+    void api<{ items: Job[] }>("/api/health", { signal: controller.signal })
+      .then((value) => {
+        const latest = value.items.find((item) => repositories.some((repo) => repo.id === Number(item.repository_id)));
+        if (latest) setRepositoryId((current) => current || String(latest.repository_id));
+        else fallback();
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) fallback();
+      });
+    return () => controller.abort();
   }, [repositories, repositoryId, selected]);
   useEffect(() => {
     const changed = () => {
@@ -163,11 +177,9 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
   };
   return (
     <section className="health" aria-labelledby="health-title">
-      <div className="section-head">
-        <div>
-          <h2 id="health-title">仓库健康检查</h2>
-          <p className="muted">查看需要关注的意见与未覆盖范围。</p>
-        </div>
+      <div className="page-head">
+        <h2 id="health-title">健康检查</h2>
+        <p className="muted">查看需要关注的意见与未覆盖范围。</p>
       </div>
       {error && (
         <p className="alert" role="alert">
@@ -181,51 +193,51 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
         </p>
       )}
       {notice && (
-        <p className="health-feedback" role="status">
+        <p className="feedback health-feedback" role="status">
+          <Check />
           {notice}
         </p>
       )}
       {!repositories.length ? (
-        <Empty>当前没有可管理的已登记仓库，请先完成现有仓库接入。</Empty>
+        <Empty action={<a href="#settings/service">去服务设置接入仓库</a>}>
+          当前没有可管理的已登记仓库，请先完成现有仓库接入。
+        </Empty>
       ) : (
         <>
-          <div className="health-controls card">
-            <div>
-              <label htmlFor="health-repository">
-                仓库
-                <Select
-                  id="health-repository"
-                  value={repositoryId}
-                  onChange={(value) => {
-                    setRepositoryId(value);
-                    setPage(0);
-                    setItems([]);
-                    setSelected("");
-                    setDetail(null);
-                    setError("");
-                    setNotice("");
-                    history.replaceState(null, "", "#health");
-                  }}
-                >
-                  <option value="" disabled>
-                    选择仓库
-                  </option>
-                  {repositories.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.fullName}
-                      {item.enabled ? "" : "（已暂停）"}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              <small>默认分支 · 最近 30 天 · 每任务 {numberText(repository?.budgetTokens)} tokens</small>
-            </div>
-            <div className="health-run-actions">
-              <button disabled={busy || !repository?.enabled} aria-busy={busy} onClick={() => void run()}>
-                {busy ? "处理中…" : active ? "查看当前健康任务" : "运行健康检查"}
-              </button>
+          <div className="toolbar health-toolbar">
+            <Select
+              id="health-repository"
+              compact
+              prefix="仓库："
+              aria-label="仓库"
+              value={repositoryId}
+              onChange={(value) => {
+                setRepositoryId(value);
+                setPage(0);
+                setItems([]);
+                setSelected("");
+                setDetail(null);
+                setError("");
+                setNotice("");
+                history.replaceState(null, "", "#health");
+              }}
+            >
+              <option value="" disabled>
+                选择仓库
+              </option>
+              {repositories.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.fullName}
+                  {item.enabled ? "" : "（已暂停）"}
+                </option>
+              ))}
+            </Select>
+            <span className="muted toolbar-note">
+              默认分支 · 最近 30 天 · 每任务 {numberText(repository?.budgetTokens)} tokens
+            </span>
+            <span className="toolbar-end">
               <button
-                className="secondary"
+                className="ghost compact"
                 disabled={loadingList}
                 onClick={() => {
                   setError("");
@@ -235,67 +247,63 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
               >
                 刷新
               </button>
-            </div>
+              <button
+                className="primary compact"
+                disabled={busy || !repository?.enabled}
+                aria-busy={busy}
+                onClick={() => void run()}
+              >
+                {busy ? "处理中…" : active ? "查看当前健康任务" : "运行健康检查"}
+              </button>
+            </span>
           </div>
+          {repository && (
+            <p className="muted health-schedule">
+              定时检查：{scheduleLabels[repository.healthSchedule]}
+              {repository.healthNextRunAt && ` · 下次 ${dateText(repository.healthNextRunAt)}`} ·{" "}
+              <a href={`#repositories/${repository.id}/health`}>修改设置</a>
+            </p>
+          )}
+          {repository?.healthLastError && <p className="alert">{repository.healthLastError}</p>}
           <div className="health-layout">
-            <aside className="health-sidebar">
-              {repository && (
-                <section className="card health-schedule">
-                  <h3>定时检查</h3>
-                  <p>
-                    {scheduleLabels[repository.healthSchedule]}
-                    {repository.healthNextRunAt && ` · 下次 ${dateText(repository.healthNextRunAt)}`}
-                  </p>
-                  {repository.healthLastError && <p className="error">{repository.healthLastError}</p>}
-                  <a href={`#repositories/${repository.id}/health`}>修改设置 →</a>
-                </section>
+            <aside className="health-history" aria-labelledby="health-history-title">
+              <h3 className="list-group-head" id="health-history-title">
+                检查记录 {items.length > 0 && <span className="group-count">{items.length}</span>}
+              </h3>
+              {loadingList && !items.length ? (
+                <ListSkeleton rows={3} label="正在加载记录…" />
+              ) : !items.length ? (
+                <Empty>暂无报告。运行一次检查即可建立基线。</Empty>
+              ) : (
+                <div className="list health-history-list">
+                  {items.map((item) => (
+                    <button
+                      className={`health-history-item${selected === item.id ? " selected" : ""}`}
+                      key={item.id}
+                      onClick={() => choose(item.id)}
+                      aria-current={selected === item.id ? "true" : undefined}
+                    >
+                      <span className="history-line">
+                        <code>{String(item.target_sha).slice(0, 10)}</code>
+                        <Status value={item.status} label={healthStatuses[item.status]} />
+                      </span>
+                      <span className="history-meta">
+                        {dateText(item.created_at)} · {item.has_report ? `${item.finding_count} 条意见` : "任务记录"} ·{" "}
+                        {item.payload?.trigger === "schedule" ? "定时" : "手动"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
-              <section className="card health-history">
-                <h3>检查记录</h3>
-                {loadingList && !items.length ? (
-                  <p role="status">正在加载记录…</p>
-                ) : !items.length ? (
-                  <p className="muted">暂无报告。运行一次检查即可建立基线。</p>
-                ) : (
-                  <div className="health-history-list">
-                    {items.map((item) => (
-                      <button
-                        className={`health-history-item ${selected === item.id ? "selected" : ""}`}
-                        key={item.id}
-                        onClick={() => choose(item.id)}
-                        aria-current={selected === item.id ? "true" : undefined}
-                      >
-                        <span>
-                          <code>{String(item.target_sha).slice(0, 10)}</code>
-                          <Status value={item.status} label={healthStatuses[item.status]} />
-                        </span>
-                        <small>{dateText(item.created_at)}</small>
-                        <span>
-                          {item.has_report ? `${item.finding_count} 条意见` : "任务记录"} ·{" "}
-                          {item.payload?.trigger === "schedule" ? "定时" : "手动"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {nextPage !== null && (
-                  <button className="secondary" disabled={loadingList} onClick={() => setPage(nextPage)}>
-                    加载更多
-                  </button>
-                )}
-              </section>
-              {detail?.report && healthSections(detail.report, filter).length > 1 && (
-                <section className="card health-toc">
-                  <h3>报告目录</h3>
-                  <HealthSectionNav report={detail.report} filter={filter} className="health-toc-nav" />
-                </section>
+              {nextPage !== null && (
+                <button className="compact health-more" disabled={loadingList} onClick={() => setPage(nextPage)}>
+                  加载更多
+                </button>
               )}
             </aside>
             <div className="health-detail" aria-busy={loadingDetail}>
               {loadingDetail ? (
-                <div className="card" role="status">
-                  正在加载任务详情…
-                </div>
+                <ListSkeleton rows={4} label="正在加载任务详情…" />
               ) : detail ? (
                 <HealthReportView
                   detail={detail}
@@ -310,6 +318,12 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
                 <Empty>选择一条记录查看证据，或运行新的健康检查。</Empty>
               )}
             </div>
+            {detail?.report && healthSections(detail.report, filter).length > 1 && (
+              <aside className="health-toc">
+                <h3 className="list-group-head">报告目录</h3>
+                <HealthSectionNav report={detail.report} filter={filter} className="health-toc-nav" />
+              </aside>
+            )}
           </div>
         </>
       )}

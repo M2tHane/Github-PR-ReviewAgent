@@ -5,11 +5,13 @@ export function Modal({
   titleId,
   onClose,
   drawer = false,
+  wide = false,
 }: {
   children: React.ReactNode;
   titleId: string;
   onClose: () => void;
   drawer?: boolean;
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -24,7 +26,7 @@ export function Modal({
       const target =
         opener !== document.body && opener?.isConnected && opener.getClientRects().length
           ? opener
-          : (document.querySelector<HTMLElement>("dialog[open] .more-menu summary") ??
+          : (document.querySelector<HTMLElement>("dialog[open] .menu-trigger") ??
             document.getElementById("rules-title"));
       target?.focus();
     };
@@ -32,7 +34,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className={drawer ? "dialog drawer" : "dialog confirm-dialog"}
+      className={drawer ? `dialog drawer${wide ? " drawer-wide" : ""}` : "dialog confirm-dialog"}
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();

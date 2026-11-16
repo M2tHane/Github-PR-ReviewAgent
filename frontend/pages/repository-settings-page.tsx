@@ -3,7 +3,8 @@ import { api, messageOf } from "../api/client.js";
 import { dateText } from "../format.js";
 import { Status } from "../components/common/status-badge.js";
 import { DevelopmentForm, DevelopmentTasks, useDevelopment } from "../features/repositories/development-settings.js";
-import { HealthScheduleForm, ReviewSettingsForm } from "../features/repositories/repository-settings.js";
+import { Feedback, HealthScheduleForm, ReviewSettingsForm } from "../features/repositories/repository-settings.js";
+import { ArrowLeft } from "../components/common/icons.js";
 import type { Repository } from "../types.js";
 
 export type RepositoryTab = "review" | "health" | "development" | "tasks";
@@ -27,16 +28,14 @@ export function RepositorySettingsPage({
   return (
     <section className="repo-settings">
       <a className="back-link" href="#repositories">
-        ← 仓库
+        <ArrowLeft />
+        仓库
       </a>
-      <div className="section-head">
-        <div>
-          <h2>{repo.fullName}</h2>
-          <p className="muted">这个仓库的审查、健康检查和群内开发设置。</p>
-        </div>
+      <div className="page-head">
+        <h2 className="detail-title">{repo.fullName}</h2>
         <Status value={repo.enabled ? "enabled" : "paused"} />
       </div>
-      <nav className="rule-tabs" aria-label="仓库设置分类">
+      <nav className="tabs" aria-label="仓库设置分类">
         {tabs.map(([key, label]) => (
           <button
             key={key}
@@ -108,56 +107,57 @@ function RulesSyncSettings({ repo, onSaved }: { repo: Repository; onSaved: (repo
     }
   }
   return (
-    <section
-      className="card repo-form"
-      aria-label="规则文件同步"
-      style={{ marginTop: "1rem", overflowWrap: "anywhere" }}
-    >
-      <h3>规则文件同步</h3>
-      {error && (
-        <p className="alert" role="alert">
-          {error}
-        </p>
-      )}
-      {notice && (
-        <p className="feedback" role="status">
-          {notice}
-        </p>
-      )}
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={repo.rulesSyncEnabled}
-          disabled={busy}
-          onChange={(event) => void run(event.target.checked)}
-        />
-        通过 PR 把规则同步到仓库文件
-      </label>
-      <p className="muted">
-        默认关闭。开启后，规则变更会更新 .pi-review/rules.md，并在 AGENTS.md／CLAUDE.md 引用，供本地 Codex／Claude Code
-        读取。服务只提 PR，由维护者决定是否合并。
-      </p>
-      <div>
-        <strong>最近一次同步</strong>
-        {repo.rulesSyncAt && <small> · {dateText(repo.rulesSyncAt)}</small>}
-        {!repo.rulesSyncStatus && (
-          <p className="muted">{repo.rulesSyncEnabled ? "暂无记录，等待首次同步。" : "尚未开启同步。"}</p>
-        )}
-        {repo.rulesSyncStatus === "pr" && (
-          <p>
-            规则 PR：
-            <a href={repo.rulesSyncPrUrl!} target="_blank" rel="noreferrer">
-              {repo.rulesSyncPrUrl}
-            </a>
-          </p>
-        )}
-        {repo.rulesSyncStatus === "unchanged" && <p>无变化，默认分支中的规则文件已是最新。</p>}
-        {repo.rulesSyncStatus === "failed" && <p className="error">同步失败：{repo.rulesSyncError}</p>}
-      </div>
-      <div className="repo-form-foot">
-        <button type="button" disabled={busy || !repo.rulesSyncEnabled || !repo.enabled} onClick={() => void run()}>
-          {busy ? "处理中…" : "立即同步"}
-        </button>
+    <section className="settings-section" aria-labelledby={`rules-sync-${repo.id}`}>
+      <h3 id={`rules-sync-${repo.id}`}>规则文件同步</h3>
+      <div className="settings-form">
+        <div className="setting-row">
+          <div className="setting-label">
+            <label htmlFor={`rules-sync-enabled-${repo.id}`}>通过 PR 把规则同步到仓库文件</label>
+            <p className="muted">
+              默认关闭。开启后，规则变更会更新 .pi-review/rules.md，并在 AGENTS.md／CLAUDE.md 引用，供本地 Codex／Claude
+              Code 读取。服务只提 PR，由维护者决定是否合并。
+            </p>
+          </div>
+          <div className="setting-control">
+            <label className="check">
+              <input
+                id={`rules-sync-enabled-${repo.id}`}
+                type="checkbox"
+                checked={repo.rulesSyncEnabled}
+                disabled={busy}
+                onChange={(event) => void run(event.target.checked)}
+              />
+              {repo.rulesSyncEnabled ? "已开启" : "已关闭"}
+            </label>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-label">
+            <span className="setting-name">最近一次同步</span>
+            {repo.rulesSyncAt && <p className="muted">{dateText(repo.rulesSyncAt)}</p>}
+          </div>
+          <div className="setting-control setting-value">
+            {!repo.rulesSyncStatus && (
+              <span className="muted">{repo.rulesSyncEnabled ? "暂无记录，等待首次同步。" : "尚未开启同步。"}</span>
+            )}
+            {repo.rulesSyncStatus === "pr" && (
+              <span className="property-wrap">
+                规则 PR：
+                <a href={repo.rulesSyncPrUrl!} target="_blank" rel="noreferrer">
+                  {repo.rulesSyncPrUrl}
+                </a>
+              </span>
+            )}
+            {repo.rulesSyncStatus === "unchanged" && <span>无变化，默认分支中的规则文件已是最新。</span>}
+            {repo.rulesSyncStatus === "failed" && <span className="error">同步失败：{repo.rulesSyncError}</span>}
+          </div>
+        </div>
+        <div className="form-foot">
+          <button type="button" disabled={busy || !repo.rulesSyncEnabled || !repo.enabled} onClick={() => void run()}>
+            {busy ? "处理中…" : "立即同步"}
+          </button>
+          <Feedback error={error} notice={notice} />
+        </div>
       </div>
     </section>
   );

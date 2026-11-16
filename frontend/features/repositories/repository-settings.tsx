@@ -2,6 +2,7 @@ import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { dateText } from "../../format.js";
+import { Check, External } from "../../components/common/icons.js";
 import type { Repository } from "../../types.js";
 
 export const scheduleLabels: Record<Repository["healthSchedule"], string> = {
@@ -10,16 +11,18 @@ export const scheduleLabels: Record<Repository["healthSchedule"], string> = {
   weekly: "每周",
 };
 
-function Feedback({ error, notice }: { error: string; notice: string }) {
+// 保存结果显示在保存按钮旁边。
+export function Feedback({ error, notice }: { error: string; notice: string }) {
   return (
     <>
       {error && (
-        <p className="alert" role="alert">
+        <p className="alert inline-alert" role="alert">
           {error}
         </p>
       )}
       {notice && (
         <p className="feedback" role="status">
+          <Check />
           {notice}
         </p>
       )}
@@ -66,57 +69,89 @@ export function ReviewSettingsForm({ repo, onSaved }: { repo: Repository; onSave
       setBusy(false);
     }
   }
+  const id = (name: string) => `repo-${repo.id}-${name}`;
   return (
     <form
-      className="card repo-form"
+      className="settings-form"
       onSubmit={(event) => {
         event.preventDefault();
         void save(event.currentTarget);
       }}
     >
-      <Feedback error={error} notice={notice} />
-      <label className="check">
-        <input name="enabled" type="checkbox" defaultChecked={repo.enabled} /> 启用仓库
-      </label>
-      <p className="muted">启用后接收新的 PR 审查和健康检查；暂停后不会发布新的审查结果。</p>
-      <div className="row">
-        <label>
-          包含路径（每行一个）
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor={id("enabled")}>启用仓库</label>
+          <p className="muted">启用后接收新的 PR 审查和健康检查；暂停后不会发布新的审查结果。</p>
+        </div>
+        <div className="setting-control">
+          <label className="check">
+            <input id={id("enabled")} name="enabled" type="checkbox" defaultChecked={repo.enabled} /> 启用
+          </label>
+        </div>
+      </div>
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor={id("include")}>包含路径</label>
+          <p className="muted">每行一个；留空表示所有路径。</p>
+        </div>
+        <div className="setting-control">
           <textarea
+            id={id("include")}
             name="includePaths"
             rows={rows(repo.includePaths)}
             defaultValue={repo.includePaths.join("\n")}
             placeholder="留空表示所有路径"
           />
-        </label>
-        <label>
-          排除路径（每行一个）
+        </div>
+      </div>
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor={id("exclude")}>排除路径</label>
+          <p className="muted">每行一个。</p>
+        </div>
+        <div className="setting-control">
           <textarea
+            id={id("exclude")}
             name="excludePaths"
             rows={rows(repo.excludePaths)}
             defaultValue={repo.excludePaths.join("\n")}
             placeholder="vendor/**"
           />
-        </label>
+        </div>
       </div>
-      <div className="row">
-        <label>
-          输出语言
-          <input name="outputLanguage" required defaultValue={repo.outputLanguage} />
-        </label>
-        <label>
-          每次任务的 Token 上限
-          <input name="budgetTokens" type="number" min="1" required defaultValue={repo.budgetTokens} />
-        </label>
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor={id("language")}>输出语言</label>
+        </div>
+        <div className="setting-control">
+          <input id={id("language")} name="outputLanguage" required defaultValue={repo.outputLanguage} />
+        </div>
       </div>
-      <div className="repo-form-foot">
-        <button type="submit" disabled={busy}>
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor={id("budget")}>每次任务的 Token 上限</label>
+        </div>
+        <div className="setting-control">
+          <input
+            id={id("budget")}
+            name="budgetTokens"
+            type="number"
+            min="1"
+            required
+            defaultValue={repo.budgetTokens}
+          />
+        </div>
+      </div>
+      <div className="form-foot">
+        <button type="submit" className="primary" disabled={busy}>
           {busy ? "保存中…" : "保存审查设置"}
         </button>
-        <small>
+        <Feedback error={error} notice={notice} />
+        <small className="form-foot-end">
           GitHub App installation #{repo.installationId} ·{" "}
           <a href={`https://github.com/${repo.fullName}`} target="_blank" rel="noreferrer">
-            在 GitHub 查看 ↗
+            在 GitHub 查看
+            <External />
           </a>
         </small>
       </div>
@@ -150,46 +185,52 @@ export function HealthScheduleForm({ repo, onSaved }: { repo: Repository; onSave
   }
   return (
     <form
-      className="card repo-form"
+      className="settings-form"
       onSubmit={(event) => {
         event.preventDefault();
         void save();
       }}
     >
-      <Feedback error={error} notice={notice} />
-      <label htmlFor="health-schedule">
-        定时检查频率
-        <Select
-          id="health-schedule"
-          value={schedule}
-          disabled={busy}
-          onChange={(value) => setSchedule(value as Repository["healthSchedule"])}
-        >
-          <option value="off">关闭</option>
-          <option value="daily" disabled={!repo.enabled}>
-            每日
-          </option>
-          <option value="weekly" disabled={!repo.enabled}>
-            每周
-          </option>
-        </Select>
-      </label>
-      <p className="muted">
-        默认关闭。启用后首个任务在一个周期后触发，统一按 UTC 计时。
-        {!repo.enabled && "仓库已暂停，只能关闭定时检查。"}
-      </p>
-      {repo.healthNextRunAt && (
-        <p>
-          下次运行 <strong>{dateText(repo.healthNextRunAt)}</strong>
-          <small className="health-utc">UTC {repo.healthNextRunAt.slice(0, 19).replace("T", " ")}</small>
-        </p>
-      )}
-      {repo.healthLastError && <p className="error">{repo.healthLastError}</p>}
-      <div className="repo-form-foot">
-        <button type="submit" disabled={busy || (!repo.enabled && schedule !== "off")}>
+      <div className="setting-row">
+        <div className="setting-label">
+          <label htmlFor="health-schedule">定时检查频率</label>
+          <p className="muted">
+            默认关闭。启用后首个任务在一个周期后触发，统一按 UTC 计时。
+            {!repo.enabled && "仓库已暂停，只能关闭定时检查。"}
+          </p>
+        </div>
+        <div className="setting-control">
+          <Select
+            id="health-schedule"
+            value={schedule}
+            disabled={busy}
+            onChange={(value) => setSchedule(value as Repository["healthSchedule"])}
+          >
+            <option value="off">关闭</option>
+            <option value="daily" disabled={!repo.enabled}>
+              每日
+            </option>
+            <option value="weekly" disabled={!repo.enabled}>
+              每周
+            </option>
+          </Select>
+          {repo.healthNextRunAt && (
+            <p className="setting-value">
+              下次运行 <strong>{dateText(repo.healthNextRunAt)}</strong>
+              <small className="health-utc">UTC {repo.healthNextRunAt.slice(0, 19).replace("T", " ")}</small>
+            </p>
+          )}
+        </div>
+      </div>
+      {repo.healthLastError && <p className="alert">{repo.healthLastError}</p>}
+      <div className="form-foot">
+        <button type="submit" className="primary" disabled={busy || (!repo.enabled && schedule !== "off")}>
           {busy ? "保存中…" : "保存频率"}
         </button>
-        <a href={`#settings/health?repo=${repo.id}`}>查看健康报告、手动运行 →</a>
+        <Feedback error={error} notice={notice} />
+        <a className="form-foot-end" href={`#settings/health?repo=${repo.id}`}>
+          查看健康报告、手动运行
+        </a>
       </div>
     </form>
   );
