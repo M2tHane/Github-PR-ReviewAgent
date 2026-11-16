@@ -2653,8 +2653,12 @@ details > summary::marker {
   gap: var(--space-3);
   min-width: 0;
 }
+/* 来源列固定宽度：仓库名再长也只截断名字；来源说明过长时在本列内换行。 */
 .onboarding-info .row-meta {
-  flex: 0 1 auto;
+  flex: none;
+  width: 340px;
+  text-align: right;
+  white-space: normal;
 }
 .onboarding-toggle {
   flex: none;
