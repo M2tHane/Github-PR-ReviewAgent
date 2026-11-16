@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { useEffect, useRef, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Empty } from "../../components/common/empty-state.js";
@@ -235,14 +236,14 @@ export function DiscussionPage({ repositories }: { repositories: Repo[] }) {
       </div>
       <label>
         筛选仓库
-        <select value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)}>
+        <Select value={repositoryId} onChange={(value) => setRepositoryId(value)}>
           <option value="">全部可访问仓库</option>
           {repositories.map((repo) => (
             <option key={repo.id} value={repo.id}>
               {repo.fullName}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {page.items.length > 0 ? (
         <div className="discussion-groups">

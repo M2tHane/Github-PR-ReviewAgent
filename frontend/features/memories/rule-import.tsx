@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { Modal } from "../../components/common/modal.js";
@@ -138,12 +139,12 @@ export function RuleImport({
         <p className="muted">1. 选择规则与归属 → 2. 预览 → 3. 确认生效</p>
         <label>
           目标归属
-          <select
+          <Select
             value={target}
             disabled={busy || Boolean(preview)}
-            onChange={(event) => {
-              setTarget(event.target.value);
-              if (source === event.target.value) setSource("");
+            onChange={(value) => {
+              setTarget(value);
+              if (source === value) setSource("");
             }}
           >
             <option value="">请选择项目或团队</option>
@@ -158,7 +159,7 @@ export function RuleImport({
                 {repo.fullName}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         {error && (
           <p className="alert" role="alert">
@@ -302,7 +303,7 @@ export function RuleImport({
             <p>复制为目标项目的独立规则，保留原项目、规则编号与版本。后续修改不会自动同步。</p>
             <label>
               来源项目
-              <select value={source} disabled={busy} onChange={(event) => setSource(event.target.value)}>
+              <Select value={source} disabled={busy} onChange={(value) => setSource(value)}>
                 <option value="">请选择来源项目</option>
                 {repositories
                   .filter((repo) => String(repo.id) !== target)
@@ -311,7 +312,7 @@ export function RuleImport({
                       {repo.fullName}
                     </option>
                   ))}
-              </select>
+              </Select>
             </label>
             <label>
               搜索来源规则

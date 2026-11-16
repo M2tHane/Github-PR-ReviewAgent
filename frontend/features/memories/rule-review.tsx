@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { useState } from "react";
 import type { RuleReviewItem, RuleReviewReason } from "../../../src/memory/types.js";
 import { api, messageOf } from "../../api/client.js";
@@ -93,18 +94,16 @@ export function RuleReviewRows({
             >
               <label>
                 暂不处理的原因项
-                <select
+                <Select
                   value={dismiss.reason}
-                  onChange={(event) =>
-                    setDismiss({ ...dismiss, reason: event.target.value as RuleReviewReason["reason"] })
-                  }
+                  onChange={(value) => setDismiss({ ...dismiss, reason: value as RuleReviewReason["reason"] })}
                 >
                   {reasons.map((reason) => (
                     <option key={reason.reason} value={reason.reason}>
                       {labels[reason.reason]}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label>
                 处理理由

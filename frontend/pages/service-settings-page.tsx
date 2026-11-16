@@ -1,3 +1,4 @@
+import { Select } from "../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../api/client.js";
 import { dateText } from "../format.js";
@@ -170,14 +171,14 @@ export function ServiceSettingsPage({ onRepositoriesChange }: { onRepositoriesCh
                           {text === "on" ? "开" : "关"}
                         </label>
                       ) : definition.kind === "choice" ? (
-                        <select id={id} value={text} onChange={(event) => edit(event.currentTarget.value)}>
+                        <Select id={id} value={text} onChange={(value) => edit(value)}>
                           {definition.empty && <option value="">{definition.empty}</option>}
                           {definition.choices!.map((choice) => (
                             <option key={choice.value} value={choice.value}>
                               {choice.label}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       ) : definition.kind === "integer" ? (
                         <span className="service-setting-number">
                           <input

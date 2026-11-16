@@ -51,9 +51,9 @@ export const ownerId = (owner: MemoryOwner) => (typeof owner === "number" ? owne
 export const memoryOwner = (memory: MemoryRecord): MemoryOwner =>
   memory.teamId ? { teamId: memory.teamId } : memory.repositoryId!;
 export const ruleLevelLabels: Record<RuleLevel, string> = {
-  must: "必须 · must",
-  should: "建议 · should",
-  info: "参考 · info",
+  must: "必须",
+  should: "建议",
+  info: "参考",
 };
 
 export function memorySourceLabel(source: MemorySource | { kind?: never; pullRequestNumber?: number }) {

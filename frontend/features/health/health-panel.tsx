@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client.js";
 import { Empty } from "../../components/common/empty-state.js";
@@ -192,11 +193,11 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
             <div>
               <label htmlFor="health-repository">
                 仓库
-                <select
+                <Select
                   id="health-repository"
                   value={repositoryId}
-                  onChange={(event) => {
-                    setRepositoryId(event.target.value);
+                  onChange={(value) => {
+                    setRepositoryId(value);
                     setPage(0);
                     setItems([]);
                     setSelected("");
@@ -215,7 +216,7 @@ export function HealthPanel({ repositories }: { repositories: Repo[] }) {
                       {item.enabled ? "" : "（已暂停）"}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <small>默认分支 · 最近 30 天 · 每任务 {numberText(repository?.budgetTokens)} tokens</small>
             </div>

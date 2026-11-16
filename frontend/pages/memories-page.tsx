@@ -1,3 +1,4 @@
+import { Select } from "../components/common/select.js";
 import { RuleImport } from "../features/memories/rule-import.js";
 import { memorySourceLabel, ruleLevelLabels } from "../../src/memory/types.js";
 import { useEffect, useState } from "react";
@@ -228,13 +229,13 @@ export function MemoriesPage({
           >
             <label>
               规则级别
-              <select name="level" defaultValue={selected.level}>
+              <Select name="level" defaultValue={selected.level}>
                 {Object.entries(ruleLevelLabels).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               规则名称
@@ -349,47 +350,47 @@ export function MemoriesPage({
         </label>
         <label>
           归属
-          <select
+          <Select
             value={ownership}
-            onChange={(event) => {
-              setOwnership(event.target.value);
+            onChange={(value) => {
+              setOwnership(value);
               setTeamId("ALL");
             }}
           >
             <option value="ALL">项目与团队</option>
             <option value="project">项目规则</option>
             <option value="team">团队规则</option>
-          </select>
+          </Select>
         </label>
         {ownership !== "project" && (
           <label>
             团队
-            <select
+            <Select
               value={teamId}
-              onChange={(event) => {
-                setTeamId(event.target.value);
-                if (event.target.value !== "ALL") setOwnership("team");
+              onChange={(value) => {
+                setTeamId(value);
+                if (value !== "ALL") setOwnership("team");
               }}
             >
               <option value="ALL">所有团队</option>
               {teams.map((team) => (
                 <option key={team.id} value={team.id}>
-                  {shortText(team.name, 70)}
+                  {team.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
         <label>
           仓库
-          <select value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)}>
+          <Select value={repositoryId} onChange={(value) => setRepositoryId(value)}>
             <option value="ALL">所有仓库</option>
             {repositories.map((repo) => (
               <option value={repo.id} key={repo.id}>
                 {repo.fullName}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       {overrideError && (
@@ -581,7 +582,7 @@ function ExceptionSelector({ item, items, teams }: { item: Memory; items: Memory
     <>
       <label style={{ minWidth: 0 }}>
         例外于
-        <select name="exceptionTo" value={value} onChange={(event) => setValue(event.target.value)}>
+        <Select name="exceptionTo" value={value} onChange={(value) => setValue(value)}>
           <option value="">不关联</option>
           {unavailable && (
             <option value={value} disabled>
@@ -593,7 +594,7 @@ function ExceptionSelector({ item, items, teams }: { item: Memory; items: Memory
               {shortText(rule.title, 80)}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {value && (
         <p className="muted" style={{ overflowWrap: "anywhere" }}>

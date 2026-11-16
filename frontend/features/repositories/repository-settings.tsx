@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { dateText } from "../../format.js";
@@ -158,11 +159,11 @@ export function HealthScheduleForm({ repo, onSaved }: { repo: Repository; onSave
       <Feedback error={error} notice={notice} />
       <label htmlFor="health-schedule">
         定时检查频率
-        <select
+        <Select
           id="health-schedule"
           value={schedule}
           disabled={busy}
-          onChange={(event) => setSchedule(event.target.value as Repository["healthSchedule"])}
+          onChange={(value) => setSchedule(value as Repository["healthSchedule"])}
         >
           <option value="off">关闭</option>
           <option value="daily" disabled={!repo.enabled}>
@@ -171,7 +172,7 @@ export function HealthScheduleForm({ repo, onSaved }: { repo: Repository; onSave
           <option value="weekly" disabled={!repo.enabled}>
             每周
           </option>
-        </select>
+        </Select>
       </label>
       <p className="muted">
         默认关闭。启用后首个任务在一个周期后触发，统一按 UTC 计时。

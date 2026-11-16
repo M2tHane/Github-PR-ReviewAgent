@@ -850,7 +850,7 @@ export class DevelopmentStore {
     return (
       await this.pool.query(
         `SELECT t.id,requester,requester_login,source,status,kind,issue_number,branch,target_branch,base_sha,head_sha,pr_number,title,result,model,usage,t.duration_ms,
-      notification_status,notification_error,created_at,
+      left(split_part(prompt,E'\n',1),160) AS prompt_summary,notification_status,notification_error,created_at,
       COALESCE((SELECT jsonb_agg(${SESSION_SUMMARY("s")} ORDER BY s.started_at) FROM agent_sessions s WHERE s.development_task_id=t.id),'[]') agent_sessions
       FROM development_tasks t WHERE repository_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [repositoryId],

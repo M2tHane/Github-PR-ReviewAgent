@@ -1,6 +1,8 @@
+import { Select } from "../../components/common/select.js";
 import { useEffect, useState } from "react";
 import { api, messageOf } from "../../api/client.js";
 import { SessionTimeline } from "../../components/common/session-timeline.js";
+import { Status } from "../../components/common/status-badge.js";
 import { dateText, numberText, usageText, usageTotal } from "../../format.js";
 import type { Repository } from "../../types.js";
 import type { DevelopmentSettings, DevelopmentSource } from "../../../src/development/types.js";
@@ -20,6 +22,7 @@ type Task = {
   branch: string;
   pr_number: number | null;
   title: string | null;
+  prompt_summary: string;
   result: string | null;
   notification_status: string;
   notification_error: string | null;
@@ -226,20 +229,20 @@ export function DevelopmentForm({ dev, repo }: { dev: Development; repo: Reposit
                   </label>
                   <label>
                     身份
-                    <select
+                    <Select
                       aria-label={`成员 ${index + 1} 身份`}
                       value={member.role}
-                      onChange={(e) =>
+                      onChange={(value) =>
                         update({
                           members: settings.members.map((m, i) =>
-                            i === index ? { ...m, role: e.target.value as "admin" | "developer" } : m,
+                            i === index ? { ...m, role: value as "admin" | "developer" } : m,
                           ),
                         })
                       }
                     >
                       <option value="developer">开发</option>
                       <option value="admin">管理员</option>
-                    </select>
+                    </Select>
                   </label>
                   <button
                     type="button"
@@ -432,70 +435,75 @@ export function DevelopmentTasks({ dev, repo }: { dev: Development; repo: Reposi
       </div>
       {tasks.length >= 50 && <p className="muted">只显示最近 50 条。</p>}
       {!tasks.length && <p className="muted">还没有任务。可在上方提交需求，或为 GitHub issue 添加 pi-dev 标签。</p>}
-      {tasks.map((task) => (
-        <article className="card development-task" key={task.id}>
-          <strong>
-            {kindLabels[task.kind ?? "develop"]}
-            {statuses[task.status] ?? task.status}
-          </strong>
-          <p>
-            {sourceLabels[task.source]} · {task.requester_login ?? task.requester} · {dateText(task.created_at)}
-          </p>
-          {task.issue_number && (
-            <a
-              href={`https://github.com/${repo.fullName}/issues/${task.issue_number}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              issue #{task.issue_number}
-            </a>
-          )}
-          {task.result && <p>{task.result}</p>}
-          {task.pr_number && (
-            <a href={`https://github.com/${repo.fullName}/pull/${task.pr_number}`} target="_blank" rel="noreferrer">
-              PR #{task.pr_number} {task.title}
-            </a>
-          )}
-          <p className="muted">目标分支：{task.target_branch}</p>
-          {usageTotal({ usage: task.usage }) !== undefined && (
-            <p className="muted usage-text">
-              用量：{numberText(usageTotal({ usage: task.usage }))} tokens · {usageText({ usage: task.usage })}
-            </p>
-          )}
-          <SessionTimeline sessions={task.agent_sessions ?? []} />
-          {task.status === "uncertain" && (
-            <p>
-              请核对分支：<code>{task.branch}</code>。不会自动重复创建 PR。
-            </p>
-          )}
-          <small>
-            群通知：
-            {
-              (
+      {tasks.length > 0 && (
+        <div className="development-task-list">
+          {tasks.map((task) => (
+            <article className="development-task-row" key={task.id}>
+              <div className="development-task-heading">
+                <h4 title={task.title || task.prompt_summary}>{task.title || task.prompt_summary}</h4>
+                <Status value={task.status} label={statuses[task.status]} />
+              </div>
+              <p className="muted">
+                {kindLabels[task.kind ?? "develop"]}
+                {sourceLabels[task.source]} · {task.requester_login ?? task.requester} · {dateText(task.created_at)}
+              </p>
+              {task.issue_number && (
+                <a
+                  href={`https://github.com/${repo.fullName}/issues/${task.issue_number}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  issue #{task.issue_number}
+                </a>
+              )}
+              {task.result && <p>{task.result}</p>}
+              {task.pr_number && (
+                <a href={`https://github.com/${repo.fullName}/pull/${task.pr_number}`} target="_blank" rel="noreferrer">
+                  PR #{task.pr_number} {task.title}
+                </a>
+              )}
+              <p className="muted">目标分支：{task.target_branch}</p>
+              {usageTotal({ usage: task.usage }) !== undefined && (
+                <p className="muted usage-text">
+                  用量：{numberText(usageTotal({ usage: task.usage }))} tokens · {usageText({ usage: task.usage })}
+                </p>
+              )}
+              <SessionTimeline sessions={task.agent_sessions ?? []} />
+              {task.status === "uncertain" && (
+                <p>
+                  请核对分支：<code>{task.branch}</code>。不会自动重复创建 PR。
+                </p>
+              )}
+              <small>
+                群通知：
                 {
-                  pending: "待发送",
-                  sending: "发送中",
-                  sent: "已发送",
-                  failed: "失败",
-                  uncertain: "结果待核对",
-                  skipped: "不发送",
-                } as Record<string, string>
-              )[task.notification_status]
-            }
-          </small>
-          {task.notification_error && (
-            <p className="muted">
-              {task.notification_error === "reply_window_expired"
-                ? "原消息已超过 24 小时回复期限，请在这里查看任务结果。"
-                : task.notification_error === "reply_context_missing"
-                  ? "此任务没有保存原消息回复标识，请在这里查看结果。"
-                  : task.notification_error === "repository_or_binding_changed"
-                    ? "仓库或群绑定已变化，已停止发送旧通知。"
-                    : "群回复未确认成功，请先检查群消息；不会自动重复发送。"}
-            </p>
-          )}
-        </article>
-      ))}
+                  (
+                    {
+                      pending: "待发送",
+                      sending: "发送中",
+                      sent: "已发送",
+                      failed: "失败",
+                      uncertain: "结果待核对",
+                      skipped: "不发送",
+                    } as Record<string, string>
+                  )[task.notification_status]
+                }
+              </small>
+              {task.notification_error && (
+                <p className="muted">
+                  {task.notification_error === "reply_window_expired"
+                    ? "原消息已超过 24 小时回复期限，请在这里查看任务结果。"
+                    : task.notification_error === "reply_context_missing"
+                      ? "此任务没有保存原消息回复标识，请在这里查看结果。"
+                      : task.notification_error === "repository_or_binding_changed"
+                        ? "仓库或群绑定已变化，已停止发送旧通知。"
+                        : "群回复未确认成功，请先检查群消息；不会自动重复发送。"}
+                </p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
     </>
   );
 }
