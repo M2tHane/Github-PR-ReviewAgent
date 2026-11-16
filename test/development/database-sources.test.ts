@@ -162,6 +162,11 @@ test("管理 API 不绑群也能保存和派任务；CSRF、维护权限、启�
       assert.equal(task.source, "admin");
       assert.equal(task.requester_login, login);
       assert.equal(task.prompt.length, 12000);
+      const listing = await fetch(s.endpoint, { headers: await s.headers("maintainer") });
+      assert.equal(listing.status, 200);
+      const listed = ((await listing.json()) as any).tasks.find((item: { id: string }) => item.id === task.id);
+      assert.equal(listed.prompt_summary, "需".repeat(160));
+      assert.equal(listed.prompt, undefined);
       assert.equal(task.bot_id, null);
       assert.equal(task.requester, null);
       assert.equal(task.chat_id, null);
@@ -219,6 +224,7 @@ test("pi-dev 标签验签后查 GitHub 写权限；并发、重复投递及重�
     assert.equal(results.filter((r) => r.accepted).length, 1);
     assert.equal(results.filter((r) => r.duplicate).length, 2);
     const [task] = await s.store.list(s.repoId);
+    assert.equal(task.prompt_summary, "修复导出");
     assert.equal(task.source, "issue_label");
     assert.equal(task.issue_number, 123);
     const row = (await s.database.pool.query("SELECT * FROM development_tasks WHERE id=$1", [task.id])).rows[0];

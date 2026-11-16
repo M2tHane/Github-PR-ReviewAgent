@@ -1,3 +1,4 @@
+import { Select } from "../components/common/select.js";
 import { useJobPage } from "../api/jobs.js";
 import { Pager } from "../components/common/pager.js";
 import { ReviewRow, SeverityLegend } from "../features/reviews/review-row.js";
@@ -46,25 +47,25 @@ export function ReviewsPage({ repositories, search }: { repositories: Repo[]; se
       <div className="list-filters">
         <label>
           仓库
-          <select value={repo} onChange={(event) => go({ repo: event.target.value })}>
+          <Select value={repo} onChange={(value) => go({ repo: value })}>
             <option value="">所有仓库</option>
             {repositories.map((item) => (
               <option value={item.id} key={item.id}>
                 {item.fullName}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label>
           状态
-          <select value={group?.[0] ?? ""} onChange={(event) => go({ status: event.target.value })}>
+          <Select value={group?.[0] ?? ""} onChange={(value) => go({ status: value })}>
             <option value="">全部状态</option>
             {STATUS_GROUPS.map(([key, label]) => (
               <option value={key} key={key}>
                 {label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       {error && (

@@ -1,3 +1,4 @@
+import { Select } from "../../components/common/select.js";
 import { memorySourceLabel, ruleLevelLabels } from "../../../src/memory/types.js";
 import { TeamRuleActions } from "./team-rule-actions.js";
 import { useEffect, useState } from "react";
@@ -13,6 +14,7 @@ export function ScopeChips({ scope, limit }: { scope: Memory["scope"]; limit?: n
   const values = Object.entries(scope).flatMap(([kind, items]) => (items ?? []).map((value) => ({ kind, value })));
   const shown = limit ? values.slice(0, limit) : values,
     rest = values.length - shown.length;
+  if (limit && !values.length) return null;
   return (
     <span className={limit ? "scope-chips compact" : "scope-chips"}>
       {values.length ? (
@@ -407,14 +409,14 @@ export function RulePanel({
             <>
               <label>
                 选择待确认规则
-                <select value={replacement} onChange={(event) => setReplacement(event.target.value)}>
+                <Select value={replacement} onChange={(value) => setReplacement(value)}>
                   <option value="">请选择规则名称</option>
                   {candidates.map((candidate) => (
                     <option value={candidate.id} key={candidate.id}>
                       {candidate.title}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               {next && (
                 <div className="replacement-preview">

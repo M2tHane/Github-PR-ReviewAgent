@@ -312,3 +312,28 @@ ego-browser TaskSpace 3；使用独立 `ux_preview_*` schema 和 OAuth 替身，
 演示数据覆盖：77 条规则（含超长英文类名、12 项适用范围）、40 条意见 + 12 处密钥 + 60 条规则扫描命中 + 75 个依赖漏洞的健康报告、0 条意见的报告、失败／超时／排队中的健康任务、超长仓库名、24 条包含路径、25 个开发成员、12 条保护规则、16 个开发任务、已暂停仓库、没有任何仓库的账号。逐张目视看过的截图：规则列表（1440、390）、规则末页（768）、规则依据抽屉、健康报告顶部／目录跳转／折叠展开（1440）、健康报告顶部和筛选（390）、0 条意见报告、仓库列表（1440）、超长仓库的审查页签（1440、390）和健康检查页签（390）、群内开发与开发任务页签（1440）、带仓库参数进入健康检查页（1440）。其余截图只做了溢出测量，没有逐张看。
 
 限制：没有连接真实 GitHub 和真实登录；没有看 9 个以上仓库的列表、恰好 50 条开发任务时的提示和深色主题；规则内容里的 Markdown 代码块仍按纯文本显示；开发任务卡片本身的排版未改。无模型调用，无新增 delivery／Job／Review。
+
+### 2026-11-15：管理页减少装饰与自定义下拉框
+
+按已确认的 `ui-kill-slop` 任务书在 `ui/kill-slop` 实现，基准 `1a542c21c93b973da7e2978380d75495d86ff5c2`。状态去掉胶囊底色，仅失败／超时／中断／待核对／仍需处理和待确认／需澄清／例外待确认／部分完成保留颜色与圆点；严重度计数只保留圆点和数字。顶栏使用实底，主题切换改为轻量文字控件，登录页简化。开发任务用任务标题或 prompt 首行摘要作标题，共用列表底板；摘要在现有列表查询中截至 160 字符，不返回完整 prompt。必须规则计数只强调非零违反与未确认项；规则级别去掉英文后缀，列表隐藏空范围。
+
+新增共享 `Select`，替换授权文件内 17 处原生下拉框。不新增依赖；支持方向键、Enter／Space、Escape、Tab／Shift+Tab、外部点击关闭、disabled、表单 name／FormData、长选项完整提示、内部滚动、底部向上展开、深色主题与 dialog。非平凡浏览器回归保存在 `test/frontend/select.browser.mjs`，独立运行（不计入 `npm test`）。
+
+| 实际命令／操作 | 结果 |
+| --- | --- |
+| `npm run build && node --env-file=.env --test dist/test/development/database-sources.test.js dist/test/frontend/client.test.js` | 10 项通过、0 失败／跳过；包含摘要截断、只取首行、不泄露完整 prompt。 |
+| `PLAYWRIGHT_CHANNEL=chrome node --test test/frontend/select.browser.mjs` | 6 项通过、0 失败；键盘、鼠标、禁用项、表单重置／提交、失效关联选项不提交、modal 和 68 项长列表，浅深色极端状态截图。 |
+| `node work/ui-review/slop-integration.mjs`、`node work/ui-review/slop-details.mjs` | 通过；真实管理页主题持久化、仓库筛选、规则编辑 FormData、任务标题与 must 三种计数；服务设置与定时频率下拉框。只读与本地控件操作，未提交业务表单。 |
+| `npm test`，随后 `npm run test:db` | 普通测试 364 项：213 通过、151 跳过、0 失败（数据库及未安装 Semgrep）；独立数据库专项 198 项全部通过、0 跳过，最终重跑耗时约 119 秒。使用临时 schema，未启动真实 Worker。 |
+| `npm run check:docs`、`npm run check:format`、`git diff --check` | 通过；36 篇 Markdown、311 个本地链接／锚点，262 个格式检查文件。 |
+| `npm audit --audit-level=high` | 0 漏洞。 |
+| `node work/ui-review/slop-shots.mjs before/after` | Playwright 在 1600／1024、浅／深色下各 48 张页面截图，均无页面级横向溢出；改后另有 20 张下拉框与表单截图。完整清单及逐张目视情况见本地交接报告。 |
+| `node /Users/dade/.claude/skills/kill-ai-slop/scripts/scan.mjs frontend` | 29 → 28 个文本命中；登录小字已删除。剩余包括任务书保留的分类小字、状态／图例圆点、链接交互、↗／▶ 和代码／SHA 字体；未用忽略注释隐藏结果。 |
+
+交接限制：任务书同时要求“全目录 `<select>` 为 0”并禁止修改 `teams-page.tsx`、`team-rule-actions.tsx`；按更具体的排除要求保留这两个文件的 4 处原生下拉框，其余文件为 0。主脑合并团队删除任务后需复验。扫描器“只剩明确保留的几类”字面条件也未全部满足：保留并改灰的 `.eyebrow`、实际交互下划线与数据图例仍会命中，逐项理由见 `/tmp/ui-kill-slop-report.md`；未扩大到其他页面结构或文案清理。
+
+证据在忽略的 `work/ui-review/slop-*`，改前／改后目录为 `slop-before/`、`slop-after/`；预览使用临时库、替身 OAuth／GitHub，未调用真实模型、真实 OAuth 或发布 GitHub 内容，delivery／真实 Job／finding／Review／reply URL、业务模型 usage 不适用。未做手机布局、跨浏览器或屏幕阅读器验收。依赖、品牌色和标志未改，未部署。构建量测：JS 原始体积增加 3,592 bytes、gzip 增加 1,366 bytes；CSS 增加 1,403 bytes、gzip 增加 176 bytes。列表仍为原查询和最多 50 条，没有新增数据库请求；没有生产延迟或内存实测。
+
+新增的拒绝路径：无。下拉框只复用既有 disabled 条件，没有新增业务校验或报错。
+
+数据库复验补充：最终复验中有一次在已有的“停止放回时保存代码快照…”用例挂起，约 427 秒后终止本次测试子进程，174 通过／1 测试文件失败，日志 `work/ui-review/slop-test-db-stalled.log`。以 `node --env-file=.env --test --test-timeout=30000 --test-name-pattern='停止放回时保存代码快照' dist/test/development/database-development.test.js` 单独运行通过（约 0.52 秒）；没有修改该用例或业务逻辑。终止运行遗留的独立 schema 已清理；完整重跑结果以上表为准。此不稳定现象另列交接，未计作本次界面问题修复。

@@ -1,3 +1,4 @@
+import { Select } from "./select.js";
 import { useLayoutEffect, useState } from "react";
 
 type Theme = "system" | "light" | "dark";
@@ -23,13 +24,13 @@ export function ThemeSwitch() {
 
   return (
     <>
-      <select
+      <Select
         className="theme-switch"
         aria-label="主题"
         title="切换页面主题"
         value={theme}
-        onChange={(event) => {
-          const value = event.target.value as Theme;
+        onChange={(selected) => {
+          const value = selected as Theme;
           setTheme(value);
           setError("");
           try {
@@ -42,7 +43,7 @@ export function ThemeSwitch() {
         <option value="system">跟随系统</option>
         <option value="light">浅色</option>
         <option value="dark">深色</option>
-      </select>
+      </Select>
       {error && <span role="status">{error}</span>}
     </>
   );

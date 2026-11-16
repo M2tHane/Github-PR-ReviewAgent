@@ -155,8 +155,10 @@ export function ReviewDetails({ id }: { id: string }) {
       {job.job_type === "PR_REVIEW" && <p className="review-lead">{lead}。自动审查，不代替 CI 测试。</p>}
       {Object.values(mustCounts).some((count) => count > 0) && (
         <p className="muted">
-          must 规则：遵守 {mustCounts.followed} · 违反 {mustCounts.violated} · 不适用 {mustCounts.notApplicable} ·
-          未确认 {mustCounts.unchecked}
+          必须规则：遵守 {mustCounts.followed} ·{" "}
+          <span className={mustCounts.violated > 0 ? "must-violation" : undefined}>违反 {mustCounts.violated}</span> ·
+          不适用 {mustCounts.notApplicable} ·{" "}
+          <span className={mustCounts.unchecked > 0 ? "must-unchecked" : undefined}>未确认 {mustCounts.unchecked}</span>
         </p>
       )}
       <div className="review-issues">

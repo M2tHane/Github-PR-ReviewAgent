@@ -87,9 +87,8 @@ function App() {
           <ThemeSwitch />
         </div>
         <div className="login-card">
-          <p className="eyebrow">Pi · 代码审查与团队规则</p>
-          <h1>把团队决定，带进下一次 Review。</h1>
-          <p>找到需要处理的问题，记住已经确认的工程约定。</p>
+          <h1>Pi Review</h1>
+          <p>用 GitHub 账号登录，查看 PR 审查和仓库规则。</p>
           {initializing ? (
             <p role="status">正在加载…</p>
           ) : (
