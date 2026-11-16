@@ -266,10 +266,12 @@ export function ReviewDetails({ id, memories }: { id: string; memories: Memory[]
                         <p className="muted">公开仓库：GitHub 上只提示了"发现安全问题"，细节只在这里显示。</p>
                       )}
                       <p>{display.reason}</p>
-                      <p>
-                        <strong>建议：</strong>
-                        {display.fix}
-                      </p>
+                      {display.fix?.trim() && (
+                        <p>
+                          <strong>建议：</strong>
+                          {display.fix}
+                        </p>
+                      )}
                       {display.code && (
                         <pre>
                           <code>{display.code}</code>

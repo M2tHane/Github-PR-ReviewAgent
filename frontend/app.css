@@ -1296,17 +1296,20 @@ details > summary::marker {
   color: var(--subtle);
   font-weight: 400;
 }
+/* 计数列按 4 位数加千分位（如 2,048）留宽，每格之间至少 8px；窄屏时缩标题列，不缩这里。 */
 .outcome {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: flex-end;
-  width: 248px;
+  width: 264px;
 }
 .outcome-cell {
-  min-width: 48px;
-  padding-left: var(--space-1);
+  flex: none;
+  width: 56px;
+  padding-left: var(--space-2);
   text-align: right;
+  white-space: nowrap;
 }
 .outcome-cell.outcome-repeat {
   width: 96px;
@@ -2965,13 +2968,10 @@ details > summary::marker {
     width: 150px;
   }
   .outcome {
-    width: 196px;
-  }
-  .outcome-cell {
-    min-width: 38px;
+    width: 248px;
   }
   .outcome-cell.outcome-repeat {
-    width: 82px;
+    width: 80px;
   }
   .col-pr-ref {
     width: 190px;
