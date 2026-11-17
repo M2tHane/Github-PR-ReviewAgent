@@ -122,6 +122,47 @@ test("Retry-After 超过 10 秒不在会话里等，原样返回；不超过时�
   assert.equal(short.count(), 2);
 });
 
+const stream = (response: ServerResponse, ...events: string[]) => {
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  response.end(events.join(""));
+};
+const UPSTREAM_FAILED = 'data: {"error":{"message":"Upstream request failed","type":"upstream_error"}}\n\n';
+const ANSWER = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n';
+
+test("流式响应在第一个数据事件前断开或报上游故障：重试同一请求，Pi 只收到成功的那次", async (t) => {
+  const upstream = await fakeUpstream(t, (response, index) => {
+    if (index === 0) {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(": ping\n\n");
+      return void setTimeout(() => response.socket?.destroy(), 20);
+    }
+    if (index === 1) return stream(response, ": ping\n\n", UPSTREAM_FAILED);
+    stream(response, ANSWER);
+  });
+  const { calls, send } = await proxyFor(t, upstream.url);
+  const response = await send();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), ANSWER);
+  assert.equal(upstream.count(), 3);
+  assert.deepEqual(calls.answered, [false, true], "断流算结果未知，第一个事件报错算上游明确没处理");
+});
+
+test("第一个数据事件是不可重试的错误，或连续 3 次报上游故障：原样交给 Pi", async (t) => {
+  const quota = 'data: {"error":{"message":"insufficient_quota"}}\n\n';
+  const permanent = await fakeUpstream(t, (response) => stream(response, quota));
+  const first = await proxyFor(t, permanent.url);
+  assert.equal(await (await first.send()).text(), quota);
+  assert.equal(permanent.count(), 1);
+  assert.equal(first.calls.retry, 0);
+
+  const failing = await fakeUpstream(t, (response) => stream(response, UPSTREAM_FAILED));
+  const second = await proxyFor(t, failing.url);
+  const response = await second.send();
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), UPSTREAM_FAILED);
+  assert.equal(failing.count(), 3);
+});
+
 test("已开始转发响应后上游中断：不重试", async (t) => {
   const upstream = await fakeUpstream(t, (response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });

@@ -80,6 +80,9 @@ export class ProviderError extends Error {
   constructor(detail = "") {
     const text = redactSecrets(detail).replace(/\s+/g, " ").trim().slice(0, 300);
     super(`模型服务请求失败${text ? `：${text}` : ""}`);
-    this.retryable = !PERMANENT_PROVIDER.test(detail) && RETRYABLE_PROVIDER.test(detail);
+    this.retryable = retryableProviderDetail(detail);
   }
 }
+
+export const retryableProviderDetail = (detail: string) =>
+  !PERMANENT_PROVIDER.test(detail) && RETRYABLE_PROVIDER.test(detail);

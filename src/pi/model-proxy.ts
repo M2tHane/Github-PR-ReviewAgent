@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { retryableProviderDetail } from "./types.js";
 
 // Pi 进程只拿到占位 key；代理转发时换成真实 key，模型凭据不进入 Agent 的进程环境和配置文件。
 export const KEY_PLACEHOLDER = "pi-service-key-placeholder";
@@ -10,6 +11,7 @@ const DROP_RESPONSE = new Set(["connection", "content-length", "content-encoding
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 529]);
 const RETRY_DELAYS_MS = [1_000, 3_000];
 const MAX_RETRY_AFTER_MS = 10_000;
+const FIRST_EVENT_MAX_CHARS = 64 * 1024;
 
 export interface ProxyHooks {
   // 转发前调用：预留预算并返回实际发送的请求体；抛错则不转发，Pi 收到错误响应。
@@ -58,20 +60,32 @@ export async function startModelProxy(
           headers[name] = (Array.isArray(value) ? value.join(", ") : value).replaceAll(KEY_PLACEHOLDER, apiKey);
       const url = base + (request.url ?? "/").replaceAll(KEY_PLACEHOLDER, encodeURIComponent(apiKey));
       let upstreamResponse: Response | undefined, failure: unknown;
+      // 流式响应先读到第一个数据事件：已读出、还没写给 Pi 的内容放在 buffered，剩下的从 reader 继续读。
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, buffered: Uint8Array[];
       // 只在还没向 Pi 写出任何内容时重试；被取消的请求不重试，等待期间取消立即结束。
       for (let attempt = 0; ; attempt++) {
+        const retryable = prepared !== undefined && attempt < retryDelaysMs.length;
+        let streamFailed = false;
+        reader = undefined;
+        buffered = [];
         try {
           upstreamResponse = await fetch(url, { method: request.method, headers, body, signal: controller.signal });
           failure = undefined;
+          if (retryable && upstreamResponse.ok && upstreamResponse.body && isEventStream(upstreamResponse))
+            ({ reader, buffered, failed: streamFailed } = await readFirstEvent(upstreamResponse.body));
         } catch (error) {
           if (controller.signal.aborted) throw error;
+          // 第一个数据事件之前断流，和连接错误一样：Pi 还没收到内容，上游是否处理未知。
           upstreamResponse = undefined;
           failure = error;
+          reader = undefined;
+          buffered = [];
         }
-        const delay =
-          prepared && attempt < retryDelaysMs.length
-            ? retryDelay(upstreamResponse, retryDelaysMs[attempt]!)
-            : undefined;
+        const delay = retryable
+          ? streamFailed
+            ? retryDelaysMs[attempt]!
+            : retryDelay(upstreamResponse, retryDelaysMs[attempt]!)
+          : undefined;
         if (delay === undefined) break;
         await sleep(delay, undefined, { signal: controller.signal });
         try {
@@ -79,14 +93,16 @@ export async function startModelProxy(
         } catch {
           break;
         }
-        await upstreamResponse?.body?.cancel().catch(() => undefined);
+        await (reader ?? upstreamResponse?.body)?.cancel().catch(() => undefined);
       }
       if (!upstreamResponse) throw failure;
       response.writeHead(
         upstreamResponse.status,
         Object.fromEntries([...upstreamResponse.headers].filter(([name]) => !DROP_RESPONSE.has(name))),
       );
-      if (upstreamResponse.body) for await (const chunk of upstreamResponse.body) response.write(chunk);
+      for (const chunk of buffered) response.write(chunk);
+      const rest = reader ?? upstreamResponse.body?.getReader();
+      if (rest) for (let next = await rest.read(); !next.done; next = await rest.read()) response.write(next.value);
       response.end();
     } catch (error) {
       if (response.headersSent) return void response.destroy();
@@ -121,6 +137,44 @@ function retryDelay(response: Response | undefined, fallback: number) {
   const ms = /^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
   if (Number.isNaN(ms)) return fallback;
   return ms > MAX_RETRY_AFTER_MS ? undefined : Math.max(0, ms);
+}
+
+const isEventStream = (response: Response) =>
+  response.headers.get("content-type")?.toLowerCase().includes("text/event-stream") === true;
+
+// 读到第一个数据事件为止（注释和心跳不算）。模型网关有时先以 200 开流、第一个事件才报上游故障，
+// 这时 Pi 还没收到任何内容，和 5xx 一样是上游明确没处理，可以重试；判断沿用任务重试的错误分类。
+async function readFirstEvent(body: ReadableStream<Uint8Array>) {
+  const reader = body.getReader(),
+    buffered: Uint8Array[] = [],
+    decoder = new TextDecoder();
+  let text = "";
+  while (text.length <= FIRST_EVENT_MAX_CHARS) {
+    const next = await reader.read();
+    if (next.done) break;
+    buffered.push(next.value);
+    text += decoder.decode(next.value, { stream: true });
+    for (const event of text.split(/\r?\n\r?\n/).slice(0, -1)) {
+      const data = event
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (data) return { reader, buffered, failed: streamError(data) };
+    }
+  }
+  return { reader, buffered, failed: false };
+}
+
+function streamError(data: string) {
+  let event: { error?: unknown; type?: unknown } | null;
+  try {
+    event = JSON.parse(data);
+  } catch {
+    return false;
+  }
+  const error = event?.error ?? (event?.type === "error" ? event : undefined);
+  return error != null && retryableProviderDetail(JSON.stringify(error));
 }
 
 function causeText(error: Error) {
