@@ -1,22 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { generateKeyPairSync } from "node:crypto";
 import { GitHubClient } from "../../src/github/client.js";
 import { SYNC_MARKER } from "../../src/rules-sync/content.js";
 const signal = new AbortController().signal;
-test("翻页查 PR，同时检查 App 身份、分支前缀、标记及 head 仓库；按分支查已关闭 PR", async (t) => {
+const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs1", format: "pem" })
+  .toString();
+test("翻页查 PR，同时检查作者是本 App 的 Bot、分支前缀、标记及 head 仓库；按分支查已关闭 PR", async (t) => {
   const requests: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string) => {
     const path = new URL(url);
     requests.push(path.pathname + path.search);
-    if (path.pathname.endsWith("/issues/2"))
-      return Response.json({ user: { type: "Bot" }, performed_via_github_app: { id: 999 } });
-    if (path.pathname.endsWith("/issues/3"))
-      return Response.json({ user: { type: "Bot" }, performed_via_github_app: { id: 1 } });
+    if (path.pathname === "/app") return Response.json({ slug: "pi-review" });
+    // 真实 GitHub 上 App 开的 PR 没有 performed_via_github_app，只能按作者账号认。
     const own = {
       number: 3,
       state: "open",
       body: SYNC_MARKER,
       head: { ref: "pi-review/rules-33333333", sha: "sha", repo: { full_name: "o/r" } },
+      user: { login: "Pi-Review[bot]", type: "Bot" },
+      performed_via_github_app: null,
     };
     if (path.searchParams.has("head")) {
       assert.equal(path.searchParams.get("state"), "all");
@@ -25,21 +29,23 @@ test("翻页查 PR，同时检查 App 身份、分支前缀、标记及 head 仓
     }
     if (path.searchParams.get("page") === "1")
       return Response.json([
-        { ...own, number: 2 },
+        { ...own, number: 1, user: { login: "pi-review[bot]", type: "User" } },
+        { ...own, number: 2, user: { login: "other-app[bot]", type: "Bot" } },
         { ...own, body: "not a sync PR" },
         { ...own, head: { ...own.head, ref: "user/rules" } },
         { ...own, head: { ...own.head, repo: { full_name: "other/fork" } } },
-        ...Array.from({ length: 96 }, () => ({ ...own, body: "ordinary PR" })),
+        ...Array.from({ length: 95 }, () => ({ ...own, body: "ordinary PR" })),
       ]);
     return Response.json([own]);
   });
-  const client = new GitHubClient("1", "");
+  const client = new GitHubClient("1", privateKey);
   assert.equal((await client.findRulesSyncPullRequest("token", "o/r", signal))?.number, 3);
-  assert.equal(requests.filter((path) => path.includes("/issues/")).length, 2);
   assert.equal(
     (await client.findRulesSyncPullRequest("token", "o/r", signal, "pi-review/rules-33333333"))?.state,
     "closed",
   );
+  assert.equal(requests.filter((path) => path === "/app").length, 1, "App 账号只查一次");
+  assert.equal(requests.filter((path) => path.includes("/issues/")).length, 0);
 });
 test("缺文件只认 Contents 的 404；大文件读 blob；分支推进 force=false", async (t) => {
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {

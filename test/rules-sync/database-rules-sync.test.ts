@@ -78,6 +78,7 @@ class FakeGitHub implements RulesSyncGitHub {
       body: input.body,
       html_url: `https://github.com/${repository}/pull/${number}`,
       head: { sha, ref: input.head, repo: { full_name: repository } },
+      user: { login: "pi-review[bot]", type: "Bot" },
     });
     if (stop === "after-pr") throw Object.assign(new Error("response lost after PR"), { code: "ECONNRESET" });
     return { number, head: { sha } };

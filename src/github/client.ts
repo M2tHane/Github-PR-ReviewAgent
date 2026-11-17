@@ -138,6 +138,24 @@ export class GitHubClient {
     );
   }
 
+  private botLogin?: Promise<string>;
+
+  // App 自己的 Bot 账号（<slug>[bot]，小写），进程内只查一次；普通用户注册不了带 [bot] 的账号。
+  private appBotLogin() {
+    if (!this.botLogin) {
+      this.botLogin = this.fetchJson<{ slug: string }>(
+        `${api}/app`,
+        { headers: this.appHeaders() },
+        "app",
+        (response) => {
+          if (!response.ok) throw new GitHubApiError("/app", response.status, retryAfterOf(response));
+        },
+      ).then((app) => `${app.slug}[bot]`.toLowerCase());
+      this.botLogin.catch(() => (this.botLogin = undefined));
+    }
+    return this.botLogin;
+  }
+
   private appHeaders() {
     return {
       authorization: `Bearer ${this.jwt()}`,
@@ -491,13 +509,15 @@ export class GitHubClient {
     return Buffer.from(blob.content, "base64").toString("utf8");
   }
 
-  // 列表只筛候选，再用 issue 的 App 身份核对；用户复制标记或分支名不能让服务接管其 PR。
+  // 按分支前缀、标记和作者是本 App 的 Bot 账号核对；用户复制标记或分支名不能让服务接管其 PR。
+  // App 开的 PR 上 performed_via_github_app 为空（App 发的 issue 评论上有），只能按作者账号认。
   async findRulesSyncPullRequest(
     token: string,
     repository: string,
     signal: AbortSignal,
     branch?: string,
   ): Promise<RulesSyncPullRequest | undefined> {
+    const bot = await this.appBotLogin();
     for (let page = 1; ; page++) {
       const params = new URLSearchParams({ state: branch ? "all" : "open", per_page: "100", page: String(page) });
       if (branch) params.set("head", `${repository.split("/")[0]}:${branch}`);
@@ -512,12 +532,7 @@ export class GitHubClient {
           (branch && pr.head.ref !== branch)
         )
           continue;
-        const issue = await this.request<{ performed_via_github_app: { id: number } | null; user: { type: string } }>(
-          token,
-          `/repos/${repository}/issues/${pr.number}`,
-          { signal },
-        );
-        if (String(issue.performed_via_github_app?.id) === this.appId && issue.user.type === "Bot") return pr;
+        if (pr.user?.type === "Bot" && pr.user.login.toLowerCase() === bot) return pr;
       }
       if (pulls.length < 100) return undefined;
     }
@@ -704,4 +719,5 @@ export interface RulesSyncPullRequest {
   html_url: string;
   state: "open" | "closed";
   head: { sha: string; ref: string; repo: { full_name: string } | null };
+  user: { login: string; type: string } | null;
 }
