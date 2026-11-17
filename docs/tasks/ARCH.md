@@ -312,3 +312,23 @@
 - ego-browser 在新 Select 上重新完成键盘仓库筛选、级别 FormData 提交并批准、跨仓库复制 1 条和 Markdown 导入 2 条；弹窗目标仅列仓库，页面无原生 select、无横向溢出。已查看 `work/arch-remove-teams/ui-rebased.png`，页面快照同目录；临时服务、浏览器空间及 schema 已回收。
 - 最终 `npm run format` 无修改，`npm run check:format` 259 文件通过，`npm run check:docs` 36 文档／311 链接与锚点通过，`npm audit --audit-level=high` 0 vulnerabilities，`git diff --check` 通过。
 
+
+**真实 Webhook 端到端：`M2tHane/pi-review-sandbox`**（2026-11-16，服务基线 `b2a786e`）
+
+- 按用户授权在 sandbox 仓库测试：开发 App `pi-governance-agent-dev` 经 smee 转发真实 Webhook，本地服务用独立 schema `pi_e2e_20261115`，模型 tuzi / `gpt-6.1-sol`，企微关闭。未改 App 的 Webhook 地址，未使用团队日常 PR。
+- PR Review：[PR #10](https://github.com/M2tHane/pi-review-sandbox/pull/10) head `8673218`，Job `53306533`，第 1 次尝试上游失败后重试成功，发布 [Review 5916358197](https://github.com/M2tHane/pi-review-sandbox/pull/10#pullrequestreview-5916358197)，3 个问题，73.4 秒，total 39,553（input 8,297／output 2,840／cacheRead 28,416），未回报 0。
+- Reply：Job `30271953` 结论 STILL_VALID，回复带 `pi-reply` 标记。修复提交 `48f993b` 后再审：Job `a49926c4`，[Review 5916433900](https://github.com/M2tHane/pi-review-sandbox/pull/10#pullrequestreview-5916433900)，“1 个仍未解决、2 个这次没再发现”，61.5 秒，total 49,348。
+- Squash 合并 `5d05479`：Decision Extract Job `55229d10` 产出 2 条候选，total 11,166；一条设为必须后两条都确认。[PR #11](https://github.com/M2tHane/pi-review-sandbox/pull/11) head `912b4aa`：Job `38f1fd1d` 指出违反必须规则并附规则来源，ruleChecks 记 violated，[Review 5916630321](https://github.com/M2tHane/pi-review-sandbox/pull/11#pullrequestreview-5916630321)，79.3 秒，total 44,691。
+- 规则同步：RULES_SYNC Job `cacd904e` 创建 [PR #12](https://github.com/M2tHane/pi-review-sandbox/pull/12)（`.pi-review/rules.md` +49、`AGENTS.md` +3）。
+- 开发任务：管理页任务 `241c8784` → [PR #13](https://github.com/M2tHane/pi-review-sandbox/pull/13)，85.0 秒，total 84,053。任务 `b954585a` 运行 60 秒时 SIGTERM，日志 `job_released`、快照 3 个文件，重启后续做完成 → [PR #14](https://github.com/M2tHane/pi-review-sandbox/pull/14)，提交、分支、PR 各 1 次；99.9 秒，total 102,756，未回报 33,259。PR #14 评论修改任务 `962549a7` 追加提交 `642b445` 并回帖，74.3 秒，total 81,125。Issue #15 加 `pi-dev` 标签，任务 `a6a50eed` 上游失败 2 次后成功 → [PR #16](https://github.com/M2tHane/pi-review-sandbox/pull/16)，并在 issue 回帖；308.8 秒，total 159,471，未回报 62,722。
+- 测试中发现 4 个问题，已修（未 push）：
+  - 合并推断把仍未解决的问题记成疑似已修复：PR #10 的 `refund.ts:7` 问题在最后一个 head `48f993b` 的 Review 里还被认作重复，合并后仍被记 `inferred_fixed_sha=48f993b`。根因是推断只看附近有没有改动，不看最后一次 Review 的结论。现在排除最后一个 head 的 Review 仍认作重复的问题。
+  - 规则同步 PR 被本服务自动审查：PR #12 的 Job `3dfeba40` 用了 81.4 秒、total 32,327，结论无问题；开发 PR 按设计不审查。现在 Bot 作者且分支以 `pi-review/rules-` 开头的 PR 不审查，合并后的流程不变。
+  - 模型网关间歇报 `Upstream request failed`，3 次都让整个会话作废、从头重跑：Review Job `53306533` 第 1 次尝试 225.7 秒后失败；开发任务 `a6a50eed` 失败 2 次，总耗时 308.8 秒，未回报 62,722。会话记录显示失败请求内容为空、usage 为 0，错误信息不带 HTTP 状态码。按 Pi 使用的 openai SDK 的错误格式，这说明网关先以 200 开流，第一个事件才报错；代理原来只按状态码重试，所以没有接住。现在流式响应先读到第一个数据事件：第一个事件之前断流，或第一个事件是可重试的错误，都由代理重试同一请求。
+  - 规则同步认不出自己开的 PR（修复后复验时发现）：真实 GitHub 上 App 开的 PR，issue 接口的 `performed_via_github_app` 为空（App 发的评论上有），原来按它核对身份，规则再变化时又开了 [PR #17](https://github.com/M2tHane/pi-review-sandbox/pull/17)，PR #12 留着没关。替身测试按有该字段的样子造数据，所以没发现。现在按作者是本 App 的 Bot 账号（`<slug>[bot]`，进程内只查一次 `/app`）核对。
+- 修复后在 sandbox 复验（2026-11-16）：
+  - 合并推断：清掉 PR #10 的旧推断结果，用新代码和真实 GitHub compare 重跑（`work/e2e-sandbox/verify-inferred.mjs`）：`refund.ts:7` 不再记疑似已修复，另外两个照旧。
+  - 规则同步：规则 `ab5a3f6c` 先改为参考级别，确认后的 RULES_SYNC Job `b5790a2a` 在修复身份核对之前运行，开了 PR #17；PR #17 的 `opened` 投递服务返回 200，没有审查任务。再改回建议级别，Job `e7e2d2ea` 往 PR #17 追加提交 `fade601`，没有开新 PR；`synchronize` 投递返回 200，没有审查任务。
+  - 模型代理：新开 [PR #18](https://github.com/M2tHane/pi-review-sandbox/pull/18)，Job `e60dcb3b` 经新代理正常完成 6 次流式模型请求，发布 [Review 5917305101](https://github.com/M2tHane/pi-review-sandbox/pull/18#pullrequestreview-5917305101)，指出循环越界；56.8 秒，total 36,390（input 13,544／output 1,854／cacheRead 20,992），未回报 0。这次没有遇到网关报错，第一个事件报错时的重试只由替身测试验证。
+- 测试：开发中 `npm run build` 后分别运行 webhook、合并推断（去掉修复后该用例失败）、model-proxy、Pi session、rules-sync 与 client 的测试文件，全部通过。完成后 `npm test` 367 项：219 通过、0 失败、148 跳过（数据库用例）；`npm run test:db` 191/191，0 跳过。`npm run check:docs`、`npm run check:format`、`git diff --check` 通过。
+- 限制：网关在第一个事件报错的情况是按错误格式推断的，没有抓到原始响应。健康检查、真实仓库的接入开关、Reply 误判路径没有测。规则同步 PR 合并后会不会抽出重复的规则候选，没有验证。PR #12 是身份核对问题留下的重复同步 PR，仍未关闭。
