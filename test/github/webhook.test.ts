@@ -116,6 +116,36 @@ test("webhook 验签后快速入队，非法输入和忽略事件不执行", asy
     assert.equal(calls.length, 1);
   }));
 
+test("本服务开的规则同步 PR 不审查；普通用户起同名分支照常审查", async () =>
+  withServer(async (url, calls) => {
+    const post = (user: { type: string }, delivery: string) => {
+      const body = JSON.stringify({
+        ...payload,
+        pull_request: {
+          ...payload.pull_request,
+          head: { ...payload.pull_request.head, ref: "pi-review/rules-1a2b3c4d" },
+          user,
+        },
+      });
+      return fetch(url, {
+        method: "POST",
+        headers: {
+          "x-github-event": "pull_request",
+          "x-github-delivery": delivery,
+          "x-hub-signature-256": signature(body),
+        },
+        body,
+      });
+    };
+    let response = await post({ type: "Bot" }, "rules-sync-bot");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ignored: true, reason: "rules_sync_pull_request" });
+    response = await post({ type: "User" }, "rules-sync-user");
+    assert.equal(response.status, 202);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 1);
+  }));
+
 test("webhook 不等待后台任务", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {

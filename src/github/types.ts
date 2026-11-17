@@ -13,5 +13,6 @@ export interface PullRequestEvent {
     updated_at?: string;
     base: { sha: string };
     head: { sha: string; ref?: string; repo: { full_name: string } | null };
+    user?: { type?: string };
   };
 }

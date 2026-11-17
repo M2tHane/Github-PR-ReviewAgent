@@ -6,6 +6,7 @@ import { send } from "../http.js";
 import type { PullRequestEvent } from "../../types.js";
 import { parsePullRequest } from "../parser.js";
 import { log } from "../../../logging.js";
+import { SYNC_BRANCH_PREFIX } from "../../../rules-sync/content.js";
 
 const actions = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
 
@@ -49,6 +50,9 @@ export async function handlePullRequest(
     !config.allowedRepositories.has(repository)
   )
     return send(response, 200, { ignored: true });
+  // 本服务开的规则同步 PR 只改规则文件，不审查；要求 Bot 作者，普通用户起同名分支照常审查。合并后的流程不变。
+  if (!closed && pr.head.ref?.startsWith(SYNC_BRANCH_PREFIX) && pr.user?.type === "Bot")
+    return send(response, 200, { ignored: true, reason: "rules_sync_pull_request" });
   let result;
   try {
     if (
