@@ -21,12 +21,17 @@ export async function inferMergedFixes(
   // PR 合并前最后的 head。不用合并提交：squash／rebase 合并的提交不以 finding 的 head 为祖先，行号对不上。
   finalHead: string,
 ) {
+  // 最后一个 head 的 Review 仍认作重复的问题没有修好，附近改过也不推断。
   const { rows } = await pool.query<{ id: string; head_sha: string; path: string; line: number }>(
-    `SELECT id,head_sha,path,line FROM review_findings
+    `SELECT id,head_sha,path,line FROM review_findings f
      WHERE repository_id=$1 AND pr_number=$2 AND status IN ('OPEN','STILL_VALID','NEEDS_CLARIFICATION')
        AND path IS NOT NULL AND line IS NOT NULL AND side='RIGHT'
-       AND NOT (presentation ? 'repeatOf') AND inferred_fixed_at IS NULL`,
-    [job.repositoryId, job.prNumber],
+       AND NOT (presentation ? 'repeatOf') AND inferred_fixed_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM review_findings r
+         WHERE r.repository_id=$1 AND r.pr_number=$2 AND r.head_sha=$3 AND r.presentation->'repeatOf'->>'id'=f.id
+       )`,
+    [job.repositoryId, job.prNumber, finalHead],
   );
   for (const head of new Set(rows.map((row) => row.head_sha))) {
     let files: Awaited<ReturnType<GitHubClient["compareFiles"]>>["files"];

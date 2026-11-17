@@ -60,7 +60,8 @@ async function seed(database: Database, start: number) {
       path?: string | null;
       line?: number | null;
       side?: string;
-      repeat?: boolean;
+      // 字符串表示重复的是哪个 finding。
+      repeat?: boolean | string;
       inferred?: boolean;
       binding?: string;
     } = {},
@@ -81,7 +82,7 @@ async function seed(database: Database, start: number) {
         memoryId,
         status,
         patch.binding ?? "bound",
-        patch.repeat ? { repeatOf: { id: "other" } } : {},
+        patch.repeat ? { repeatOf: { id: typeof patch.repeat === "string" ? patch.repeat : "other" } } : {},
         patch.inferred ? "2026-11-01" : null,
       ],
     );
@@ -267,6 +268,9 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
     ]);
     const failed = await s.finding(job, memory, "OPEN", { head: "fail-head" });
     const forcePushed = await s.finding(job, memory, "OPEN", { head: "force-pushed-head" });
+    // 附近改过，但最后一个 head 的 Review 还认作重复：没修好。
+    const repeatedAtFinal = await s.finding(job, memory, "OPEN", { line: 19 });
+    await s.finding(job, memory, "OPEN", { head: "final", repeat: repeatedAtFinal });
     let calls = 0;
     const github = {
       installationToken: async () => "token",
@@ -298,7 +302,7 @@ test("合并推断：覆盖行才记疑似，不改状态、去重、失败不�
       assert.ok(rows.find((row) => row.id === id).inferred_fixed_at);
     }
     assert.equal(rows.find((row) => row.id === yes).status, "OPEN");
-    for (const id of [no, failed, forcePushed, ...skipped])
+    for (const id of [no, failed, forcePushed, repeatedAtFinal, ...skipped])
       assert.equal(rows.find((row) => row.id === id).inferred_fixed_at, null);
     assert.equal(log.mock.callCount(), 1);
     const timestamp = rows.find((row) => row.id === yes).inferred_fixed_at;
